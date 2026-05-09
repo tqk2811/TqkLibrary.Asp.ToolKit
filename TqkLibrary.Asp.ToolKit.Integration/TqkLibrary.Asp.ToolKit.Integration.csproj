@@ -1,7 +1,30 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
 	<Import Project="..\ProjectBuildProperties.targets" />
-	<PropertyGroup>
+
+	<!--
+		Debug skips GitVersion entirely so feature/branch builds don't fail when the branch
+		isn't covered by GitVersion.yml (orphaned-branch error). Version is hard-coded so
+		MSBuild's NETSDK1018 ('.' invalid) doesn't fire when GitVersion outputs are empty.
+		Release still goes through GitVersion and produces a real version.
+
+		DisableGitVersionTask alone only skips RunGitVersion/GetVersion — the other
+		GitVersion targets (WriteVersionInfoToBuildLog, GenerateGitVersionInformation,
+		UpdateAssemblyInfo) still try to read obj/gitversion.json. Turn them all off.
+	-->
+	<PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+		<DisableGitVersionTask>true</DisableGitVersionTask>
+		<WriteVersionInfoToBuildLog>false</WriteVersionInfoToBuildLog>
+		<GenerateGitVersionInformation>false</GenerateGitVersionInformation>
+		<UpdateAssemblyInfo>false</UpdateAssemblyInfo>
+		<GenerateGitVersionFiles>false</GenerateGitVersionFiles>
+		<Version>0.0.0-debug</Version>
+		<PackageVersion>0.0.0-debug</PackageVersion>
+	</PropertyGroup>
+
+	<!-- NuSpec support for dotnet pack -->
+	<PropertyGroup Condition="Exists('$(MSBuildProjectDirectory)\$(MSBuildProjectName).nuspec')">
+		<NuspecFile>$(MSBuildProjectName).nuspec</NuspecFile>
 	</PropertyGroup>
 
 	<ItemGroup>
@@ -13,7 +36,21 @@
 		<PackageReference Include="System.Security.Cryptography.Xml" />
 		<PackageReference Include="TqkLibrary.Http" />
 		<PackageReference Include="TqkLibrary.Utils" />
+		<PackageReference Include="GitVersion.MsBuild">
+			<PrivateAssets>all</PrivateAssets>
+			<IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+		</PackageReference>
 	</ItemGroup>
 
+	<!-- Set version after GitVersion runs (Release only — Debug short-circuits via DisableGitVersionTask above) -->
+	<Target Name="SetVersionFromGitVersion" AfterTargets="GetVersion" Condition="'$(DisableGitVersionTask)' != 'true'">
+		<PropertyGroup>
+			<Version>$(GitVersion_MajorMinorPatch).$(GitVersion_CommitsSinceVersionSource)</Version>
+			<PackageVersion>$(Version)</PackageVersion>
+		</PropertyGroup>
+		<PropertyGroup Condition="Exists('$(MSBuildProjectDirectory)\$(MSBuildProjectName).nuspec')">
+			<NuspecProperties>id=$(MSBuildProjectName);version=$(Version)</NuspecProperties>
+		</PropertyGroup>
+	</Target>
 
 </Project>

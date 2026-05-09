@@ -14,5 +14,6 @@
     <PackageVersion Include="System.Security.Cryptography.Xml" Version="10.0.7" />
     <PackageVersion Include="TqkLibrary.Http" Version="1.1.2.14" />
     <PackageVersion Include="TqkLibrary.Utils" Version="1.0.0-build20260320155740" />
+    <PackageVersion Include="GitVersion.MsBuild" Version="6.7.0" />
   </ItemGroup>
 </Project>
