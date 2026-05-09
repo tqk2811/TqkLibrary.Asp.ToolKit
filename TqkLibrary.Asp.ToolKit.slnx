@@ -1,5 +1,4 @@
 <Solution>
-  <Project Path="TqkLibrary.Asp.ToolKit/TqkLibrary.Asp.ToolKit.csproj" />
   <Folder Name="/Solution Items/">
     <File Path="Directory.Packages.props" />
     <File Path="GitVersion.yml" />
