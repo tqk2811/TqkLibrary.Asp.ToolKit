@@ -1,3 +1,8 @@
 <Solution>
   <Project Path="TqkLibrary.Asp.ToolKit/TqkLibrary.Asp.ToolKit.csproj" />
+  <Folder Name="/Solution Items/">
+    <File Path="Directory.Packages.props" />
+    <File Path="ProjectBuildProperties.targets" />
+  </Folder>
+  <Project Path="TqkLibrary.Asp.ToolKit.ViewModels/TqkLibrary.Asp.ToolKit.ViewModels.csproj" />
 </Solution>
