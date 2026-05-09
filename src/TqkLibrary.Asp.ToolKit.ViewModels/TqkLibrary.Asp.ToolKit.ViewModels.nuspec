@@ -21,7 +21,7 @@
 		</dependencies>
 	</metadata>
 	<files>
-		<file src="..\README.md" target="docs\" />
+		<file src="..\..\README.md" target="docs\" />
 		<file src="bin\Release\net10.0\TqkLibrary.Asp.ToolKit.ViewModels.dll" target="lib\net10.0\" />
 	</files>
 </package>

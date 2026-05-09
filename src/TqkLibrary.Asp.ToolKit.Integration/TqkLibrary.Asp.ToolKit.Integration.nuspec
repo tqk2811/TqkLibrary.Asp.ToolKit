@@ -24,7 +24,7 @@
 		</dependencies>
 	</metadata>
 	<files>
-		<file src="..\README.md" target="docs\" />
+		<file src="..\..\README.md" target="docs\" />
 		<file src="bin\Release\net10.0\TqkLibrary.Asp.ToolKit.Integration.dll" target="lib\net10.0\" />
 	</files>
 </package>
