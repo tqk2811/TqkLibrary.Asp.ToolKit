@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2010/07/nuspec.xsd">
+	<!--https://docs.microsoft.com/en-us/nuget/reference/nuspec-->
+	<metadata>
+		<id>$id$</id>
+		<version>$version$</version>
+		<description>Common ASP.NET Core toolkit utilities.</description>
+		<authors>tqk2811</authors>
+		<projectUrl>https://github.com/tqk2811/TqkLibrary.Asp.ToolKit</projectUrl>
+		<repository type="git" url="https://github.com/tqk2811/TqkLibrary.Asp.ToolKit.git"/>
+		<license type="expression">MIT</license>
+		<readme>docs\README.md</readme>
+		<dependencies>
+			<group targetFramework="net10.0">
+			</group>
+		</dependencies>
+	</metadata>
+	<files>
+		<file src="..\README.md" target="docs\" />
+		<file src="bin\Release\net10.0\TqkLibrary.Asp.ToolKit.dll" target="lib\net10.0\" />
+	</files>
+</package>
