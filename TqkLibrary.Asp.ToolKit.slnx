@@ -5,4 +5,5 @@
     <File Path="ProjectBuildProperties.targets" />
   </Folder>
   <Project Path="TqkLibrary.Asp.ToolKit.ViewModels/TqkLibrary.Asp.ToolKit.ViewModels.csproj" />
+  <Project Path="TqkLibrary.Asp.ToolKit.Integration/TqkLibrary.Asp.ToolKit.Integration.csproj" />
 </Solution>
