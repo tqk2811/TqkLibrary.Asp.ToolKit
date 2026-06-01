@@ -7,12 +7,16 @@
 		<!--<PreserveCompilationContext>false</PreserveCompilationContext>-->
 		<!--<GenerateDependencyFile>false</GenerateDependencyFile>-->
 		<!--<ProduceReferenceAssembly>false</ProduceReferenceAssembly>-->
-		<!--<GenerateDocumentationFile>True</GenerateDocumentationFile>-->
+		<!-- Emit XML doc for IntelliSense; CS1591 = missing doc comment on a public member -->
+		<GenerateDocumentationFile>true</GenerateDocumentationFile>
+		<NoWarn>$(NoWarn);CS1591</NoWarn>
 	</PropertyGroup>
 
 	<PropertyGroup Condition="'$(Configuration)' == 'Release'">
 		<Deterministic>true</Deterministic>
 		<ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+		<!-- Embed all source files into the portable PDB so step-into works offline -->
+		<EmbedAllSources>true</EmbedAllSources>
 	</PropertyGroup>
 
 	<!--
@@ -50,8 +54,11 @@
 	<!-- Set version after GitVersion runs (Release only — Debug short-circuits via DisableGitVersionTask above) -->
 	<Target Name="SetVersionFromGitVersion" AfterTargets="GetVersion" Condition="'$(DisableGitVersionTask)' != 'true'">
 		<PropertyGroup>
-			<Version>$(GitVersion_MajorMinorPatch).$(GitVersion_CommitsSinceVersionSource)</Version>
+			<Version>$(GitVersion_Major).$(GitVersion_Minor).$(GitVersion_CommitsSinceVersionSource)</Version>
 			<PackageVersion>$(Version)</PackageVersion>
+			<AssemblyVersion>$(GitVersion_Major).$(GitVersion_Minor).0.0</AssemblyVersion>
+			<FileVersion>$(GitVersion_Major).$(GitVersion_Minor).$(GitVersion_CommitsSinceVersionSource).0</FileVersion>
+			<InformationalVersion>$(Version)</InformationalVersion>
 		</PropertyGroup>
 		<PropertyGroup Condition="Exists('$(MSBuildProjectDirectory)\$(MSBuildProjectName).nuspec')">
 			<NuspecProperties>id=$(MSBuildProjectName);version=$(Version)</NuspecProperties>
