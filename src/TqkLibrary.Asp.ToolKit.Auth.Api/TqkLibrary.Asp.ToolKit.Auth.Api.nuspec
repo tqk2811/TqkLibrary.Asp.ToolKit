@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2010/07/nuspec.xsd">
+	<!--https://docs.microsoft.com/en-us/nuget/reference/nuspec-->
+	<metadata>
+		<id>$id$</id>
+		<version>$version$</version>
+		<description>ASP.NET Core JWT API helpers for session-bound tokens: compact access tokens (sub/sid/jti/exp), per-request session validation with a short in-memory cache, non-rotating refresh token codec and sliding session expiry.</description>
+		<authors>tqk2811</authors>
+		<projectUrl>https://github.com/tqk2811/TqkLibrary.Asp.ToolKit</projectUrl>
+		<repository type="git" url="https://github.com/tqk2811/TqkLibrary.Asp.ToolKit.git"/>
+		<license type="expression">MIT</license>
+		<readme>docs\README.md</readme>
+		<frameworkReferences>
+			<group targetFramework="net10.0">
+				<frameworkReference name="Microsoft.AspNetCore.App"/>
+			</group>
+		</frameworkReferences>
+		<dependencies>
+			<group targetFramework="net10.0">
+				<dependency id="Microsoft.AspNetCore.Authentication.JwtBearer" version="10.0.12" />
+			</group>
+		</dependencies>
+	</metadata>
+	<files>
+		<file src="..\..\README.md" target="docs\" />
+		<file src="bin\Release\net10.0\TqkLibrary.Asp.ToolKit.Auth.Api.dll" target="lib\net10.0\" />
+		<file src="bin\Release\net10.0\TqkLibrary.Asp.ToolKit.Auth.Api.pdb" target="lib\net10.0\" />
+		<file src="bin\Release\net10.0\TqkLibrary.Asp.ToolKit.Auth.Api.xml" target="lib\net10.0\" />
+	</files>
+</package>
