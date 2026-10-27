@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<Import Project="..\ProjectBuildProperties.targets" />
+
+	<ItemGroup>
+		<FrameworkReference Include="Microsoft.AspNetCore.App" />
+	</ItemGroup>
+
+</Project>
