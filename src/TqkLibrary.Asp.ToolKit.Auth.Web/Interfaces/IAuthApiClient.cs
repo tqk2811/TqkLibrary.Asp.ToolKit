@@ -6,10 +6,12 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Interfaces
     /// The app's bridge to its API. Implement it on top of the app's own HTTP client.
     /// <para><b>Error contract</b> (the library relies on it to decide between "sign out" and "try again later"):</para>
     /// <list type="bullet">
-    ///   <item>The API says the session is dead (401/403 on refresh, 401 on <c>me</c>) → throw
-    ///   <see cref="SessionExpiredException"/>.</item>
-    ///   <item>Anything else (5xx, network, timeout) → let the original exception propagate: it is treated as a
-    ///   transient failure and the user is NOT signed out.</item>
+    ///   <item>When the API rejects <c>refresh</c> or <c>me</c> (HTTP 401 or 403) the implementation MUST throw
+    ///   <see cref="SessionExpiredException"/>. <see cref="Extensions.AuthApiResponseExtensions.ThrowIfSessionRejected"/>
+    ///   does exactly that for an <see cref="HttpResponseMessage"/>.</item>
+    ///   <item>Every other exception (5xx, network, timeout, deserialization) is treated as a transient failure
+    ///   and the user is NOT signed out. So never map a transient error to <see cref="SessionExpiredException"/>,
+    ///   and never swallow a 401/403 into another exception type.</item>
     /// </list>
     /// </summary>
     public interface IAuthApiClient

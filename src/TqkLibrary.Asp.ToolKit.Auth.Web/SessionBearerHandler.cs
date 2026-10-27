@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Net;
 using System.Net.Http.Headers;
@@ -14,7 +15,9 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
     ///   so they are not resent: a 401 for them means the session expired.</item>
     ///   <item>Still 401 after a refresh, or the refresh rejected → <see cref="SessionExpiredException"/>
     ///   (<see cref="SessionExpiredMiddleware"/> signs out and redirects to login).</item>
-    ///   <item>Transient refresh failures propagate as they are; the cookie is kept.</item>
+    ///   <item>Transient refresh failures propagate as they are; the cookie is kept. The exception is the
+    ///   PROACTIVE refresh (token only about to expire): if it fails transiently while the current access token is
+    ///   still valid, a warning is logged and the request is sent with the current token.</item>
     /// </list>
     /// <para>
     /// <c>IHttpClientFactory</c> reuses handlers for MANY users, so this one keeps no user state: everything is read
@@ -28,12 +31,20 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         private readonly IHttpContextAccessor _httpContextAccessor;
         private readonly TimeProvider _clock;
         private readonly IOptions<WebAuthOptions> _options;
+        private readonly ILogger? _logger;
 
-        public SessionBearerHandler(IHttpContextAccessor httpContextAccessor, TimeProvider clock, IOptions<WebAuthOptions> options)
+        /// <summary>Creates the handler.</summary>
+        /// <param name="httpContextAccessor">Source of the viewed request and its session.</param>
+        /// <param name="clock">Clock used to decide whether the access token is still valid.</param>
+        /// <param name="options">Web session options.</param>
+        /// <param name="logger">Optional; logs the fallback to the current token after a failed proactive refresh.</param>
+        public SessionBearerHandler(IHttpContextAccessor httpContextAccessor, TimeProvider clock, IOptions<WebAuthOptions> options,
+            ILogger<SessionBearerHandler>? logger = null)
         {
             _httpContextAccessor = httpContextAccessor;
             _clock = clock;
             _options = options;
+            _logger = logger;
         }
 
         /// <inheritdoc />
@@ -49,8 +60,23 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
             var ticket = WebSessionTicket.For(context);
             var tokens = await ticket.GetTokensAsync(cancellationToken).ConfigureAwait(false)
                 ?? throw new SessionExpiredException(options.SessionExpiredMessage);
-            if (tokens.IsAccessTokenExpiring(_clock.GetUtcNow().UtcDateTime, options.RefreshSkew))
-                tokens = await ticket.RefreshAsync(null, cancellationToken).ConfigureAwait(false);
+            var now = _clock.GetUtcNow().UtcDateTime;
+            if (tokens.IsAccessTokenExpiring(now, options.RefreshSkew))
+            {
+                try
+                {
+                    tokens = await ticket.RefreshAsync(null, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not SessionExpiredException
+                    && !cancellationToken.IsCancellationRequested
+                    && tokens.AccessTokenExpiresAt > now)
+                {
+                    // Proactive refresh only: the current token still works, so a transient refresh failure must not
+                    // fail the call. If the API rejects the old token, the 401 path below refreshes (and surfaces
+                    // the failure) as usual.
+                    _logger?.LogWarning(ex, "Proactive token refresh failed; sending the request with the current access token.");
+                }
+            }
 
             // Upload bodies may be huge and StreamContent can be read once: not buffered, hence not resendable.
             var replayable = IsReplayable(request.Content);

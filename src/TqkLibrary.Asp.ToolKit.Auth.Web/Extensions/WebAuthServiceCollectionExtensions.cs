@@ -9,6 +9,7 @@ using TqkLibrary.Asp.ToolKit.Auth.Web.Interfaces;
 
 namespace TqkLibrary.Asp.ToolKit.Auth.Web.Extensions
 {
+    /// <summary>Service registration of the web auth package.</summary>
     public static class WebAuthServiceCollectionExtensions
     {
         /// <summary>
@@ -21,8 +22,17 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Extensions
         /// must be shared (<see cref="AddTqkDataProtectionKeyRing"/>).</para>
         /// </summary>
         /// <param name="services">Services.</param>
-        /// <param name="configureCookie">Cookie options of the app (name, login path, expiry...).</param>
-        /// <param name="configure">Optional <see cref="WebAuthOptions"/> overrides.</param>
+        /// <param name="configureCookie">
+        /// Cookie options of the app (name, login path, expiry...). The library sets <c>HttpOnly</c>, <c>SameSite=Lax</c>
+        /// and <c>SlidingExpiration = false</c> first, so this delegate can override them. Sliding is off because the
+        /// ticket already slides with the API session when tokens are refreshed (never beyond the refresh token
+        /// expiry); the cookie handler would otherwise extend the ticket past the refresh token.
+        /// </param>
+        /// <param name="configure">
+        /// Optional <see cref="WebAuthOptions"/> overrides. <see cref="WebAuthOptions.Scheme"/> can ONLY be set here
+        /// (it is needed at registration time). This delegate is invoked twice (once on a snapshot at registration,
+        /// once by the options system), so it must have no side effects outside the options object.
+        /// </param>
         public static AuthenticationBuilder AddTqkWebAuth(this IServiceCollection services,
             Action<CookieAuthenticationOptions> configureCookie, Action<WebAuthOptions>? configure = null)
         {
@@ -56,6 +66,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Extensions
                 {
                     options.Cookie.HttpOnly = true;
                     options.Cookie.SameSite = SameSiteMode.Lax;
+                    options.SlidingExpiration = false;
                     configureCookie(options);
                 });
         }

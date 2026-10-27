@@ -28,6 +28,10 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
             // a 401 during refresh lands here and clears it.
             catch (SessionExpiredException ex) when (!context.Response.HasStarted)
             {
+                // Clear the partial response FIRST, then drop the session: the sign-out writes the Set-Cookie header
+                // that deletes the cookie, and Clear() afterwards would erase that header (the browser would keep the
+                // dead cookie and every following request would fail the refresh again).
+                context.Response.Clear();
                 var sessions = context.RequestServices.GetService(typeof(WebSessionManager)) as WebSessionManager;
                 if (sessions is not null)
                     await sessions.DropAsync(context).ConfigureAwait(false);
@@ -37,7 +41,6 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
                 var redirect = context.Request.PathBase + cookie.LoginPath
                     + QueryString.Create(cookie.ReturnUrlParameter, returnUrl.ToString());
 
-                context.Response.Clear();
                 if (IsAjax(context.Request))
                 {
                     context.Response.StatusCode = StatusCodes.Status401Unauthorized;
