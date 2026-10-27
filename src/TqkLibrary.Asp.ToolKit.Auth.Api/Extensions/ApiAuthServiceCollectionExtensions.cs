@@ -26,7 +26,6 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Extensions
                     return true;
                 })
                 .ValidateOnStart();
-            services.AddMemoryCache();
             services.TryAddSingleton(TimeProvider.System);
             services.TryAddSingleton<SessionAccessCache>();
             services.TryAddSingleton<AccessTokenFactory>();

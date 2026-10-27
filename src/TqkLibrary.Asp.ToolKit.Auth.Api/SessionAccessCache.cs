@@ -5,39 +5,50 @@ using TqkLibrary.Asp.ToolKit.Auth.Api.Models;
 namespace TqkLibrary.Asp.ToolKit.Auth.Api
 {
     /// <summary>
-    /// Short cache (singleton, <see cref="IMemoryCache"/>) of the per-request session lookup, keyed by session id.
-    /// Invalidate right after the write succeeds instead of waiting for the TTL:
+    /// Short cache (singleton) of the per-request session lookup, keyed by session id, so the API does not query the
+    /// session, roles and permissions on EVERY authenticated request. A dead session (null) is never cached.
+    /// <para>
+    /// Invalidate right after the write succeeds instead of waiting for
+    /// <see cref="ApiAuthOptions.SessionAccessCacheLifetime"/>:
     /// <list type="bullet">
-    ///   <item>sign-out / revoke one session → <see cref="InvalidateSession"/>;</item>
-    ///   <item>password change, lock/delete account, role change of one user → <see cref="InvalidateUser"/>;</item>
-    ///   <item>permissions of a role changed → <see cref="InvalidateAll"/>.</item>
+    ///   <item><see cref="InvalidateSession"/>: one session revoked (sign-out).</item>
+    ///   <item><see cref="InvalidateUser"/>: every session of a user (password change, account deleted/locked, role or
+    ///   name/email change).</item>
+    ///   <item><see cref="InvalidateAll"/>: permissions of a role changed, role renamed/deleted.</item>
     /// </list>
-    /// Invalidation uses version numbers read BEFORE loading, so a lookup already in flight cannot store a stale
-    /// result. A dead session (null) is never cached. With several API instances the cache is per instance: accept a
-    /// delay up to the TTL or broadcast invalidations. Entries are set without <c>Size</c>: do not share a
-    /// <see cref="MemoryCache"/> that has a <c>SizeLimit</c>.
+    /// All three increment ONE generation counter (a field: monotonic, never evicted) and every entry stores the
+    /// generation read before its load started, so a load in flight during an invalidation writes an entry that is
+    /// already stale. Writes are rare, so dropping a few seconds of cache on each one costs almost nothing, and no
+    /// evicted version number can ever "match again". The three names stay separate to state intent at call sites
+    /// (and allow narrowing the scope later).
+    /// </para>
+    /// <para>
+    /// Uses its OWN <see cref="MemoryCache"/>, not the app's shared <see cref="IMemoryCache"/>: if the shared cache had a
+    /// <c>SizeLimit</c>, a <c>Set</c> without <c>Size</c> would throw and break authentication of every request.
+    /// </para>
+    /// <para>
+    /// Per process: with several API instances an invalidation only reaches the instance that handled the write;
+    /// others lag up to the lifetime (or add a shared channel such as Redis pub/sub).
+    /// </para>
     /// </summary>
-    public sealed class SessionAccessCache
+    public sealed class SessionAccessCache : IDisposable
     {
-        private const string SessionKeyPrefix = "tqk-auth:session:";
-        private const string SessionVersionKeyPrefix = "tqk-auth:session-version:";
-        private const string UserVersionKeyPrefix = "tqk-auth:user-version:";
+        private sealed record Entry(SessionAccessRecord Access, DateTimeOffset ExpiresAt, long Generation);
 
-        private sealed record Entry(SessionAccessRecord Access, long GlobalVersion, long UserVersion, long SessionVersion);
-
-        private readonly IMemoryCache _cache;
+        private readonly MemoryCache _cache = new(new MemoryCacheOptions());
+        private readonly TimeProvider _clock;
         private readonly IOptions<ApiAuthOptions> _options;
-        private readonly object _versionLock = new();
-        private long _globalVersion;
+        private long _generation;
 
-        public SessionAccessCache(IMemoryCache cache, IOptions<ApiAuthOptions> options)
+        public SessionAccessCache(TimeProvider clock, IOptions<ApiAuthOptions> options)
         {
-            _cache = cache;
+            ArgumentNullException.ThrowIfNull(clock);
+            ArgumentNullException.ThrowIfNull(options);
+            _clock = clock;
             _options = options;
         }
 
-        /// <summary>The cached record of <paramref name="sessionId"/>, or the result of <paramref name="load"/> (cached when not null).</summary>
-        /// <exception cref="InvalidOperationException"><paramref name="load"/> returned a record of another user.</exception>
+        /// <summary>The cached record of <paramref name="sessionId"/> when still valid, otherwise the result of <paramref name="load"/> (cached when not null).</summary>
         public async Task<SessionAccessRecord?> GetAsync(string sessionId, string userId,
             Func<CancellationToken, Task<SessionAccessRecord?>> load, CancellationToken cancellationToken = default)
         {
@@ -45,70 +56,41 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
             ArgumentException.ThrowIfNullOrEmpty(userId);
             ArgumentNullException.ThrowIfNull(load);
 
-            var global = Interlocked.Read(ref _globalVersion);
-            var user = ReadVersion(UserVersionKey(userId));
-            var session = ReadVersion(SessionVersionKey(sessionId));
-            if (_cache.TryGetValue(SessionKey(sessionId), out Entry? hit) && hit is not null
-                && hit.GlobalVersion == global && hit.UserVersion == user && hit.SessionVersion == session
-                && string.Equals(hit.Access.UserId, userId, StringComparison.Ordinal))
+            // Read the generation BEFORE loading: an invalidation during the load makes the stored entry stale at once.
+            var generation = Interlocked.Read(ref _generation);
+
+            if (_cache.TryGetValue(sessionId, out Entry? hit) && hit is not null
+                && string.Equals(hit.Access.UserId, userId, StringComparison.Ordinal)
+                && hit.Generation == generation
+                && hit.ExpiresAt > _clock.GetUtcNow())
+            {
                 return hit.Access;
+            }
 
             var access = await load(cancellationToken).ConfigureAwait(false);
-            if (access is null)
+            if (access is null || !string.Equals(access.UserId, userId, StringComparison.Ordinal))
             {
-                _cache.Remove(SessionKey(sessionId));
+                _cache.Remove(sessionId);
+                // A record of another user is treated as a dead session.
                 return null;
             }
-            if (!string.Equals(access.UserId, userId, StringComparison.Ordinal))
-            {
-                _cache.Remove(SessionKey(sessionId));
-                throw new InvalidOperationException("ISessionAccessSource returned a record of another user than the token's user.");
-            }
 
-            _cache.Set(SessionKey(sessionId), new Entry(access, global, user, session), _options.Value.SessionAccessCacheLifetime);
+            var lifetime = _options.Value.SessionAccessCacheLifetime;
+            if (lifetime > TimeSpan.Zero)
+                _cache.Set(sessionId, new Entry(access, _clock.GetUtcNow().Add(lifetime), generation), lifetime);
             return access;
         }
 
-        /// <summary>Makes the cached lookup of one session stale.</summary>
-        public void InvalidateSession(string sessionId)
-        {
-            if (string.IsNullOrEmpty(sessionId))
-                return;
-            BumpVersion(SessionVersionKey(sessionId));
-            _cache.Remove(SessionKey(sessionId));
-        }
+        /// <summary>Drops the result of one session (session just revoked).</summary>
+        public void InvalidateSession(string sessionId) => InvalidateAll();
 
-        /// <summary>Makes every cached lookup of <paramref name="userId"/> stale.</summary>
-        public void InvalidateUser(string userId)
-        {
-            if (!string.IsNullOrEmpty(userId))
-                BumpVersion(UserVersionKey(userId));
-        }
+        /// <summary>Drops the results of every session of a user.</summary>
+        public void InvalidateUser(string userId) => InvalidateAll();
 
-        /// <summary>Makes every cached lookup stale.</summary>
-        public void InvalidateAll() => Interlocked.Increment(ref _globalVersion);
+        /// <summary>Drops every result.</summary>
+        public void InvalidateAll() => Interlocked.Increment(ref _generation);
 
-        private long ReadVersion(string key) => _cache.TryGetValue(key, out long version) ? version : 0;
-
-        private void BumpVersion(string key)
-        {
-            lock (_versionLock)
-            {
-                // Outlives the entry TTL many times so an old entry cannot "come back" when the version falls out.
-                var lifetime = _options.Value.SessionAccessCacheLifetime;
-                var keep = lifetime > TimeSpan.Zero ? lifetime * 120 : TimeSpan.FromHours(1);
-                _cache.Set(key, ReadVersion(key) + 1, new MemoryCacheEntryOptions
-                {
-                    AbsoluteExpirationRelativeToNow = keep,
-                    Priority = CacheItemPriority.NeverRemove,
-                });
-            }
-        }
-
-        private static string SessionKey(string sessionId) => SessionKeyPrefix + sessionId;
-
-        private static string SessionVersionKey(string sessionId) => SessionVersionKeyPrefix + sessionId;
-
-        private static string UserVersionKey(string userId) => UserVersionKeyPrefix + userId;
+        /// <inheritdoc />
+        public void Dispose() => _cache.Dispose();
     }
 }
