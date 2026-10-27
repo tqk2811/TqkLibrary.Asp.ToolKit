@@ -1,5 +1,7 @@
 # TqkLibrary.Asp.ToolKit
 
+Tiếng Việt: [README-vi.md](README-vi.md) (hướng dẫn đầy đủ).
+
 ## TqkLibrary.Asp.ToolKit.Caching
 
 In-process stale-while-refresh caches for shared, read-heavy data, invalidated by groups that the app names with
@@ -21,7 +23,8 @@ public sealed class NewsCache
     public KeyedStaleWhileRefreshCache<int, IReadOnlyList<NewsItem>> Latest { get; }
 }
 
-// Read: the loader must fetch inside the lambda and use the token it receives.
+// Read: the loader must fetch inside the lambda, use the token it receives AND enforce its own timeout
+// (the first load has no internal timeout and holds the lock for every caller without an old value).
 var items = await newsCache.Latest.GetAsync(10, ct => repository.GetLatestAsync(10, ct));
 
 // Write path, after the save succeeded:
@@ -37,6 +40,8 @@ builder.Services.AddTqkCacheInvalidationSender<CacheGroup>(o =>
     o.TargetUrl = "http://localhost:5000/_internal/cache/invalidate";
     o.Key = builder.Configuration["Caching:InternalKey"]!;
 });
+// A batch still waiting for the debounce window or a retry when the application stops is dropped;
+// the receiving cache then expires by TTL.
 
 // Receiver (process that caches); loopback only, key protected, 404 otherwise
 builder.Services.AddTqkCacheInvalidationEndpoint<CacheGroup>(o => o.Key = builder.Configuration["Caching:InternalKey"]);
@@ -57,16 +62,23 @@ Implement `IAuthApiClient` on top of your API client:
 ```csharp
 public sealed class MyAuthApiClient(IMyApi api) : IAuthApiClient
 {
+    // refresh / me rejected by the API (401/403) MUST throw SessionExpiredException; any other exception is
+    // treated as transient and the user is NOT signed out.
     public async Task<AuthTokenPair> RefreshAsync(string refreshToken, CancellationToken ct)
     {
-        try { return Map(await api.RefreshAsync(refreshToken, ct)); }
-        catch (MyApiException ex) when (ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
-        {
-            throw new SessionExpiredException("Session ended.", ex);   // anything else = transient, no sign-out
-        }
+        using var response = await api.RefreshAsync(refreshToken, ct);   // returns HttpResponseMessage
+        response.ThrowIfSessionRejected();                               // 401/403 -> SessionExpiredException
+        response.EnsureSuccessStatusCode();
+        return await ReadTokensAsync(response, ct);
     }
 
-    public async Task<CurrentUserInfo> GetCurrentUserAsync(CancellationToken ct) => Map(await api.GetMeAsync(ct));
+    public async Task<CurrentUserInfo> GetCurrentUserAsync(CancellationToken ct)
+    {
+        using var response = await api.GetMeAsync(ct);
+        response.ThrowIfSessionRejected();
+        response.EnsureSuccessStatusCode();
+        return await ReadUserAsync(response, ct);
+    }
 
     public Task LogoutAsync(CancellationToken ct) => api.LogoutAsync(ct);
 }
