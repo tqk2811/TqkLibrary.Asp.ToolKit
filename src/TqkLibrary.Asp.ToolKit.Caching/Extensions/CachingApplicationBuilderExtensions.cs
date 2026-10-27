@@ -4,6 +4,7 @@ using TqkLibrary.Asp.ToolKit.Caching.Remote;
 
 namespace TqkLibrary.Asp.ToolKit.Caching.Extensions
 {
+    /// <summary>Pipeline registration of the caching package.</summary>
     public static class CachingApplicationBuilderExtensions
     {
         /// <summary>

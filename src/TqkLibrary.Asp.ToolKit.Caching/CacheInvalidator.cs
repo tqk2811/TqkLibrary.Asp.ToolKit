@@ -16,6 +16,10 @@ namespace TqkLibrary.Asp.ToolKit.Caching
         private readonly ICacheInvalidationNotifier<TGroup>[] _notifiers;
         private readonly ILogger _logger;
 
+        /// <summary>Creates the invalidator.</summary>
+        /// <param name="registry">Registry whose caches are invalidated locally.</param>
+        /// <param name="notifiers">Notifiers told after the local invalidation (may be empty).</param>
+        /// <param name="loggerFactory">Optional; used to log notifier failures.</param>
         public CacheInvalidator(CacheRegistry<TGroup> registry, IEnumerable<ICacheInvalidationNotifier<TGroup>> notifiers,
             ILoggerFactory? loggerFactory = null)
         {

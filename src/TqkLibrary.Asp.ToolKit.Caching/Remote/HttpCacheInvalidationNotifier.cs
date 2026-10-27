@@ -14,6 +14,8 @@ namespace TqkLibrary.Asp.ToolKit.Caching.Remote
     {
         private readonly Channel<TGroup> _channel;
 
+        /// <summary>Creates the notifier; the queue capacity is read once from <paramref name="options"/>.</summary>
+        /// <param name="options">Sender options (<see cref="CacheInvalidationSenderOptions.QueueCapacity"/>).</param>
         public HttpCacheInvalidationNotifier(IOptions<CacheInvalidationSenderOptions> options)
         {
             ArgumentNullException.ThrowIfNull(options);

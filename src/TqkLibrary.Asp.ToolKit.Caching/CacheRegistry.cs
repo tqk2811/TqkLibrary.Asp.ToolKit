@@ -20,6 +20,9 @@ namespace TqkLibrary.Asp.ToolKit.Caching
         private readonly object _gate = new();
         private readonly Dictionary<TGroup, List<IInvalidatableCache>> _groups = new();
 
+        /// <summary>Creates the registry.</summary>
+        /// <param name="timeProvider">Clock handed to every cache created through this registry.</param>
+        /// <param name="loggerFactory">Optional; used for registry and cache warnings.</param>
         public CacheRegistry(TimeProvider timeProvider, ILoggerFactory? loggerFactory = null)
         {
             ArgumentNullException.ThrowIfNull(timeProvider);

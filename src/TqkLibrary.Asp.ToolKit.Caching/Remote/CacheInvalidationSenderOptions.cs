@@ -18,11 +18,26 @@ namespace TqkLibrary.Asp.ToolKit.Caching.Remote
         /// <summary>Timeout of one HTTP attempt.</summary>
         public TimeSpan Timeout { get; set; } = TimeSpan.FromSeconds(5);
 
-        /// <summary>Delays between retries of a failed call (transport error or non-success status other than 401/403/404).</summary>
-        public IList<TimeSpan> RetryDelays { get; set; } = new List<TimeSpan>
-        {
+        /// <summary>
+        /// Delays between retries of a failed call (transport error or non-success status other than 401/403/404).
+        /// <see langword="null"/> (the default) means <see cref="DefaultRetryDelays"/>. The default lives outside the
+        /// property on purpose: the configuration binder APPENDS configured elements to any non-null collection or array
+        /// (verified for arrays, <c>IList</c>, <c>IReadOnlyList</c> and <c>IEnumerable</c>), so a property pre-filled with
+        /// defaults can never be replaced from configuration. A configured list therefore replaces the defaults.
+        /// To disable retries set an empty array in code (<c>o.RetryDelays = [];</c>); the binder ignores an empty
+        /// configuration section, so configuration alone cannot express that. Read the effective value through
+        /// <see cref="EffectiveRetryDelays"/>.
+        /// </summary>
+        public TimeSpan[]? RetryDelays { get; set; }
+
+        /// <summary>Retry delays used when <see cref="RetryDelays"/> is <see langword="null"/>.</summary>
+        public static IReadOnlyList<TimeSpan> DefaultRetryDelays { get; } =
+        [
             TimeSpan.FromMilliseconds(500), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2),
-        };
+        ];
+
+        /// <summary><see cref="RetryDelays"/> when set, otherwise <see cref="DefaultRetryDelays"/>.</summary>
+        public IReadOnlyList<TimeSpan> EffectiveRetryDelays => RetryDelays ?? DefaultRetryDelays;
 
         /// <summary>Capacity of the pending queue; when full the oldest group is dropped (it still expires by TTL remotely).</summary>
         public int QueueCapacity { get; set; } = 256;

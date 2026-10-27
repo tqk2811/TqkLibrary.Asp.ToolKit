@@ -21,10 +21,21 @@ namespace TqkLibrary.Asp.ToolKit.Caching.Remote
         /// <summary>Largest accepted request body, in bytes.</summary>
         public int MaxBodyBytes { get; set; } = 4096;
 
-        /// <summary>Headers whose presence means the request came through a proxy/CDN (i.e. from outside).</summary>
-        public IList<string> ForwardingHeaders { get; set; } = new List<string>
-        {
+        /// <summary>
+        /// Headers whose presence means the request came through a proxy/CDN (i.e. from outside).
+        /// <see langword="null"/> (the default) means <see cref="DefaultForwardingHeaders"/>; the default lives outside
+        /// the property because the configuration binder APPENDS to any non-null collection, so a configured list would
+        /// otherwise only extend the defaults. A configured list replaces them.
+        /// </summary>
+        public string[]? ForwardingHeaders { get; set; }
+
+        /// <summary>Headers used when <see cref="ForwardingHeaders"/> is <see langword="null"/>.</summary>
+        public static IReadOnlyList<string> DefaultForwardingHeaders { get; } =
+        [
             "X-Forwarded-For", "Forwarded", "X-Real-IP", "CF-Connecting-IP", "X-Original-For",
-        };
+        ];
+
+        /// <summary><see cref="ForwardingHeaders"/> when set, otherwise <see cref="DefaultForwardingHeaders"/>.</summary>
+        public IReadOnlyList<string> EffectiveForwardingHeaders => ForwardingHeaders ?? DefaultForwardingHeaders;
     }
 }

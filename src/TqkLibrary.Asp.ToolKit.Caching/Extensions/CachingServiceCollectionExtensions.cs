@@ -5,6 +5,7 @@ using TqkLibrary.Asp.ToolKit.Caching.Remote;
 
 namespace TqkLibrary.Asp.ToolKit.Caching.Extensions
 {
+    /// <summary>Service registration of the caching package.</summary>
     public static class CachingServiceCollectionExtensions
     {
         /// <summary>
@@ -33,8 +34,12 @@ namespace TqkLibrary.Asp.ToolKit.Caching.Extensions
             ArgumentNullException.ThrowIfNull(configure);
             services.AddTqkCaching<TGroup>();
             services.Configure(configure);
-            services.TryAddSingleton<HttpCacheInvalidationNotifier<TGroup>>();
-            services.AddSingleton<ICacheInvalidationNotifier<TGroup>>(sp => sp.GetRequiredService<HttpCacheInvalidationNotifier<TGroup>>());
+            // Calling this method twice must not register the notifier twice (it would be notified twice per invalidation).
+            if (!services.Any(d => d.ServiceType == typeof(HttpCacheInvalidationNotifier<TGroup>)))
+            {
+                services.AddSingleton<HttpCacheInvalidationNotifier<TGroup>>();
+                services.AddSingleton<ICacheInvalidationNotifier<TGroup>>(sp => sp.GetRequiredService<HttpCacheInvalidationNotifier<TGroup>>());
+            }
             services.AddHttpClient(HttpCacheInvalidationSender<TGroup>.HttpClientName);
             services.AddHostedService<HttpCacheInvalidationSender<TGroup>>();
             return services;

@@ -7,6 +7,9 @@ namespace TqkLibrary.Asp.ToolKit.Caching
     /// <summary>
     /// Keyed cache: one <see cref="StaleWhileRefreshCache{T}"/> per key (two different keys never wait on each other).
     /// Holds at most <c>maxEntries</c> keys; beyond that the least recently used key is dropped.
+    /// <c>maxEntries</c> is an approximate bound: under parallel load the count can briefly exceed it, because the
+    /// size check and the insert are not atomic. Eviction scans every key (O(n)) on each miss of a new key while the
+    /// cache is full, so keep <c>maxEntries</c> modest.
     /// <see cref="InvalidateAll"/> also stops in-flight loads from writing back (each inner cache has its own version).
     /// The <c>load</c> delegate must read its data inside the lambda for Invalidate to be safe.
     /// </summary>
@@ -27,6 +30,8 @@ namespace TqkLibrary.Asp.ToolKit.Caching
         private readonly TimeSpan _ttl;
         private readonly int _maxEntries;
         private readonly ILogger? _logger;
+        private readonly TimeSpan? _failureHoldFor;
+        private readonly TimeSpan? _maxStaleBackoff;
         private long _tick;
 
         /// <param name="timeProvider">Clock.</param>
@@ -34,8 +39,10 @@ namespace TqkLibrary.Asp.ToolKit.Caching
         /// <param name="maxEntries">Maximum number of keys held (at least 1).</param>
         /// <param name="logger">Optional logger passed to each inner cache.</param>
         /// <param name="comparer">Optional key comparer (for example <see cref="StringComparer.OrdinalIgnoreCase"/>).</param>
+        /// <param name="failureHoldFor">Passed to each inner cache (default <see cref="StaleWhileRefreshCache{T}.FailureHoldFor"/>).</param>
+        /// <param name="maxStaleBackoff">Passed to each inner cache (default <see cref="StaleWhileRefreshCache{T}.MaxStaleBackoff"/>).</param>
         public KeyedStaleWhileRefreshCache(TimeProvider timeProvider, TimeSpan ttl, int maxEntries, ILogger? logger = null,
-            IEqualityComparer<TKey>? comparer = null)
+            IEqualityComparer<TKey>? comparer = null, TimeSpan? failureHoldFor = null, TimeSpan? maxStaleBackoff = null)
         {
             ArgumentNullException.ThrowIfNull(timeProvider);
             ArgumentOutOfRangeException.ThrowIfLessThan(maxEntries, 1);
@@ -44,6 +51,8 @@ namespace TqkLibrary.Asp.ToolKit.Caching
             _ttl = ttl;
             _maxEntries = maxEntries;
             _logger = logger;
+            _failureHoldFor = failureHoldFor;
+            _maxStaleBackoff = maxStaleBackoff;
         }
 
         /// <summary>Number of keys currently held.</summary>
@@ -81,7 +90,7 @@ namespace TqkLibrary.Asp.ToolKit.Caching
                 if (_slots.Count >= _maxEntries)
                     EvictOldest();
                 // LastUsed is set inside the factory so a new slot is not seen as the oldest (0) and evicted at once.
-                slot = _slots.GetOrAdd(key, _ => new Slot(new StaleWhileRefreshCache<T>(_timeProvider, _ttl, _logger))
+                slot = _slots.GetOrAdd(key, _ => new Slot(new StaleWhileRefreshCache<T>(_timeProvider, _ttl, _logger, _failureHoldFor, _maxStaleBackoff))
                 {
                     LastUsed = Interlocked.Increment(ref _tick),
                 });

@@ -38,6 +38,9 @@ namespace TqkLibrary.Asp.ToolKit.Caching.Remote
         private readonly CacheRegistry<TGroup> _registry;
         private readonly IOptionsMonitor<CacheInvalidationEndpointOptions> _options;
 
+        /// <summary>Creates the endpoint.</summary>
+        /// <param name="registry">Registry whose caches are invalidated by incoming requests.</param>
+        /// <param name="options">Endpoint options; the current value is read per request.</param>
         public CacheInvalidationEndpoint(CacheRegistry<TGroup> registry, IOptionsMonitor<CacheInvalidationEndpointOptions> options)
         {
             ArgumentNullException.ThrowIfNull(registry);
@@ -101,7 +104,7 @@ namespace TqkLibrary.Asp.ToolKit.Caching.Remote
 
                 // A reverse proxy on the same machine also shows up as loopback: a forwarding header means the
                 // original request came from outside.
-                foreach (var header in options.ForwardingHeaders)
+                foreach (var header in options.EffectiveForwardingHeaders)
                 {
                     if (context.Request.Headers.ContainsKey(header))
                         return false;

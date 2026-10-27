@@ -23,6 +23,9 @@ namespace TqkLibrary.Asp.ToolKit.Caching
     ///   <item><b>The <c>load</c> delegate must read its data inside the lambda</b>, not capture a precomputed value;
     ///   otherwise Invalidate is not safe (the next load writes the old data back).</item>
     ///   <item>The value is shared by every caller: never mutate it.</item>
+    ///   <item><b>The <c>load</c> delegate must enforce its own timeout.</b> The first load (and a load after
+    ///   Invalidate) holds the lock and only observes the caller's token; there is no internal timeout, so a load that
+    ///   never completes blocks every caller that has no old value to fall back on.</item>
     /// </list>
     /// </summary>
     /// <typeparam name="T">Cached value type.</typeparam>
@@ -32,16 +35,18 @@ namespace TqkLibrary.Asp.ToolKit.Caching
 
         private sealed record Failure(ExceptionDispatchInfo Error, DateTimeOffset Until, long Version, long Seq);
 
-        /// <summary>How long a load error is remembered for callers queued on the lock.</summary>
+        /// <summary>Default for how long a load error is remembered for callers queued on the lock.</summary>
         public static readonly TimeSpan FailureHoldFor = TimeSpan.FromSeconds(2);
 
-        /// <summary>Upper bound of the extension given to an old value after a failed refresh.</summary>
+        /// <summary>Default upper bound of the extension given to an old value after a failed refresh.</summary>
         public static readonly TimeSpan MaxStaleBackoff = TimeSpan.FromSeconds(10);
 
         private readonly SemaphoreSlim _lock = new(1, 1);
         private readonly TimeProvider _timeProvider;
         private readonly TimeSpan _ttl;
         private readonly ILogger? _logger;
+        private readonly TimeSpan _failureHoldFor;
+        private readonly TimeSpan _maxStaleBackoff;
 
         private volatile Entry? _entry;
         private volatile Failure? _failure;
@@ -51,15 +56,23 @@ namespace TqkLibrary.Asp.ToolKit.Caching
         /// <param name="timeProvider">Clock.</param>
         /// <param name="ttl">How long a value loaded through <see cref="GetAsync"/> is kept.</param>
         /// <param name="logger">Optional; logs a warning when a refresh fails and the old value is served.</param>
-        public StaleWhileRefreshCache(TimeProvider timeProvider, TimeSpan ttl, ILogger? logger = null)
+        /// <param name="failureHoldFor">How long a load error is remembered for callers queued on the lock (default <see cref="FailureHoldFor"/>).</param>
+        /// <param name="maxStaleBackoff">Upper bound of the extension given to an old value after a failed refresh (default <see cref="MaxStaleBackoff"/>).</param>
+        public StaleWhileRefreshCache(TimeProvider timeProvider, TimeSpan ttl, ILogger? logger = null,
+            TimeSpan? failureHoldFor = null, TimeSpan? maxStaleBackoff = null)
         {
             ArgumentNullException.ThrowIfNull(timeProvider);
             _timeProvider = timeProvider;
             _ttl = ttl;
             _logger = logger;
+            _failureHoldFor = failureHoldFor ?? FailureHoldFor;
+            _maxStaleBackoff = maxStaleBackoff ?? MaxStaleBackoff;
         }
 
-        /// <summary>The fresh value, or a new one loaded through <paramref name="load"/> (a thrown error is not cached).</summary>
+        /// <summary>
+        /// The fresh value, or a new one loaded through <paramref name="load"/> (a thrown error is not cached).
+        /// <paramref name="load"/> must apply its own timeout: the first load has no internal one.
+        /// </summary>
         public Task<T> GetAsync(Func<CancellationToken, Task<T>> load, CancellationToken cancellationToken = default)
         {
             ArgumentNullException.ThrowIfNull(load);
@@ -128,7 +141,7 @@ namespace TqkLibrary.Asp.ToolKit.Caching
                         return entry.Value;
                     }
 
-                    _failure = new Failure(ExceptionDispatchInfo.Capture(ex), _timeProvider.GetUtcNow() + FailureHoldFor, version,
+                    _failure = new Failure(ExceptionDispatchInfo.Capture(ex), _timeProvider.GetUtcNow() + _failureHoldFor, version,
                         Interlocked.Increment(ref _failureSeq));
                     throw;
                 }
@@ -169,7 +182,7 @@ namespace TqkLibrary.Asp.ToolKit.Caching
         {
             if (Interlocked.Read(ref _version) != version)
                 return;
-            var extended = entry with { NextRefreshAt = _timeProvider.GetUtcNow() + (_ttl < MaxStaleBackoff ? _ttl : MaxStaleBackoff) };
+            var extended = entry with { NextRefreshAt = _timeProvider.GetUtcNow() + (_ttl < _maxStaleBackoff ? _ttl : _maxStaleBackoff) };
 #pragma warning disable CS0420 // Interlocked has its own memory barrier; ref to a volatile field is safe.
             Interlocked.CompareExchange(ref _entry, extended, entry);
 #pragma warning restore CS0420
