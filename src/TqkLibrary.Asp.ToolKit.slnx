@@ -7,4 +7,5 @@
   <Project Path="TqkLibrary.Asp.ToolKit.ViewModels/TqkLibrary.Asp.ToolKit.ViewModels.csproj" />
   <Project Path="TqkLibrary.Asp.ToolKit.Integration/TqkLibrary.Asp.ToolKit.Integration.csproj" />
   <Project Path="TqkLibrary.Asp.ToolKit.Caching/TqkLibrary.Asp.ToolKit.Caching.csproj" />
+  <Project Path="TqkLibrary.Asp.ToolKit.Auth.Web/TqkLibrary.Asp.ToolKit.Auth.Web.csproj" />
 </Solution>
