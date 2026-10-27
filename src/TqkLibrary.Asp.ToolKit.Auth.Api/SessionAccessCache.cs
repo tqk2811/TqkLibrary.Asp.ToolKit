@@ -81,10 +81,16 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
             return access;
         }
 
-        /// <summary>Drops the result of one session (session just revoked).</summary>
+        /// <summary>
+        /// Drops the result of one session (session just revoked). Currently clears all cached entries (single
+        /// generation counter), not only <paramref name="sessionId"/>.
+        /// </summary>
         public void InvalidateSession(string sessionId) => InvalidateAll();
 
-        /// <summary>Drops the results of every session of a user.</summary>
+        /// <summary>
+        /// Drops the results of every session of a user. Currently clears all cached entries (single generation
+        /// counter), not only those of <paramref name="userId"/>.
+        /// </summary>
         public void InvalidateUser(string userId) => InvalidateAll();
 
         /// <summary>Drops every result.</summary>
