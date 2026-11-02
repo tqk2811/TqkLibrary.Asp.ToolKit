@@ -51,13 +51,15 @@
 		</PackageReference>
 	</ItemGroup>
 
-	<!-- Set version after GitVersion runs (Release only — Debug short-circuits via DisableGitVersionTask above) -->
+	<!-- Set version after GitVersion runs: the tagged commit (vM.N.P) builds exactly M.N.P, later commits build
+	     M.N.P-dev.<commits since tag> so they never collide with a release (Release only — Debug short-circuits via DisableGitVersionTask above) -->
 	<Target Name="SetVersionFromGitVersion" AfterTargets="GetVersion" Condition="'$(DisableGitVersionTask)' != 'true'">
 		<PropertyGroup>
-			<Version>$(GitVersion_Major).$(GitVersion_Minor).$(GitVersion_CommitsSinceVersionSource)</Version>
+			<Version>$(GitVersion_MajorMinorPatch)</Version>
+			<Version Condition="'$(GitVersion_CommitsSinceVersionSource)' != '0'">$(GitVersion_MajorMinorPatch)-dev.$(GitVersion_CommitsSinceVersionSource)</Version>
 			<PackageVersion>$(Version)</PackageVersion>
 			<AssemblyVersion>$(GitVersion_Major).$(GitVersion_Minor).0.0</AssemblyVersion>
-			<FileVersion>$(GitVersion_Major).$(GitVersion_Minor).$(GitVersion_CommitsSinceVersionSource).0</FileVersion>
+			<FileVersion>$(GitVersion_MajorMinorPatch).0</FileVersion>
 			<InformationalVersion>$(Version)</InformationalVersion>
 		</PropertyGroup>
 		<PropertyGroup Condition="Exists('$(MSBuildProjectDirectory)\$(MSBuildProjectName).nuspec')">

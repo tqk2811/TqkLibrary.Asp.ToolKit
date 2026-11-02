@@ -427,3 +427,16 @@ var result = await ticket.Completion;      // ticket.QueuePosition cho biết v�
 | Gọi `registry.Create`/`CreateKeyed` theo request | Rò rỉ bộ nhớ (registry giữ tham chiếu mãi) | Tạo một lần trong singleton; registry cảnh báo khi một group có hơn 100 cache |
 | Đặt `UseTqkCacheInvalidationEndpoint` sau `UseForwardedHeaders` / HTTPS redirect | Địa chỉ nguồn bị đổi hoặc response bị viết lại, endpoint từ chối | Đặt endpoint trước các middleware đó |
 | Gọi `AddTqkWebAuth` với `configure` có side-effect | Side-effect chạy hai lần | Delegate chỉ được đụng tới đối tượng options |
+
+## Phát hành
+
+Mỗi bản phát hành là một tag `vM.N.P` gắn trên commit của `master`; CI sẽ push toàn bộ package lên nuget.org.
+
+```
+git tag v1.2.3
+git push origin v1.2.3      # kích hoạt .github/workflows/release.yml
+```
+
+Tag phải lớn hơn version cao nhất đang có trên nuget.org. Commit sau tag build ra `M.N.P-dev.<số commit kể từ tag>`.
+
+Cấu hình một lần trên nuget.org (NuGet Trusted Publishing, không cần secret API key): vào tài khoản `tqk2811`, thêm trusted publishing policy với repository owner `tqk2811`, repository `TqkLibrary.Asp.ToolKit`, workflow file `release.yml`, chọn các package của repo này.

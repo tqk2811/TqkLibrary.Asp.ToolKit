@@ -1,6 +1,5 @@
-mode: ManualDeployment
+deployment-mode: ManualDeployment
 tag-prefix: 'v'
-assembly-versioning-scheme: MajorMinorPatchTag
 branches:
   master:
     regex: ^master$
@@ -8,3 +7,8 @@ branches:
   main:
     regex: ^main$
     increment: None
+  unknown:
+    regex: ^(?!master$|main$).+
+    increment: None
+    source-branches: [master, main]
+    label: dev
