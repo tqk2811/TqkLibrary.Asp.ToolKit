@@ -1,14 +1,14 @@
 namespace TqkLibrary.Asp.ToolKit.Queue.Enums;
 
-/// <summary>Kết quả xét một việc đang chờ có được chạy ngay không.</summary>
+/// <summary>Result of evaluating whether a waiting item may start now.</summary>
 public enum AdmissionKind
 {
-    /// <summary>Chạy ngay.</summary>
+    /// <summary>Start now.</summary>
     Start,
 
-    /// <summary>Chưa chạy được; xét lại khi có việc khác kết thúc hoặc có việc mới vào hàng.</summary>
+    /// <summary>Cannot start yet; re-evaluated when other work finishes or new work enters the queue.</summary>
     Wait,
 
-    /// <summary>Chưa chạy được vì lý do thời gian (giãn nhịp, tạm dừng sau 429); xét lại sau một khoảng.</summary>
+    /// <summary>Cannot start yet for a time-based reason (pacing, pause after a 429); re-evaluated after a delay.</summary>
     Delay,
 }

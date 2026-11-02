@@ -3,8 +3,8 @@ using TqkLibrary.Asp.ToolKit.Queue.Enums;
 namespace TqkLibrary.Asp.ToolKit.Queue.Models;
 
 /// <summary>
-/// Quyết định của <see cref="Interfaces.IAdmissionPolicy{TItem}"/> cho một việc đang chờ.
-/// <see cref="RetryAfter"/> chỉ có nghĩa khi <see cref="Kind"/> là <see cref="AdmissionKind.Delay"/>.
+/// Decision of <see cref="Interfaces.IAdmissionPolicy{TItem}"/> for a waiting item.
+/// <see cref="RetryAfter"/> is meaningful only when <see cref="Kind"/> is <see cref="AdmissionKind.Delay"/>.
 /// </summary>
 public readonly record struct AdmissionDecision(AdmissionKind Kind, TimeSpan RetryAfter)
 {

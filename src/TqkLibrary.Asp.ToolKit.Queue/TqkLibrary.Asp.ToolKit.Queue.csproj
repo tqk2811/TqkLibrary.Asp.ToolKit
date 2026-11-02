@@ -3,8 +3,8 @@
 	<Import Project="..\ProjectBuildProperties.targets" />
 
 	<ItemGroup>
-		<!-- AsyncContext: luồng điều phối có SynchronizationContext một luồng, nên mọi continuation của
-		     vòng lặp và của phần vỏ quanh mỗi việc quay về đúng luồng đó (danh sách chờ + bộ đếm không cần khoá). -->
+		<!-- AsyncContext: the dispatcher thread has a single-threaded SynchronizationContext, so every continuation of the
+		     loop and of the wrapper around each work item returns to that thread (waiting lists + counters need no locking). -->
 		<PackageReference Include="Nito.AsyncEx.Context" />
 	</ItemGroup>
 

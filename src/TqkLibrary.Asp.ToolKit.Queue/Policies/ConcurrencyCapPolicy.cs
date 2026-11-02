@@ -4,13 +4,13 @@ using TqkLibrary.Asp.ToolKit.Queue.Models;
 namespace TqkLibrary.Asp.ToolKit.Queue.Policies;
 
 /// <summary>
-/// Nhiều trần song song chồng nhau (theo nhà cung cấp, theo khách hàng, theo loại việc...): việc chỉ chạy khi lọt
-/// MỌI trần mà <c>rules</c> trả cho nó. Bộ đếm là <see cref="Dictionary{TKey,TValue}"/> thường vì chỉ luồng điều
-/// phối của hàng đợi gọi tới; khoá về 0 thì bị xoá ngay nên bộ nhớ chỉ tỉ lệ với số khoá đang có việc chạy.
+/// Several stacked concurrency caps (per provider, per customer, per work type...): work starts only when it passes
+/// ALL caps that <c>rules</c> returns for it. The counter is a plain <see cref="Dictionary{TKey,TValue}"/> because only the queue's
+/// dispatcher thread calls in; a key that drops to 0 is removed immediately, so memory is proportional to the number of keys with running work.
 /// <para>
-/// <c>rules</c> được đọc lại mỗi lần xét nên <see cref="CapRule.Max"/> lấy từ cấu hình sống được. Tập khoá đã tăng
-/// được chụp vào biên nhận lúc bắt đầu, nên lúc kết thúc nhả đúng khoá đó dù luật đã đổi. Một việc không được trả
-/// hai luật trùng khoá.
+/// <c>rules</c> is re-read on every evaluation, so <see cref="CapRule.Max"/> can come from live configuration. The set of keys already incremented is
+/// captured into the receipt at start, so on finish exactly those keys are released even if the rules changed. A work item must not be
+/// given two rules with the same key.
 /// </para>
 /// </summary>
 public sealed class ConcurrencyCapPolicy<TItem> : IAdmissionPolicy<TItem>
@@ -24,7 +24,7 @@ public sealed class ConcurrencyCapPolicy<TItem> : IAdmissionPolicy<TItem>
         _rules = rules;
     }
 
-    /// <summary>Số khoá đang có việc chạy (để theo dõi rò bộ đếm). Chỉ chính xác khi đọc trên luồng điều phối hoặc lúc hàng đợi rảnh.</summary>
+    /// <summary>Number of keys with running work (to monitor counter leaks). Accurate only when read on the dispatcher thread or while the queue is idle.</summary>
     public int TrackedKeyCount => _running.Count;
 
     public AdmissionDecision CanStart(TItem item, bool isPriority)
@@ -40,7 +40,7 @@ public sealed class ConcurrencyCapPolicy<TItem> : IAdmissionPolicy<TItem>
 
     public object? OnStarted(TItem item, bool isPriority)
     {
-        // Chụp khoá trước rồi mới tăng: _rules ném giữa chừng thì chưa có bộ đếm nào bị đụng.
+        // Capture the keys first, then increment: if _rules throws midway, no counter has been touched.
         var keys = _rules(item).Select(rule => rule.Key ?? throw new InvalidOperationException("CapRule.Key is null.")).ToArray();
         foreach (var key in keys)
             _running[key] = _running.GetValueOrDefault(key) + 1;

@@ -11,7 +11,7 @@ using Xunit;
 
 namespace TqkLibrary.Asp.ToolKit.Queue.Tests;
 
-/// <summary>Giới hạn tốc độ bắt đầu việc, kiểm bằng đồng hồ giả nên không phải chờ thật.</summary>
+/// <summary>Rate limit on work starts, checked with a fake clock so there is no real waiting.</summary>
 public sealed class RateLimitPolicyTests
 {
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
@@ -22,7 +22,7 @@ public sealed class RateLimitPolicyTests
 
     private static RateLimitPolicy<Job> New(FakeTimeProvider clock, RateLimitOptions options) => new(options, clock);
 
-    /// <summary>Xét rồi, nếu được chạy thì ghi mốc bắt đầu như hàng đợi làm.</summary>
+    /// <summary>Evaluates, and if allowed to start, records the start mark the way the queue does.</summary>
     private static AdmissionDecision TryStart(RateLimitPolicy<Job> policy, bool isPriority = false)
     {
         var decision = policy.CanStart(Item, isPriority);
@@ -63,14 +63,14 @@ public sealed class RateLimitPolicyTests
         clock.Advance(TimeSpan.FromSeconds(10));
         Assert.Equal(AdmissionKind.Start, TryStart(policy).Kind);    // t=20
 
-        var blocked = TryStart(policy);                              // mốc cũ nhất t=0 ra khỏi cửa sổ lúc t=120
+        var blocked = TryStart(policy);                              // the oldest mark t=0 leaves the window at t=120
         Assert.Equal(AdmissionKind.Delay, blocked.Kind);
         Assert.Equal(TimeSpan.FromSeconds(100), blocked.RetryAfter);
 
-        clock.Advance(TimeSpan.FromSeconds(100));                    // t=120: mốc t=0 vừa hết hạn
-        Assert.Equal(AdmissionKind.Start, TryStart(policy).Kind);    // mốc mới t=120
+        clock.Advance(TimeSpan.FromSeconds(100));                    // t=120: the mark t=0 has just expired
+        Assert.Equal(AdmissionKind.Start, TryStart(policy).Kind);    // new mark t=120
 
-        // Cửa sổ trượt: giờ còn t=10, t=20, t=120 => lượt kế phải chờ tới khi t=10 ra (t=130).
+        // Sliding window: now holds t=10, t=20, t=120 => the next start must wait until t=10 leaves (t=130).
         var next = TryStart(policy);
         Assert.Equal(AdmissionKind.Delay, next.Kind);
         Assert.Equal(TimeSpan.FromSeconds(10), next.RetryAfter);
@@ -91,7 +91,7 @@ public sealed class RateLimitPolicyTests
         clock.Advance(TimeSpan.FromSeconds(10));
         TryStart(policy);                                            // t=10
 
-        // t=10: MinInterval đòi 10s, cửa sổ đòi 50s (mốc t=0 ra lúc t=60) => 50s.
+        // t=10: MinInterval requires 10s, the window requires 50s (mark t=0 leaves at t=60) => 50s.
         Assert.Equal(TimeSpan.FromSeconds(50), TryStart(policy).RetryAfter);
     }
 
@@ -111,7 +111,7 @@ public sealed class RateLimitPolicyTests
         TryStart(policy);                                            // t=30
         clock.Advance(TimeSpan.FromSeconds(5));                      // t=35
 
-        // MinInterval đòi 25s (tới t=60), cửa sổ chỉ đòi 5s (mốc t=0 ra lúc t=40) => 25s.
+        // MinInterval requires 25s (until t=60), the window requires only 5s (mark t=0 leaves at t=40) => 25s.
         Assert.Equal(TimeSpan.FromSeconds(25), TryStart(policy).RetryAfter);
     }
 
@@ -123,10 +123,10 @@ public sealed class RateLimitPolicyTests
 
         Assert.Equal(AdmissionKind.Start, TryStart(policy).Kind);    // t=0
         clock.Advance(TimeSpan.FromSeconds(10));
-        Assert.Equal(AdmissionKind.Delay, TryStart(policy).Kind);    // việc thường bị chặn
-        Assert.Equal(AdmissionKind.Start, TryStart(policy, isPriority: true).Kind);   // ưu tiên chạy ngay, mốc dời sang t=10
+        Assert.Equal(AdmissionKind.Delay, TryStart(policy).Kind);    // normal work is blocked
+        Assert.Equal(AdmissionKind.Start, TryStart(policy, isPriority: true).Kind);   // priority starts immediately, mark moves to t=10
 
-        // Việc thường phải chờ tính từ mốc của việc ưu tiên (t=10), không phải t=0.
+        // Normal work must wait counted from the priority work's mark (t=10), not t=0.
         Assert.Equal(TimeSpan.FromSeconds(60), TryStart(policy).RetryAfter);
     }
 
@@ -172,8 +172,8 @@ public sealed class RateLimitPolicyTests
     }
 
     /// <summary>
-    /// DispatchQueue hẹn xét lại bằng SemaphoreSlim.WaitAsync(timeout) theo đồng hồ thật, không nhận TimeProvider,
-    /// nên bài tích hợp dùng MinInterval thật rất ngắn thay vì tua đồng hồ giả.
+    /// DispatchQueue schedules re-evaluation with SemaphoreSlim.WaitAsync(timeout) on the real clock and does not accept a TimeProvider,
+    /// so the integration test uses a very short real MinInterval instead of advancing a fake clock.
     /// </summary>
     [Fact]
     public async Task Integration_DispatchQueue_second_job_starts_no_earlier_than_MinInterval()
@@ -201,7 +201,7 @@ public sealed class RateLimitPolicyTests
         await Task.WhenAll(first, second).WaitAsync(Timeout);
 
         var gap = Stopwatch.GetElapsedTime(startTimes["one"], startTimes["two"]);
-        // Trừ chút sai số: mốc của chính sách ghi trước khi thân việc chạy và đọc đồng hồ.
+        // Allow a small tolerance: the policy's mark is recorded before the work body runs and reads the clock.
         Assert.True(gap >= interval - TimeSpan.FromMilliseconds(30), $"Gap was {gap}.");
     }
 }

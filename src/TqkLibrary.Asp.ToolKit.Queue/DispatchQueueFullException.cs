@@ -1,6 +1,6 @@
 namespace TqkLibrary.Asp.ToolKit.Queue;
 
-/// <summary>Hàng chờ của khoá công bằng (vd theo khách hàng) đã đầy, việc mới bị từ chối thay vì xếp hàng vô hạn.</summary>
+/// <summary>The waiting queue of a fairness key (e.g. per customer) is full; the new work is rejected instead of queuing indefinitely.</summary>
 public sealed class DispatchQueueFullException : Exception
 {
     public DispatchQueueFullException(object fairnessKey, int limit)

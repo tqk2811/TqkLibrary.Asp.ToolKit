@@ -7,8 +7,8 @@ using Xunit;
 namespace TqkLibrary.Asp.ToolKit.Queue.Tests;
 
 /// <summary>
-/// Hàng đợi điều phối một luồng: bộ đếm của chính sách không có khoá, nên mọi bài ở đây vừa kiểm hành vi
-/// vừa gián tiếp kiểm điều kiện "chỉ luồng điều phối đụng tới chính sách".
+/// Single-threaded dispatch queue: the policy's counters have no locks, so every test here checks behavior and
+/// also indirectly checks the condition "only the dispatcher thread touches the policy".
 /// </summary>
 public sealed class DispatchQueueTests
 {
@@ -76,7 +76,7 @@ public sealed class DispatchQueueTests
     [Fact]
     public async Task Overlapping_caps_job_must_pass_every_cap()
     {
-        // Trần chung 3, trần mỗi customer 1: Customer "a" có 5 việc nhưng chỉ chạy 1 lúc một.
+        // Global cap 3, per-customer cap 1: customer "a" has 5 items but only 1 runs at a time.
         var policy = new ConcurrencyCapPolicy<Job>(job => [new CapRule("global", 3), new CapRule(("customer", job.Customer), 1)]);
         await using var queue = NewQueue(policy);
         var runningA = 0;
@@ -118,7 +118,7 @@ public sealed class DispatchQueueTests
         gate.SetResult();
         await Task.WhenAll(tickets.Select(t => t.Completion).Append(blocker.Completion)).WaitAsync(Timeout);
 
-        // Customer "b" không phải đứng sau cả ba việc của "a".
+        // Customer "b" does not have to wait behind all three of "a"'s items.
         Assert.True(order.IndexOf("b0") < order.IndexOf("a2"), string.Join(",", order));
     }
 
@@ -134,7 +134,7 @@ public sealed class DispatchQueueTests
         var normalWaiting = queue.Submit(new Job("a"), (_, _) => Task.FromResult(2));
         var priority = queue.Submit(new Job("a"), (_, _) => Task.FromResult(3), isPriority: true);
 
-        // Việc thường thứ hai không được dùng phần dư; việc ưu tiên thì được, dù nộp sau.
+        // The second normal item must not use the surplus; the priority item may, even though it was submitted later.
         Assert.Equal(3, await priority.Completion.WaitAsync(Timeout));
         Assert.False(normalWaiting.Completion.IsCompleted);
 
@@ -196,8 +196,8 @@ public sealed class DispatchQueueTests
         var gate = new TaskCompletionSource();
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        // Chờ việc chặn THẬT SỰ chạy: QueuePosition cũng là null lúc việc còn nằm trong hộp thư chưa được xếp,
-        // nên chờ theo nó thì việc chặn có thể vẫn chiếm chỗ hàng chờ và việc "waiting" bị từ chối nhầm.
+        // Wait for the blocking work to ACTUALLY run: QueuePosition is also null while the item is still in the mailbox, not yet queued,
+        // so waiting on it could leave the blocker occupying the waiting queue and the "waiting" item wrongly rejected.
         var blocker = queue.Submit(new Job("a"), async (_, _) => { started.SetResult(); await gate.Task; return 0; });
         await started.Task.WaitAsync(Timeout);
         var waiting = queue.Submit(new Job("a"), (_, _) => Task.FromResult(1));
@@ -223,7 +223,7 @@ public sealed class DispatchQueueTests
 
         var ticket = queue.Submit(new Job("a"), (_, _) => Task.FromResult(DateTime.UtcNow));
 
-        // Không có sự kiện nào khác đánh thức: chỉ quãng hẹn giờ mới cho việc chạy.
+        // No other event wakes it: only the timed delay lets the work start.
         var startedAt = await ticket.Completion.WaitAsync(Timeout);
         Assert.True(startedAt >= openAt);
     }

@@ -4,15 +4,15 @@ using TqkLibrary.Asp.ToolKit.Queue.Models;
 namespace TqkLibrary.Asp.ToolKit.Queue.Policies;
 
 /// <summary>
-/// Giới hạn tốc độ bắt đầu việc, dùng chung cho mọi việc (toàn cục, không theo khoá): cách nhau tối thiểu
-/// <see cref="RateLimitOptions.MinInterval"/> và/hoặc tối đa <see cref="RateLimitOptions.MaxPerWindow"/> lần trong cửa sổ
-/// trượt <see cref="RateLimitOptions.Window"/>. Bị chặn thì trả <c>Delay</c> đúng quãng còn phải chờ, nên hàng đợi hẹn
-/// xét lại đúng lúc mà không cần ai gọi <c>Wake</c>.
+/// Rate-limits work starts, shared by all work (global, not per key): at least
+/// <see cref="RateLimitOptions.MinInterval"/> apart and/or at most <see cref="RateLimitOptions.MaxPerWindow"/> starts in the sliding
+/// window <see cref="RateLimitOptions.Window"/>. When blocked it returns <c>Delay</c> with exactly the remaining wait, so the queue schedules
+/// the re-evaluation at the right moment without anyone calling <c>Wake</c>.
 /// <para>
-/// Trạng thái là mốc bắt đầu gần nhất và hàng đợi các mốc trong cửa sổ, không khoá vì chỉ luồng điều phối của hàng
-/// đợi gọi tới. Hàng đợi mốc chỉ được nuôi khi <see cref="RateLimitOptions.MaxPerWindow"/> có giá trị, và được tỉa
-/// mỗi lần xét nên bộ nhớ không vượt quá số lần bắt đầu trong một cửa sổ. Kết hợp với <see cref="ConcurrencyCapPolicy{TItem}"/>
-/// qua <see cref="CompositeAdmissionPolicy{TItem}"/>.
+/// State is the most recent start mark and a queue of marks within the window; no locking since only the queue's dispatcher thread
+/// calls in. The mark queue is populated only when <see cref="RateLimitOptions.MaxPerWindow"/> has a value, and is pruned
+/// on every evaluation so memory never exceeds the number of starts in one window. Combine with <see cref="ConcurrencyCapPolicy{TItem}"/>
+/// via <see cref="CompositeAdmissionPolicy{TItem}"/>.
 /// </para>
 /// </summary>
 public sealed class RateLimitPolicy<TItem> : IAdmissionPolicy<TItem>
@@ -22,9 +22,9 @@ public sealed class RateLimitPolicy<TItem> : IAdmissionPolicy<TItem>
     private readonly Queue<DateTimeOffset> _starts = new();
     private DateTimeOffset? _last;
 
-    /// <param name="options">Cấu hình; kiểm hợp lệ ngay ở đây và được chụp lại giá trị, không đọc sống.</param>
-    /// <param name="clock">Đồng hồ; <c>null</c> = <see cref="TimeProvider.System"/>. Truyền đồng hồ giả để test.</param>
-    /// <exception cref="ArgumentOutOfRangeException">MinInterval âm, hoặc MaxPerWindow có giá trị mà nó hay Window không dương.</exception>
+    /// <param name="options">Configuration; validated here and its values are captured, not read live.</param>
+    /// <param name="clock">Clock; <c>null</c> = <see cref="TimeProvider.System"/>. Pass a fake clock in tests.</param>
+    /// <exception cref="ArgumentOutOfRangeException">MinInterval is negative, or MaxPerWindow has a value while it or Window is not positive.</exception>
     public RateLimitPolicy(RateLimitOptions options, TimeProvider? clock = null)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -55,7 +55,7 @@ public sealed class RateLimitPolicy<TItem> : IAdmissionPolicy<TItem>
 
         if (_options.MaxPerWindow is { } max)
         {
-            // Mốc đã ra khỏi cửa sổ (<= now - Window) thì bỏ.
+            // Drop marks that have left the window (<= now - Window).
             while (_starts.Count > 0 && _starts.Peek() <= now - _options.Window)
                 _starts.Dequeue();
             if (_starts.Count >= max)
@@ -71,7 +71,7 @@ public sealed class RateLimitPolicy<TItem> : IAdmissionPolicy<TItem>
 
     public object? OnStarted(TItem item, bool isPriority)
     {
-        // Việc ưu tiên bypass cũng được ghi: nó đã dùng một lượt, việc thường sau đó phải nhường.
+        // Priority work that bypasses is also recorded: it used a slot, so later normal work must yield.
         var now = _clock.GetUtcNow();
         _last = now;
         if (_options.MaxPerWindow is not null)
@@ -81,6 +81,6 @@ public sealed class RateLimitPolicy<TItem> : IAdmissionPolicy<TItem>
 
     public void OnFinished(TItem item, bool isPriority, object? receipt)
     {
-        // Giới hạn tốc độ chỉ tính lúc bắt đầu; không có gì để nhả.
+        // Rate limiting counts only at start; there is nothing to release.
     }
 }

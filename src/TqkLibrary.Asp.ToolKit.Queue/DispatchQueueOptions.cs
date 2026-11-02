@@ -2,27 +2,27 @@ using TqkLibrary.Asp.ToolKit.Queue.Interfaces;
 
 namespace TqkLibrary.Asp.ToolKit.Queue;
 
-/// <summary>Cấu hình của <see cref="DispatchQueue{TItem}"/>.</summary>
+/// <summary>Configuration of <see cref="DispatchQueue{TItem}"/>.</summary>
 public sealed class DispatchQueueOptions<TItem>
 {
-    /// <summary>Chính sách cho chạy; ghép nhiều trần bằng <see cref="Policies.CompositeAdmissionPolicy{TItem}"/>.</summary>
+    /// <summary>Admission policy; combine several caps with <see cref="Policies.CompositeAdmissionPolicy{TItem}"/>.</summary>
     public required IAdmissionPolicy<TItem> Policy { get; init; }
 
     /// <summary>
-    /// Khoá chia lượt công bằng (thường là khách hàng): các khoá được xét xoay vòng, khoá vừa được chạy
-    /// một việc thì xuống cuối vòng. Trả cùng một giá trị cho mọi việc thì thành FIFO thuần.
+    /// Fairness key (usually the customer): keys are evaluated in rotation, and a key that has just started
+    /// one item moves to the end of the rotation. Returning the same value for every item gives plain FIFO.
     /// </summary>
     public required Func<TItem, object> FairnessKey { get; init; }
 
-    /// <summary>Trần số việc THƯỜNG đang chờ của mỗi khoá; vượt thì việc mới bị <see cref="DispatchQueueFullException"/>. <c>null</c> = không giới hạn.</summary>
+    /// <summary>Cap on NORMAL work waiting per key; beyond it new work is rejected with <see cref="DispatchQueueFullException"/>. <c>null</c> = unlimited.</summary>
     public int? MaxPendingPerKey { get; init; }
 
-    /// <summary>Trần riêng cho việc ƯU TIÊN đang chờ của mỗi khoá, để hàng thường đầy không chặn việc ưu tiên. <c>null</c> = không giới hạn.</summary>
+    /// <summary>Separate cap on PRIORITY work waiting per key, so a full normal queue does not block priority work. <c>null</c> = unlimited.</summary>
     public int? MaxPriorityPendingPerKey { get; init; }
 
-    /// <summary>Nhận lỗi ném ra từ chính sách hoặc từ vòng điều phối (đã được nuốt để hàng đợi không chết). Gắn logger vào đây.</summary>
+    /// <summary>Receives errors thrown from the policy or the dispatch loop (swallowed so the queue does not die). Attach a logger here.</summary>
     public Action<Exception>? OnInternalError { get; init; }
 
-    /// <summary>Tên luồng điều phối, để nhìn thấy trong debugger/dump.</summary>
+    /// <summary>Name of the dispatcher thread, visible in the debugger/dumps.</summary>
     public string? Name { get; init; }
 }

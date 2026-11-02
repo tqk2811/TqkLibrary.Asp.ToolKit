@@ -1,23 +1,23 @@
 namespace TqkLibrary.Asp.ToolKit.Queue.Models;
 
 /// <summary>
-/// Cấu hình của <see cref="Policies.RateLimitPolicy{TItem}"/>: giãn nhịp BẮT ĐẦU việc (không giới hạn số việc chạy cùng lúc,
-/// cái đó là việc của <see cref="Policies.ConcurrencyCapPolicy{TItem}"/>). Hai giới hạn dùng được riêng hoặc cùng nhau.
+/// Configuration of <see cref="Policies.RateLimitPolicy{TItem}"/>: paces the START of work (does not limit how many items run at once,
+/// that is the job of <see cref="Policies.ConcurrencyCapPolicy{TItem}"/>). The two limits can be used alone or together.
 /// </summary>
 public sealed class RateLimitOptions
 {
-    /// <summary>Khoảng cách tối thiểu giữa hai lần bắt đầu việc. <see cref="TimeSpan.Zero"/> = tắt.</summary>
+    /// <summary>Minimum interval between two starts. <see cref="TimeSpan.Zero"/> = disabled.</summary>
     public TimeSpan MinInterval { get; init; } = TimeSpan.Zero;
 
-    /// <summary>Số lần bắt đầu tối đa trong mọi cửa sổ trượt dài <see cref="Window"/>. <c>null</c> = tắt.</summary>
+    /// <summary>Maximum number of starts in any sliding window of length <see cref="Window"/>. <c>null</c> = disabled.</summary>
     public int? MaxPerWindow { get; init; }
 
-    /// <summary>Độ dài cửa sổ trượt của <see cref="MaxPerWindow"/>; phải dương khi <see cref="MaxPerWindow"/> có giá trị.</summary>
+    /// <summary>Length of the sliding window of <see cref="MaxPerWindow"/>; must be positive when <see cref="MaxPerWindow"/> has a value.</summary>
     public TimeSpan Window { get; init; } = TimeSpan.Zero;
 
     /// <summary>
-    /// <c>true</c> (mặc định): việc ưu tiên luôn được chạy, bỏ qua giới hạn, nhưng vẫn được ghi vào mốc/cửa sổ
-    /// để việc thường sau đó nhường chỗ. <c>false</c>: việc ưu tiên cũng bị giới hạn như việc thường.
+    /// <c>true</c> (default): priority work always starts, ignoring the limits, but is still recorded in the last-start mark/window
+    /// so normal work afterwards yields. <c>false</c>: priority work is limited like normal work.
     /// </summary>
     public bool PriorityBypass { get; init; } = true;
 }

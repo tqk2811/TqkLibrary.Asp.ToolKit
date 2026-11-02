@@ -6,13 +6,13 @@ namespace TqkLibrary.Asp.ToolKit.Integration
     public static class IntegrationExtensions
     {
         /// <summary>
-        /// Chuyển <see cref="CookieContainer"/> sang danh sách <see cref="CookieModel"/> để lưu trữ.
+        /// Converts a <see cref="CookieContainer"/> to a list of <see cref="CookieModel"/> for storage.
         /// </summary>
         public static IReadOnlyList<CookieModel> ToCookieModels(this CookieContainer container)
             => container.GetAllCookies().ToCookieModels();
 
         /// <summary>
-        /// Chuyển <see cref="CookieCollection"/> sang danh sách <see cref="CookieModel"/> để lưu trữ.
+        /// Converts a <see cref="CookieCollection"/> to a list of <see cref="CookieModel"/> for storage.
         /// </summary>
         public static IReadOnlyList<CookieModel> ToCookieModels(this CookieCollection cookies)
         {
@@ -23,7 +23,7 @@ namespace TqkLibrary.Asp.ToolKit.Integration
         }
 
         /// <summary>
-        /// Nạp danh sách <see cref="CookieModel"/> vào <see cref="CookieContainer"/> mới.
+        /// Loads a list of <see cref="CookieModel"/> into a new <see cref="CookieContainer"/>.
         /// </summary>
         public static CookieContainer ToCookieContainer(this IEnumerable<CookieModel> models)
         {
@@ -33,7 +33,7 @@ namespace TqkLibrary.Asp.ToolKit.Integration
         }
 
         /// <summary>
-        /// Nạp danh sách <see cref="CookieModel"/> vào <see cref="CookieContainer"/> hiện có.
+        /// Loads a list of <see cref="CookieModel"/> into an existing <see cref="CookieContainer"/>.
         /// </summary>
         public static void LoadCookies(this CookieContainer container, IEnumerable<CookieModel> models)
         {

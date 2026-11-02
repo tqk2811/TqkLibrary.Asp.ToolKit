@@ -5,9 +5,9 @@ using TqkLibrary.Asp.ToolKit.Queue.Models;
 namespace TqkLibrary.Asp.ToolKit.Queue.Policies;
 
 /// <summary>
-/// Ghép nhiều chính sách: việc chỉ chạy khi MỌI chính sách cho chạy. Khi bị chặn, có chính sách nào bảo
-/// <c>Wait</c> (chờ sự kiện) thì kết quả là <c>Wait</c>; nếu mọi chính sách chặn đều là <c>Delay</c> thì lấy quãng
-/// dài nhất, vì việc phải chờ tới khi chính sách chặn lâu nhất mở.
+/// Combines several policies: work starts only when ALL policies allow it. When blocked, if any policy says
+/// <c>Wait</c> (wait for an event) the result is <c>Wait</c>; if every blocking policy returns <c>Delay</c>, the longest
+/// delay is used, since the work must wait until the longest-blocking policy opens.
 /// </summary>
 public sealed class CompositeAdmissionPolicy<TItem> : IAdmissionPolicy<TItem>
 {
@@ -54,7 +54,7 @@ public sealed class CompositeAdmissionPolicy<TItem> : IAdmissionPolicy<TItem>
             }
             catch
             {
-                // Giữ hợp đồng nguyên tử: chính sách sau ném thì nhả các chính sách trước đã giữ.
+                // Keep the atomic contract: if a later policy throws, release the earlier policies that already held.
                 for (var j = i - 1; j >= 0; j--)
                 {
                     try
@@ -63,7 +63,7 @@ public sealed class CompositeAdmissionPolicy<TItem> : IAdmissionPolicy<TItem>
                     }
                     catch
                     {
-                        // Lỗi gốc quan trọng hơn; lỗi lúc hoàn tác không được che nó.
+                        // The original error matters more; an error during rollback must not mask it.
                     }
                 }
 
@@ -76,10 +76,10 @@ public sealed class CompositeAdmissionPolicy<TItem> : IAdmissionPolicy<TItem>
 
     public void OnFinished(TItem item, bool isPriority, object? receipt)
     {
-        // Biên nhận luôn là mảng do OnStarted ở trên tạo; khác đi là bên gọi sai hợp đồng.
+        // The receipt is always the array created by OnStarted above; anything else means the caller broke the contract.
         var receipts = receipt as object?[];
 
-        // Chính sách nào ném cũng không được làm các chính sách sau mất lượt nhả chỗ.
+        // A throwing policy must not make later policies miss their release.
         List<Exception>? errors = null;
         for (var i = 0; i < _policies.Length; i++)
         {

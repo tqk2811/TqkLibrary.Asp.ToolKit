@@ -1,8 +1,8 @@
 namespace TqkLibrary.Asp.ToolKit.Queue;
 
 /// <summary>
-/// Một việc trong <see cref="DispatchQueue{TItem}"/>, không phụ thuộc kiểu kết quả để hàng đợi giữ chung một danh sách.
-/// Các field điều phối (<see cref="FairnessKey"/>, <see cref="Node"/>) chỉ luồng điều phối đọc/ghi.
+/// An item in <see cref="DispatchQueue{TItem}"/>, independent of the result type so the queue can keep a single shared list.
+/// The dispatch fields (<see cref="FairnessKey"/>, <see cref="Node"/>) are read/written only by the dispatcher thread.
 /// </summary>
 internal abstract class DispatchEntry<TItem>
 {
@@ -25,16 +25,16 @@ internal abstract class DispatchEntry<TItem>
 
     public LinkedListNode<DispatchEntry<TItem>>? Node { get; set; }
 
-    /// <summary>Biên nhận chính sách trả lúc cho chạy, trả lại nguyên vẹn lúc việc kết thúc.</summary>
+    /// <summary>Receipt returned by the policy when the item was started; handed back unchanged when the item finishes.</summary>
     public object? Receipt { get; set; }
 
-    /// <summary>Gắn lúc nộp: người gọi huỷ khi việc còn chờ thì đánh thức luồng điều phối để gỡ việc ngay.</summary>
+    /// <summary>Attached on submit: when the caller cancels while the item is waiting, wakes the dispatcher thread so the item is removed immediately.</summary>
     public void SetCancelRegistration(CancellationTokenRegistration registration) => _cancelRegistration = registration;
 
-    /// <summary>Gỡ đăng ký huỷ — gọi khi việc rời hàng chờ (được chạy hoặc kết thúc), không thì callback sống tới hết đời token của người gọi.</summary>
+    /// <summary>Removes the cancellation registration - call when the item leaves the waiting queue (started or finished); otherwise the callback lives as long as the caller's token.</summary>
     public void ReleaseCancelRegistration() => _cancelRegistration.Dispose();
 
-    /// <summary>Chạy việc thật trên thread pool rồi đặt kết quả cho vé. Không bao giờ ném.</summary>
+    /// <summary>Runs the actual work on the thread pool, then sets the ticket's result. Never throws.</summary>
     public abstract Task RunAsync(CancellationToken token);
 
     public abstract void Cancel();

@@ -1,12 +1,12 @@
 namespace TqkLibrary.Asp.ToolKit.Queue;
 
-/// <summary>Việc có kết quả <typeparamref name="TResult"/>; vé trả cho người gọi bọc <see cref="TaskCompletionSource{TResult}"/> của nó.</summary>
+/// <summary>Work with result <typeparamref name="TResult"/>; the ticket returned to the caller wraps its <see cref="TaskCompletionSource{TResult}"/>.</summary>
 internal sealed class DispatchEntry<TItem, TResult> : DispatchEntry<TItem>
 {
     private readonly Func<TItem, CancellationToken, Task<TResult>> _work;
 
-    // RunContinuationsAsynchronously: không có cờ này thì TrySetResult chạy luôn code của người gọi
-    // (ghi response, ghi sổ...) ngay trên luồng điều phối và chặn cả hàng đợi.
+    // RunContinuationsAsynchronously: without this flag, TrySetResult would run the caller's code
+    // (writing the response, bookkeeping...) right on the dispatcher thread and block the whole queue.
     private readonly TaskCompletionSource<TResult> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public DispatchEntry(TItem item, Func<TItem, CancellationToken, Task<TResult>> work, bool isPriority, CancellationToken callerToken)
@@ -22,15 +22,15 @@ internal sealed class DispatchEntry<TItem, TResult> : DispatchEntry<TItem>
     {
         try
         {
-            // Task.Run: việc thật (gọi HTTP, parse, stream) chạy trên thread pool. Gọi thẳng thì mọi continuation
-            // không ConfigureAwait(false) bên trong việc sẽ post về luồng điều phối và dồn cả hàng đợi vào một luồng.
-            // Phần await này vẫn bắt SynchronizationContext của luồng điều phối nên quay về đúng luồng đó.
+            // Task.Run: the actual work (HTTP call, parse, stream) runs on the thread pool. Called directly, every continuation
+            // without ConfigureAwait(false) inside the work would post back to the dispatcher thread and funnel the whole queue onto one thread.
+            // This await still captures the dispatcher thread's SynchronizationContext, so it returns to that thread.
             var result = await Task.Run(() => _work(Item, token));
             _completion.TrySetResult(result);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
-            // Token truyền vào là của nguồn huỷ ghép (sẽ bị dispose); người gọi chờ thấy chính token của họ.
+            // The token passed in belongs to the linked cancellation source (which will be disposed); the caller waiting sees its own token.
             _completion.TrySetCanceled(CallerToken.IsCancellationRequested ? CallerToken : token);
         }
         catch (Exception ex)

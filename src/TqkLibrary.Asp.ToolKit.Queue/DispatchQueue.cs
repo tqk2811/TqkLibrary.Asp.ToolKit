@@ -7,28 +7,28 @@ using Nito.AsyncEx;
 namespace TqkLibrary.Asp.ToolKit.Queue;
 
 /// <summary>
-/// Hàng đợi có một luồng điều phối riêng (luồng <c>LongRunning</c> chạy <see cref="AsyncContext"/>):
+/// The queue has its own dispatcher thread (a <c>LongRunning</c> thread running <see cref="AsyncContext"/>):
 /// <list type="number">
-/// <item>Bên ngoài <see cref="Submit"/> đẩy việc vào hộp thư (<see cref="ConcurrentQueue{T}"/>) — chỗ duy nhất có đụng độ giữa các luồng.</item>
-/// <item>Luồng điều phối chuyển việc từ hộp thư sang hàng chờ theo khoá công bằng, xét từng việc với
-/// <see cref="Interfaces.IAdmissionPolicy{TItem}"/>, việc đủ điều kiện thì gỡ khỏi hàng chờ, đưa vào tập đang chạy và cho chạy.</item>
-/// <item>Việc chạy xong: phần vỏ quay về luồng điều phối (nhờ SynchronizationContext), gỡ khỏi tập đang chạy, báo chính sách nhả chỗ, đánh thức để quét lại.</item>
+/// <item>Outside, <see cref="Submit"/> pushes work into a mailbox (<see cref="ConcurrentQueue{T}"/>) - the only place where threads contend.</item>
+/// <item>The dispatcher thread moves work from the mailbox into the waiting queues by fairness key, evaluating each item with
+/// <see cref="Interfaces.IAdmissionPolicy{TItem}"/>; eligible items are removed from the waiting queue, added to the running set and started.</item>
+/// <item>When work finishes: the wrapper returns to the dispatcher thread (via SynchronizationContext), removes it from the running set, tells the policy to release its slot, and wakes up to rescan.</item>
 /// </list>
-/// Hàng chờ, tập đang chạy và trạng thái của chính sách chỉ luồng điều phối đụng tới nên không cần khoá.
-/// Việc ưu tiên được xét trước và có thể dùng phần dư chính sách dành riêng; không giành chỗ của việc đang chạy.
-/// Hàng đợi sở hữu luồng điều phối và nguồn huỷ nội bộ, giải phóng ở <see cref="DisposeAsync"/>;
-/// chính sách nhận từ ngoài vào nên KHÔNG dispose hộ.
+/// The waiting queues, running set and policy state are touched only by the dispatcher thread, so no locking is needed.
+/// Priority work is evaluated first and may use the surplus the policy reserves for it; it does not take over slots of running work.
+/// The queue owns the dispatcher thread and its internal cancellation source, released in <see cref="DisposeAsync"/>;
+/// the policy is supplied from outside, so it is NOT disposed here.
 /// </summary>
 public sealed class DispatchQueue<TItem> : IAsyncDisposable
 {
-    // SemaphoreSlim chỉ cấp kernel handle khi có ai đọc AvailableWaitHandle — ở đây không ai đọc.
+    // SemaphoreSlim only allocates a kernel handle when someone reads AvailableWaitHandle - nobody does here.
     private readonly SemaphoreSlim _wake = new(0, int.MaxValue);
     private readonly ConcurrentQueue<DispatchEntry<TItem>> _inbox = new();
     private readonly CancellationTokenSource _shutdown = new();
     private readonly DispatchQueueOptions<TItem> _options;
     private readonly Task _dispatcher;
 
-    // Chỉ luồng điều phối dùng.
+    // Used only by the dispatcher thread.
     private readonly Dictionary<object, DispatchBucket<TItem>> _buckets = new();
     private readonly LinkedList<object> _keyOrder = new();
     private readonly HashSet<DispatchEntry<TItem>> _running = new();
@@ -36,8 +36,8 @@ public sealed class DispatchQueue<TItem> : IAsyncDisposable
     private int _signaled;
     private int _stopping;
 
-    // Chặn quãng chờ theo thời gian: SemaphoreSlim.WaitAsync không nhận quá int.MaxValue ms, và Delay(0)
-    // lặp lại thì thành vòng quay bận.
+    // Clamp the timed wait: SemaphoreSlim.WaitAsync does not accept more than int.MaxValue ms, and a repeated Delay(0)
+    // would become a busy spin.
     private static readonly TimeSpan MinDelay = TimeSpan.FromMilliseconds(1);
     private static readonly TimeSpan MaxDelay = TimeSpan.FromHours(1);
 
@@ -50,7 +50,7 @@ public sealed class DispatchQueue<TItem> : IAsyncDisposable
             CancellationToken.None,
             TaskCreationOptions.LongRunning,
             TaskScheduler.Default);
-        // Vòng điều phối chỉ báo lỗi bên trong mỗi nhịp; văng ra ngoài vòng thì cả hàng đợi treo mà không ai hay.
+        // The dispatch loop only reports errors inside each tick; if one escaped the loop, the whole queue would hang unnoticed.
         _dispatcher.ContinueWith(
             t => ReportError(new InvalidOperationException("Dispatch loop stopped unexpectedly", t.Exception!.GetBaseException())),
             CancellationToken.None,
@@ -59,8 +59,8 @@ public sealed class DispatchQueue<TItem> : IAsyncDisposable
     }
 
     /// <summary>
-    /// Nộp một việc. Không chặn: vé trả về ngay, kết quả nằm ở <see cref="DispatchTicket{TResult}.Completion"/>.
-    /// <paramref name="cancellationToken"/> huỷ được cả lúc còn chờ (gỡ khỏi hàng) lẫn lúc đang chạy (truyền vào <paramref name="work"/>).
+    /// Submits a work item. Does not block: the ticket is returned immediately, the result is in <see cref="DispatchTicket{TResult}.Completion"/>.
+    /// <paramref name="cancellationToken"/> can cancel both while waiting (removed from the queue) and while running (passed into <paramref name="work"/>).
     /// </summary>
     public DispatchTicket<TResult> Submit<TResult>(
         TItem item,
@@ -77,13 +77,13 @@ public sealed class DispatchQueue<TItem> : IAsyncDisposable
             return entry.Ticket;
         }
 
-        // Đăng ký TRƯỚC khi vào hộp thư: luồng điều phối có thể lấy việc ra và gỡ đăng ký ngay sau Enqueue.
+        // Register BEFORE entering the mailbox: the dispatcher thread may take the item out and unregister right after Enqueue.
         if (cancellationToken.CanBeCanceled)
             entry.SetCancelRegistration(cancellationToken.Register(static state => ((DispatchQueue<TItem>)state!).Signal(), this));
 
         _inbox.Enqueue(entry);
 
-        // Đua với DisposeAsync: vòng điều phối có thể đã thoát sau lượt rút hộp thư cuối cùng.
+        // Race with DisposeAsync: the dispatch loop may have exited after its final mailbox drain.
         if (Volatile.Read(ref _stopping) != 0)
             CancelInbox();
         else
@@ -93,14 +93,14 @@ public sealed class DispatchQueue<TItem> : IAsyncDisposable
     }
 
     /// <summary>
-    /// Báo hàng đợi xét lại các việc đang chờ khi điều kiện của chính sách đổi từ bên ngoài (đổi cấu hình trần).
-    /// Không gọi thì việc bị <c>Wait</c> chỉ được xét lại khi có việc mới hoặc việc khác xong.
+    /// Tells the queue to re-evaluate waiting items when the policy's conditions change externally (e.g. a cap setting changed).
+    /// Without calling this, an item blocked with <c>Wait</c> is re-evaluated only when new work arrives or other work finishes.
     /// </summary>
     public void Wake() => Signal();
 
     /// <summary>
-    /// Dừng nhận việc, huỷ việc đang chờ, báo huỷ cho việc đang chạy rồi chờ chúng kết thúc. Việc nào bỏ qua
-    /// token huỷ thì lệnh này chờ tới khi việc đó tự xong.
+    /// Stops accepting work, cancels waiting work, signals cancellation to running work, then waits for it to finish. Work that ignores
+    /// the cancellation token makes this wait until the work finishes by itself.
     /// </summary>
     public async ValueTask DisposeAsync()
     {
@@ -122,7 +122,7 @@ public sealed class DispatchQueue<TItem> : IAsyncDisposable
 
     private void Signal()
     {
-        // Cờ giữ số đếm của semaphore tối đa 1: dồn nhiều lần đánh thức chỉ thành một lượt quét.
+        // The flag keeps the semaphore count at most 1: many wake-ups collapse into a single scan.
         if (Interlocked.Exchange(ref _signaled, 1) == 0)
             _wake.Release();
     }
@@ -140,7 +140,7 @@ public sealed class DispatchQueue<TItem> : IAsyncDisposable
 
         while (true)
         {
-            // Hạ cờ TRƯỚC khi rút hộp thư: việc đến sau điểm này sẽ Release lại semaphore, không bị bỏ sót.
+            // Lower the flag BEFORE draining the mailbox: work arriving after this point will Release the semaphore again and is not missed.
             Volatile.Write(ref _signaled, 0);
             TimeSpan? wakeAfter = null;
             try
@@ -188,8 +188,8 @@ public sealed class DispatchQueue<TItem> : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                // Khoá null, Equals/GetHashCode của khoá ném...: việc đã ra khỏi hộp thư nên phải kết thúc vé ở đây,
-                // không thì người gọi chờ mãi.
+                // Null key, key's Equals/GetHashCode throwing...: the item has already left the mailbox, so the ticket must be completed here,
+                // otherwise the caller waits forever.
                 ReportError(ex);
                 entry.Fail(ex);
             }
@@ -203,8 +203,8 @@ public sealed class DispatchQueue<TItem> : IAsyncDisposable
 
         if (!_buckets.TryGetValue(key, out var bucket))
         {
-            // Vào từ điển trước, vòng xoay sau: Add ném (Equals/GetHashCode của khoá hỏng) thì vòng xoay
-            // không bị dư một khoá mà từ điển không có — dư thì mọi lượt quét sau đều ném.
+            // Dictionary first, rotation second: if Add throws (broken key Equals/GetHashCode), the rotation
+            // does not end up with a key the dictionary lacks - if it did, every later scan would throw.
             var orderNode = new LinkedListNode<object>(key);
             bucket = new DispatchBucket<TItem>(orderNode);
             _buckets.Add(key, bucket);
@@ -224,7 +224,7 @@ public sealed class DispatchQueue<TItem> : IAsyncDisposable
         entry.Node = list.AddLast(entry);
     }
 
-    /// <summary>Cho chạy mọi việc đủ điều kiện; trả quãng chờ ngắn nhất mà chính sách hẹn xét lại (nếu có).</summary>
+    /// <summary>Starts all eligible work; returns the shortest delay at which the policy asks to be re-evaluated (if any).</summary>
     private TimeSpan? Scan()
     {
         TimeSpan? wakeAfter = null;
@@ -235,8 +235,8 @@ public sealed class DispatchQueue<TItem> : IAsyncDisposable
     }
 
     /// <summary>
-    /// Xoay vòng các khoá: mỗi vòng mỗi khoá chạy tối đa một việc, khoá vừa chạy xuống cuối vòng;
-    /// lặp tới khi một vòng không chạy thêm được việc nào.
+    /// Rotates through the keys: each round each key runs at most one item, and the key that just ran moves to the end of the rotation;
+    /// repeats until a round starts no more work.
     /// </summary>
     private void ScanPass(bool isPriority, ref TimeSpan? wakeAfter)
     {
@@ -327,7 +327,7 @@ public sealed class DispatchQueue<TItem> : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            // Không gọi OnFinished: theo hợp đồng, OnStarted ném là chưa giữ gì.
+            // Do not call OnFinished: by contract, if OnStarted throws it has not held anything.
             ReportError(ex);
             entry.Fail(ex);
             return;
@@ -339,11 +339,11 @@ public sealed class DispatchQueue<TItem> : IAsyncDisposable
 
     private async Task RunTrackedAsync(DispatchEntry<TItem> entry)
     {
-        // Không tạo nguồn huỷ ghép khi người gọi không huỷ được: đỡ một lần cấp phát + đăng ký mỗi việc.
+        // Do not create a linked cancellation source when the caller cannot cancel: saves one allocation + registration per item.
         CancellationTokenSource? linked = null;
         try
         {
-            // Nằm trong try: tạo nguồn ghép mà ném (token của người gọi có vấn đề) thì vẫn phải nhả chỗ và kết thúc vé.
+            // Inside the try: if creating the linked source throws (problem with the caller's token), the slot must still be released and the ticket completed.
             linked = entry.CallerToken.CanBeCanceled
                 ? CancellationTokenSource.CreateLinkedTokenSource(entry.CallerToken, _shutdown.Token)
                 : null;
@@ -414,7 +414,7 @@ public sealed class DispatchQueue<TItem> : IAsyncDisposable
         }
         catch
         {
-            // Người nhận lỗi tự ném thì bỏ qua: luồng điều phối chết là cả hàng đợi treo.
+            // If the handler throws, ignore it: if the dispatcher thread died, the whole queue would hang.
         }
     }
 }
