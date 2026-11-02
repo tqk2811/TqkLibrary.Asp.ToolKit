@@ -22,7 +22,7 @@
 		</dependencies>
 	</metadata>
 	<files>
-		<file src="..\..\README.md" target="docs\" />
+		<file src="README.md" target="docs\" />
 		<file src="bin\Release\net10.0\TqkLibrary.Asp.ToolKit.Auth.Api.dll" target="lib\net10.0\" />
 		<file src="bin\Release\net10.0\TqkLibrary.Asp.ToolKit.Auth.Api.pdb" target="lib\net10.0\" />
 		<file src="bin\Release\net10.0\TqkLibrary.Asp.ToolKit.Auth.Api.xml" target="lib\net10.0\" />

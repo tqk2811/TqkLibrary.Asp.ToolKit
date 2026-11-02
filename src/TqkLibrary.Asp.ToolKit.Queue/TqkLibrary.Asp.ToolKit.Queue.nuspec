@@ -17,7 +17,7 @@
 		</dependencies>
 	</metadata>
 	<files>
-		<file src="..\..\README.md" target="docs\" />
+		<file src="README.md" target="docs\" />
 		<file src="bin\Release\net10.0\TqkLibrary.Asp.ToolKit.Queue.dll" target="lib\net10.0\" />
 		<file src="bin\Release\net10.0\TqkLibrary.Asp.ToolKit.Queue.pdb" target="lib\net10.0\" />
 		<file src="bin\Release\net10.0\TqkLibrary.Asp.ToolKit.Queue.xml" target="lib\net10.0\" />
