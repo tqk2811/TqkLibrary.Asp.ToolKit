@@ -32,7 +32,7 @@ public sealed class RateLimitPolicyTests
     }
 
     [Fact]
-    public void MinInterval_viec_thu_hai_bi_delay_dung_quang_con_lai()
+    public void MinInterval_second_job_delayed_by_remaining_time()
     {
         var clock = new FakeTimeProvider();
         var policy = New(clock, new RateLimitOptions { MinInterval = TimeSpan.FromMinutes(2) });
@@ -52,7 +52,7 @@ public sealed class RateLimitPolicyTests
     }
 
     [Fact]
-    public void MaxPerWindow_viec_N_cong_1_cho_toi_khi_moc_cu_nhat_ra_khoi_cua_so()
+    public void MaxPerWindow_job_N_plus_1_waits_until_oldest_start_leaves_window()
     {
         var clock = new FakeTimeProvider();
         var policy = New(clock, new RateLimitOptions { MaxPerWindow = 3, Window = TimeSpan.FromMinutes(2) });
@@ -77,7 +77,7 @@ public sealed class RateLimitPolicyTests
     }
 
     [Fact]
-    public void Ket_hop_cua_so_dai_hon_thi_lay_quang_cua_so()
+    public void Combined_longer_window_wait_wins()
     {
         var clock = new FakeTimeProvider();
         var policy = New(clock, new RateLimitOptions
@@ -96,7 +96,7 @@ public sealed class RateLimitPolicyTests
     }
 
     [Fact]
-    public void Ket_hop_MinInterval_dai_hon_thi_lay_quang_MinInterval()
+    public void Combined_longer_MinInterval_wait_wins()
     {
         var clock = new FakeTimeProvider();
         var policy = New(clock, new RateLimitOptions
@@ -116,7 +116,7 @@ public sealed class RateLimitPolicyTests
     }
 
     [Fact]
-    public void Viec_uu_tien_bypass_van_start_khi_dang_bi_chan_va_van_duoc_tinh_vao_moc()
+    public void Priority_bypass_starts_while_blocked_and_still_counts_as_last_start()
     {
         var clock = new FakeTimeProvider();
         var policy = New(clock, new RateLimitOptions { MinInterval = TimeSpan.FromSeconds(60) });
@@ -131,7 +131,7 @@ public sealed class RateLimitPolicyTests
     }
 
     [Fact]
-    public void Viec_uu_tien_bypass_duoc_tinh_vao_cua_so()
+    public void Priority_bypass_counts_toward_window()
     {
         var clock = new FakeTimeProvider();
         var policy = New(clock, new RateLimitOptions { MaxPerWindow = 1, Window = TimeSpan.FromSeconds(60) });
@@ -141,7 +141,7 @@ public sealed class RateLimitPolicyTests
     }
 
     [Fact]
-    public void PriorityBypass_false_viec_uu_tien_cung_bi_chan()
+    public void PriorityBypass_false_blocks_priority_jobs_too()
     {
         var clock = new FakeTimeProvider();
         var policy = New(clock, new RateLimitOptions { MinInterval = TimeSpan.FromSeconds(60), PriorityBypass = false });
@@ -153,7 +153,7 @@ public sealed class RateLimitPolicyTests
     }
 
     [Fact]
-    public void Khong_cau_hinh_gi_thi_luon_start()
+    public void No_limits_configured_always_starts()
     {
         var policy = New(new FakeTimeProvider(), new RateLimitOptions());
 
@@ -162,7 +162,7 @@ public sealed class RateLimitPolicyTests
     }
 
     [Fact]
-    public void Options_sai_nem_ArgumentOutOfRangeException()
+    public void Invalid_options_throw_ArgumentOutOfRangeException()
     {
         Assert.Throws<ArgumentOutOfRangeException>(() => new RateLimitPolicy<Job>(new RateLimitOptions { MinInterval = TimeSpan.FromSeconds(-1) }));
         Assert.Throws<ArgumentOutOfRangeException>(() => new RateLimitPolicy<Job>(new RateLimitOptions { MaxPerWindow = 0, Window = TimeSpan.FromSeconds(1) }));
@@ -176,7 +176,7 @@ public sealed class RateLimitPolicyTests
     /// nên bài tích hợp dùng MinInterval thật rất ngắn thay vì tua đồng hồ giả.
     /// </summary>
     [Fact]
-    public async Task Tich_hop_DispatchQueue_viec_hai_bat_dau_khong_som_hon_MinInterval()
+    public async Task Integration_DispatchQueue_second_job_starts_no_earlier_than_MinInterval()
     {
         var interval = TimeSpan.FromMilliseconds(200);
         var policy = new CompositeAdmissionPolicy<Job>(

@@ -31,7 +31,7 @@ public sealed class DispatchQueueTests
         => new(_ => [new CapRule("global", max, priorityExtra)]);
 
     [Fact]
-    public async Task Ket_qua_cua_viec_ve_toi_nguoi_goi()
+    public async Task Result_of_job_reaches_caller()
     {
         await using var queue = NewQueue(GlobalCap(1));
 
@@ -41,7 +41,7 @@ public sealed class DispatchQueueTests
     }
 
     [Fact]
-    public async Task Loi_cua_viec_ve_toi_nguoi_goi_va_tra_cho_cho_viec_sau()
+    public async Task Job_exception_reaches_caller_and_frees_slot_for_next_job()
     {
         var policy = GlobalCap(1);
         await using var queue = NewQueue(policy);
@@ -54,7 +54,7 @@ public sealed class DispatchQueueTests
     }
 
     [Fact]
-    public async Task Khong_bao_gio_chay_qua_tran()
+    public async Task Never_exceeds_cap()
     {
         await using var queue = NewQueue(GlobalCap(2));
         var running = 0;
@@ -74,7 +74,7 @@ public sealed class DispatchQueueTests
     }
 
     [Fact]
-    public async Task Tran_chong_nhau_viec_phai_lot_moi_tran()
+    public async Task Overlapping_caps_job_must_pass_every_cap()
     {
         // Trần chung 3, trần mỗi customer 1: Customer "a" có 5 việc nhưng chỉ chạy 1 lúc một.
         var policy = new ConcurrencyCapPolicy<Job>(job => [new CapRule("global", 3), new CapRule(("customer", job.Customer), 1)]);
@@ -102,7 +102,7 @@ public sealed class DispatchQueueTests
     }
 
     [Fact]
-    public async Task Xoay_vong_khoa_cong_bang_Customer_den_sau_khong_phai_cho_het_hang_cua_Customer_khac()
+    public async Task Fairness_round_robin_late_customer_does_not_wait_for_other_customer_backlog()
     {
         await using var queue = NewQueue(GlobalCap(1));
         var gate = new TaskCompletionSource();
@@ -123,7 +123,7 @@ public sealed class DispatchQueueTests
     }
 
     [Fact]
-    public async Task Viec_uu_tien_duoc_dung_phan_du_khi_tran_thuong_da_day()
+    public async Task Priority_job_uses_extra_slots_when_normal_cap_is_full()
     {
         await using var queue = NewQueue(GlobalCap(1, priorityExtra: 1));
         var gate = new TaskCompletionSource();
@@ -144,7 +144,7 @@ public sealed class DispatchQueueTests
     }
 
     [Fact]
-    public async Task Huy_khi_dang_cho_thi_ve_bi_huy_ngay_va_khong_chiem_cho()
+    public async Task Cancel_while_pending_cancels_ticket_immediately_and_frees_slot()
     {
         var policy = GlobalCap(1);
         await using var queue = NewQueue(policy);
@@ -167,7 +167,7 @@ public sealed class DispatchQueueTests
     }
 
     [Fact]
-    public async Task Huy_khi_dang_chay_thi_token_toi_viec_va_tran_duoc_nha()
+    public async Task Cancel_while_running_reaches_job_and_releases_cap()
     {
         var policy = GlobalCap(1);
         await using var queue = NewQueue(policy);
@@ -190,7 +190,7 @@ public sealed class DispatchQueueTests
     }
 
     [Fact]
-    public async Task Hang_cho_cua_khoa_day_thi_tu_choi_nhung_viec_uu_tien_co_hang_rieng()
+    public async Task Full_pending_queue_rejects_normal_jobs_but_priority_has_own_queue()
     {
         await using var queue = NewQueue(GlobalCap(1), maxPending: 1, maxPriorityPending: 1);
         var gate = new TaskCompletionSource();
@@ -213,7 +213,7 @@ public sealed class DispatchQueueTests
     }
 
     [Fact]
-    public async Task Chinh_sach_hen_gio_thi_hang_doi_tu_thuc_day_xet_lai()
+    public async Task Policy_delay_wakes_queue_to_recheck()
     {
         var openAt = DateTime.UtcNow.AddMilliseconds(150);
         var policy = new DelegatePolicy((_, _) => DateTime.UtcNow >= openAt
@@ -229,7 +229,7 @@ public sealed class DispatchQueueTests
     }
 
     [Fact]
-    public async Task Chinh_sach_chi_bi_goi_tren_mot_luong()
+    public async Task Policy_is_called_on_a_single_thread()
     {
         var threads = new HashSet<int>();
         var policy = new DelegatePolicy((_, _) => { threads.Add(Environment.CurrentManagedThreadId); return AdmissionDecision.Start; },
@@ -248,7 +248,7 @@ public sealed class DispatchQueueTests
     }
 
     [Fact]
-    public async Task Loi_cua_chinh_sach_khong_lam_chet_hang_doi()
+    public async Task Policy_exception_does_not_kill_queue()
     {
         var errors = new List<Exception>();
         var policy = new DelegatePolicy((job, _) => job.Name == "bad" ? throw new InvalidOperationException("policy") : AdmissionDecision.Start);
@@ -263,7 +263,7 @@ public sealed class DispatchQueueTests
     }
 
     [Fact]
-    public async Task Dispose_huy_viec_dang_cho_bao_huy_viec_dang_chay_va_tu_choi_viec_moi()
+    public async Task Dispose_cancels_pending_signals_running_and_rejects_new_jobs()
     {
         var queue = NewQueue(GlobalCap(1));
         var entered = new TaskCompletionSource();
@@ -286,7 +286,7 @@ public sealed class DispatchQueueTests
     }
 
     [Fact]
-    public async Task Bo_dem_ve_0_thi_xoa_khoa()
+    public async Task Counter_back_to_zero_removes_key()
     {
         var policy = new ConcurrencyCapPolicy<Job>(job => [new CapRule(("customer", job.Customer), 2)]);
         await using var queue = NewQueue(policy);
@@ -298,7 +298,7 @@ public sealed class DispatchQueueTests
     }
 
     [Fact]
-    public void Ghep_chinh_sach_cho_chay_khi_moi_chinh_sach_cho_chay()
+    public void Composite_starts_only_when_every_policy_starts()
     {
         var start = new DelegatePolicy((_, _) => AdmissionDecision.Start);
         var wait = new DelegatePolicy((_, _) => AdmissionDecision.Wait);
@@ -336,7 +336,7 @@ public sealed class DispatchQueueTests
     }
 
     [Fact]
-    public async Task Khoa_cong_bang_null_thi_ve_bao_loi_khong_treo()
+    public async Task Null_fairness_key_fails_ticket_without_hanging()
     {
         var errors = new List<Exception>();
         await using var queue = new DispatchQueue<Job>(new DispatchQueueOptions<Job>
@@ -354,7 +354,7 @@ public sealed class DispatchQueueTests
     }
 
     [Fact]
-    public async Task Ghep_chinh_sach_chinh_sach_sau_nem_luc_bat_dau_thi_nha_cho_da_giu()
+    public async Task Composite_releases_held_slots_when_later_policy_throws_on_start()
     {
         var cap = GlobalCap(1);
         await using var queue = NewQueue(new CompositeAdmissionPolicy<Job>(cap, new ThrowingOnStartPolicy()), errors: []);
@@ -366,7 +366,7 @@ public sealed class DispatchQueueTests
     }
 
     [Fact]
-    public async Task Luat_doi_giua_luc_chay_va_luc_xong_van_nha_dung_khoa_da_giu()
+    public async Task Rules_changed_while_running_still_release_held_keys()
     {
         var keyName = "old";
         var policy = new ConcurrencyCapPolicy<Job>(_ => [new CapRule(keyName, 1)]);
@@ -384,7 +384,7 @@ public sealed class DispatchQueueTests
     }
 
     [Fact]
-    public async Task Wake_xet_lai_viec_dang_cho_khi_dieu_kien_ngoai_doi()
+    public async Task Wake_rechecks_pending_jobs_when_external_condition_changes()
     {
         var open = false;
         await using var queue = NewQueue(new DelegatePolicy((_, _) => Volatile.Read(ref open) ? AdmissionDecision.Start : AdmissionDecision.Wait));
@@ -399,7 +399,7 @@ public sealed class DispatchQueueTests
     }
 
     [Fact]
-    public async Task Huy_khi_dang_chay_thi_ve_mang_dung_token_cua_nguoi_goi()
+    public async Task Cancel_while_running_ticket_carries_caller_token()
     {
         await using var queue = NewQueue(GlobalCap(1));
         using var cts = new CancellationTokenSource();
