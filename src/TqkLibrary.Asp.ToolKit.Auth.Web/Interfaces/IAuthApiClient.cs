@@ -19,7 +19,8 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Interfaces
         /// <summary>
         /// Exchanges a refresh token for new tokens. Called inside <see cref="AnonymousApiScope"/>, so a client that
         /// goes through <see cref="SessionBearerHandler"/> is not re-entered. Must not consume the refresh token
-        /// (single-use rotation breaks concurrent requests).
+        /// (single-use rotation breaks concurrent requests). When the API rejects the refresh token (401/403) it MUST
+        /// throw <see cref="SessionExpiredException"/>; any other 4xx is treated as a non-transient failure.
         /// </summary>
         Task<AuthTokenPair> RefreshAsync(string refreshToken, CancellationToken cancellationToken);
 

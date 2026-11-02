@@ -16,8 +16,10 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
     ///   <item>Still 401 after a refresh, or the refresh rejected → <see cref="SessionExpiredException"/>
     ///   (<see cref="SessionExpiredMiddleware"/> signs out and redirects to login).</item>
     ///   <item>Transient refresh failures propagate as they are; the cookie is kept. The exception is the
-    ///   PROACTIVE refresh (token only about to expire): if it fails transiently while the current access token is
-    ///   still valid, a warning is logged and the request is sent with the current token.</item>
+    ///   PROACTIVE refresh (token only about to expire): if it fails transiently
+    ///   (<see cref="WebAuthOptions.IsTransientRefreshFailure"/>) while the current access token is still valid for at
+    ///   least <see cref="WebAuthOptions.RefreshFallbackMargin"/>, a warning is logged and the request is sent with the
+    ///   current token.</item>
     /// </list>
     /// <para>
     /// <c>IHttpClientFactory</c> reuses handlers for MANY users, so this one keeps no user state: everything is read
@@ -68,12 +70,13 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
                     tokens = await ticket.RefreshAsync(null, cancellationToken).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (ex is not SessionExpiredException
-                    && !cancellationToken.IsCancellationRequested
-                    && tokens.AccessTokenExpiresAt > now)
+                    && (options.IsTransientRefreshFailure ?? DefaultIsTransientRefreshFailure)(ex, cancellationToken)
+                    && tokens.AccessTokenExpiresAt > _clock.GetUtcNow().UtcDateTime + options.RefreshFallbackMargin)
                 {
-                    // Proactive refresh only: the current token still works, so a transient refresh failure must not
-                    // fail the call. If the API rejects the old token, the 401 path below refreshes (and surfaces
-                    // the failure) as usual.
+                    // Proactive refresh only: the current token still works (checked AFTER the refresh attempt, with a
+                    // margin), so a TRANSIENT refresh failure must not fail the call. Caller cancellation, 4xx (config or
+                    // contract bugs) and unknown exceptions propagate. If the API rejects the old token, the 401 path
+                    // below refreshes (and surfaces the failure) as usual.
                     _logger?.LogWarning(ex, "Proactive token refresh failed; sending the request with the current access token.");
                 }
             }
@@ -102,6 +105,18 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
             response.Dispose();
             throw new SessionExpiredException(options.SessionExpiredMessage);
         }
+
+        /// <summary>
+        /// Default transient test for a failed proactive refresh: network errors without a status or with a
+        /// non-4xx status, and timeouts (cancellation not requested by the caller). Everything else is not transient.
+        /// </summary>
+        public static bool DefaultIsTransientRefreshFailure(Exception exception, CancellationToken callerToken) => exception switch
+        {
+            HttpRequestException http => http.StatusCode is not { } status || (int)status is < 400 or >= 500,
+            OperationCanceledException => !callerToken.IsCancellationRequested,
+            TimeoutException => true,
+            _ => false,
+        };
 
         /// <summary>Bufferable bodies (JSON, form, string...) can be resent; multipart and stream uploads cannot.</summary>
         private static bool IsReplayable(HttpContent? content)

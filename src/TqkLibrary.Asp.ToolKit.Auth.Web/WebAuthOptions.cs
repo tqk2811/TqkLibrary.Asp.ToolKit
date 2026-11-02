@@ -32,6 +32,20 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         /// <summary>Refresh the access token before sending when it expires within this window.</summary>
         public TimeSpan RefreshSkew { get; set; } = TimeSpan.FromSeconds(30);
 
+        /// <summary>
+        /// The current access token must stay valid at least this long AFTER a failed proactive refresh for the
+        /// request to fall back to it.
+        /// </summary>
+        public TimeSpan RefreshFallbackMargin { get; set; } = TimeSpan.FromSeconds(5);
+
+        /// <summary>
+        /// Decides whether a PROACTIVE refresh failure is transient (the request then falls back to the current,
+        /// still valid access token). Arguments: the exception and the caller's cancellation token. <c>null</c> =
+        /// <see cref="SessionBearerHandler.DefaultIsTransientRefreshFailure"/>. Set it when <see cref="Interfaces.IAuthApiClient"/>
+        /// wraps HTTP errors in its own exception type, e.g. to treat its 5xx as transient and its 4xx as fatal.
+        /// </summary>
+        public Func<Exception, CancellationToken, bool>? IsTransientRefreshFailure { get; set; }
+
         /// <summary>Own timeout of one refresh call (it does NOT use the request's cancellation token).</summary>
         public TimeSpan RefreshTimeout { get; set; } = TimeSpan.FromSeconds(30);
 

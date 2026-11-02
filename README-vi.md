@@ -164,6 +164,8 @@ Về cookie:
 | `AccessTokenName` / `AccessTokenExpiresName` / `RefreshTokenName` / `RefreshTokenExpiresName` | `api_access_token` / `api_access_expires` / `api_refresh_token` / `api_refresh_expires` | Tên các mục token trong ticket |
 | `RefreshSkew` | 30 giây | Token hết hạn trong khoảng này thì refresh trước khi gửi |
 | `RefreshTimeout` | 30 giây | Timeout riêng của một lần refresh (không dùng token huỷ của request) |
+| `RefreshFallbackMargin` | 5 giây | Refresh chủ động lỗi tạm thì chỉ dùng tiếp token cũ nếu nó còn hạn ít nhất chừng này (tính sau lượt refresh) |
+| `IsTransientRefreshFailure` | `null` (dùng `SessionBearerHandler.DefaultIsTransientRefreshFailure`) | Phân loại lỗi refresh chủ động là tạm hay không. Mặc định chỉ biết `HttpRequestException` (không status hoặc không phải 4xx), timeout và `TimeoutException`; exception khác (vd `ApiException` riêng của app) bị coi là KHÔNG tạm, nên app bọc lỗi HTTP bằng kiểu riêng phải tự đặt hàm này. Chỉ đặt được bằng code, không bind từ cấu hình |
 | `CurrentUserTimeout` | 15 giây | Hạn chờ lấy user hiện tại (`me`); phải đủ cho refresh + API khởi động nguội |
 | `CurrentUserCacheLifetime` | 10 giây | Cache `me` theo phiên |
 | `AnonymousPathSuffixes` | rỗng | Đuôi đường dẫn API ẩn danh (login, refresh, reset mật khẩu...) |
