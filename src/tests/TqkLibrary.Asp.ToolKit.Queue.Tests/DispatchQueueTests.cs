@@ -194,9 +194,12 @@ public sealed class DispatchQueueTests
     {
         await using var queue = NewQueue(GlobalCap(1), maxPending: 1, maxPriorityPending: 1);
         var gate = new TaskCompletionSource();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var blocker = queue.Submit(new Job("a"), async (_, _) => { await gate.Task; return 0; });
-        await WaitUntilAsync(() => blocker.QueuePosition is null && !blocker.Completion.IsCompleted);
+        // Chờ việc chặn THẬT SỰ chạy: QueuePosition cũng là null lúc việc còn nằm trong hộp thư chưa được xếp,
+        // nên chờ theo nó thì việc chặn có thể vẫn chiếm chỗ hàng chờ và việc "waiting" bị từ chối nhầm.
+        var blocker = queue.Submit(new Job("a"), async (_, _) => { started.SetResult(); await gate.Task; return 0; });
+        await started.Task.WaitAsync(Timeout);
         var waiting = queue.Submit(new Job("a"), (_, _) => Task.FromResult(1));
         var rejected = queue.Submit(new Job("a"), (_, _) => Task.FromResult(2));
         var priority = queue.Submit(new Job("a"), (_, _) => Task.FromResult(3), isPriority: true);
