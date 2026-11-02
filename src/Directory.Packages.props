@@ -16,5 +16,10 @@
     <PackageVersion Include="TqkLibrary.Http" Version="1.1.31" />
     <PackageVersion Include="TqkLibrary.Utils" Version="1.0.0" />
     <PackageVersion Include="GitVersion.MsBuild" Version="6.8.2" />
+    <PackageVersion Include="Nito.AsyncEx.Context" Version="5.1.2" />
+    <PackageVersion Include="coverlet.collector" Version="6.0.4" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageVersion Include="xunit" Version="2.9.3" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.4" />
   </ItemGroup>
 </Project>

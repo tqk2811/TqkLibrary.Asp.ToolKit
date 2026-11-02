@@ -153,3 +153,26 @@ var next = slidingPolicy.GetNextExpiry(session.CreatedAt, now);   // null = abso
 
 After writes, invalidate `SessionAccessCache`: `InvalidateSession` (sign-out), `InvalidateUser` (password/role
 change, lock), `InvalidateAll` (role permissions changed).
+
+## TqkLibrary.Asp.ToolKit.Queue
+
+In-process dispatch queue: work items are submitted without blocking and started only when an admission policy lets
+them run (for example concurrency caps). Waiting items are served round-robin by a fairness key, and each caller gets
+an awaitable ticket. It does not depend on ASP.NET Core.
+
+```csharp
+var policy = new ConcurrencyCapPolicy<Job>(job => [new CapRule("global", 3), new CapRule(("customer", job.CustomerId), 1)]);
+
+await using var queue = new DispatchQueue<Job>(new DispatchQueueOptions<Job>
+{
+    Policy = policy,
+    FairnessKey = job => job.CustomerId,   // customers are served in turn
+    MaxPendingPerKey = 100,                // more waiting items of one key => DispatchQueueFullException
+});
+
+var ticket = queue.Submit(job, async (item, ct) => await RunAsync(item, ct), isPriority: false, cancellationToken);
+var result = await ticket.Completion;      // ticket.QueuePosition tells where it waits
+
+// After a limit changes outside the queue (for example the cap configuration), re-check waiting items:
+queue.Wake();
+```

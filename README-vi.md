@@ -11,6 +11,7 @@ Bản tiếng Anh ngắn gọn: [README.md](README.md). Tài liệu này giải 
 - [Auth.Api — host API (JWT)](#authapi--host-api-jwt)
 - [Điều kiện bắt buộc phía API](#điều-kiện-bắt-buộc-phía-api)
 - [Caching](#caching)
+- [Queue](#queue)
 - [Các bẫy thường gặp](#các-bẫy-thường-gặp)
 
 ## Cài đặt và chọn package
@@ -19,6 +20,7 @@ Bản tiếng Anh ngắn gọn: [README.md](README.md). Tài liệu này giải 
 dotnet add package TqkLibrary.Asp.ToolKit.Caching
 dotnet add package TqkLibrary.Asp.ToolKit.Auth.Web
 dotnet add package TqkLibrary.Asp.ToolKit.Auth.Api
+dotnet add package TqkLibrary.Asp.ToolKit.Queue
 ```
 
 | Package | Cài vào host nào | Dùng để làm gì |
@@ -26,8 +28,9 @@ dotnet add package TqkLibrary.Asp.ToolKit.Auth.Api
 | `TqkLibrary.Asp.ToolKit.Auth.Web` | Web front end (MVC/Razor) đăng nhập qua một API riêng | Giữ access/refresh token của API trong cookie đã mã hoá, tự gắn bearer, tự refresh, dựng lại user hiện tại cho UI |
 | `TqkLibrary.Asp.ToolKit.Auth.Api` | API phát hành JWT | Phát access token gọn, refresh token không xoay vòng, kiểm phiên mỗi request (có cache ngắn) |
 | `TqkLibrary.Asp.ToolKit.Caching` | Web hoặc API (hoặc cả hai) | Cache `stale-while-refresh` theo nhóm (group), vô hiệu hoá theo group, kênh vô hiệu hoá giữa hai process qua HTTP |
+| `TqkLibrary.Asp.ToolKit.Queue` | Bất kỳ host nào cần xếp hàng việc nền | Hàng đợi điều phối trong process: chính sách cho chạy (trần song song), chia lượt công bằng theo khoá, vé await kết quả |
 
-Web và API là hai app tách biệt: Web cài `Auth.Web`, API cài `Auth.Api`. `Caching` độc lập với hai package còn lại.
+Web và API là hai app tách biệt: Web cài `Auth.Web`, API cài `Auth.Api`. `Caching` và `Queue` độc lập với các package còn lại.
 
 ## Cơ chế tổng quan của Auth
 
@@ -362,6 +365,32 @@ Options của kênh:
 Về `RetryDelays` và `ForwardingHeaders`: binder cấu hình (`IConfiguration`) **nối thêm** phần tử vào mọi collection/mảng đã có sẵn giá trị, nên hai option này mặc định là `null`
 và giá trị mặc định nằm ở property tĩnh riêng (`Default*`, đọc giá trị hiệu lực qua `Effective*`). Cấu hình danh sách trong `appsettings` sẽ **thay thế** mặc định. Muốn tắt retry
 phải đặt mảng rỗng bằng code (`o.RetryDelays = [];`) vì binder bỏ qua section rỗng.
+
+## Queue
+
+Hàng đợi điều phối trong process, không phụ thuộc ASP.NET Core. Việc được nộp không chặn; chỉ bắt đầu chạy khi chính sách cho phép (`IAdmissionPolicy<TItem>`, vd trần song song).
+Các việc đang chờ được xét xoay vòng theo khoá công bằng, mỗi lần nộp trả về một vé (`DispatchTicket<TResult>`) để await kết quả.
+
+```csharp
+var policy = new ConcurrencyCapPolicy<Job>(job => [new CapRule("global", 3), new CapRule(("customer", job.CustomerId), 1)]);
+
+await using var queue = new DispatchQueue<Job>(new DispatchQueueOptions<Job>
+{
+    Policy = policy,
+    FairnessKey = job => job.CustomerId,   // các khách hàng được xét lần lượt, không ai chiếm hết lượt
+    MaxPendingPerKey = 100,                // một khoá chờ quá 100 việc thì việc mới bị DispatchQueueFullException
+});
+
+var ticket = queue.Submit(job, async (item, ct) => await RunAsync(item, ct), isPriority: false, cancellationToken);
+var result = await ticket.Completion;      // ticket.QueuePosition cho biết vị trí đang chờ
+```
+
+- `ConcurrencyCapPolicy<TItem>`: nhiều trần chồng nhau (`CapRule`), việc chỉ chạy khi lọt tất cả trần; `CompositeAdmissionPolicy<TItem>` ghép nhiều chính sách.
+- `isPriority: true` dùng trần chờ riêng (`MaxPriorityPendingPerKey`) để hàng thường đầy không chặn việc ưu tiên.
+- Huỷ bằng `cancellationToken` được cả lúc còn chờ (gỡ khỏi hàng) lẫn lúc đang chạy.
+- Khi điều kiện của chính sách đổi từ bên ngoài (đổi cấu hình trần) phải gọi `queue.Wake()`, nếu không việc đang chờ chỉ được xét lại khi có việc mới hoặc việc khác xong.
+- `OnInternalError` nhận lỗi ném từ chính sách hoặc vòng điều phối (đã được nuốt để hàng đợi không chết): gắn logger vào đó.
+- Thư viện kéo theo gói `Nito.AsyncEx.Context`.
 
 ## Các bẫy thường gặp
 

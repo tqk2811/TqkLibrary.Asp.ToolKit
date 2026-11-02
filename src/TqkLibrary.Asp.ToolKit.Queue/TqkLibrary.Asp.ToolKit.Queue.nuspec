@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2010/07/nuspec.xsd">
+	<!--https://docs.microsoft.com/en-us/nuget/reference/nuspec-->
+	<metadata>
+		<id>$id$</id>
+		<version>$version$</version>
+		<description>In-process dispatch queue with pluggable admission policies (concurrency caps, composite policies), fair round-robin scheduling by an app-defined key, bounded waiting lists and awaitable tickets.</description>
+		<authors>tqk2811</authors>
+		<projectUrl>https://github.com/tqk2811/TqkLibrary.Asp.ToolKit</projectUrl>
+		<repository type="git" url="https://github.com/tqk2811/TqkLibrary.Asp.ToolKit.git"/>
+		<license type="expression">MIT</license>
+		<readme>docs\README.md</readme>
+		<dependencies>
+			<group targetFramework="net10.0">
+				<dependency id="Nito.AsyncEx.Context" version="5.1.2" />
+			</group>
+		</dependencies>
+	</metadata>
+	<files>
+		<file src="..\..\README.md" target="docs\" />
+		<file src="bin\Release\net10.0\TqkLibrary.Asp.ToolKit.Queue.dll" target="lib\net10.0\" />
+		<file src="bin\Release\net10.0\TqkLibrary.Asp.ToolKit.Queue.pdb" target="lib\net10.0\" />
+		<file src="bin\Release\net10.0\TqkLibrary.Asp.ToolKit.Queue.xml" target="lib\net10.0\" />
+	</files>
+</package>

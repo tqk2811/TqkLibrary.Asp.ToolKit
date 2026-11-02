@@ -9,4 +9,8 @@
   <Project Path="TqkLibrary.Asp.ToolKit.Caching/TqkLibrary.Asp.ToolKit.Caching.csproj" />
   <Project Path="TqkLibrary.Asp.ToolKit.Auth.Api/TqkLibrary.Asp.ToolKit.Auth.Api.csproj" />
   <Project Path="TqkLibrary.Asp.ToolKit.Auth.Web/TqkLibrary.Asp.ToolKit.Auth.Web.csproj" />
+  <Project Path="TqkLibrary.Asp.ToolKit.Queue/TqkLibrary.Asp.ToolKit.Queue.csproj" />
+  <Folder Name="/tests/">
+    <Project Path="tests/TqkLibrary.Asp.ToolKit.Queue.Tests/TqkLibrary.Asp.ToolKit.Queue.Tests.csproj" />
+  </Folder>
 </Solution>

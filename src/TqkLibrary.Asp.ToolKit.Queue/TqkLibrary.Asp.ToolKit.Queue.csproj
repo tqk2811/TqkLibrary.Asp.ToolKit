@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<Import Project="..\ProjectBuildProperties.targets" />
+
+	<ItemGroup>
+		<!-- AsyncContext: luồng điều phối có SynchronizationContext một luồng, nên mọi continuation của
+		     vòng lặp và của phần vỏ quanh mỗi việc quay về đúng luồng đó (danh sách chờ + bộ đếm không cần khoá). -->
+		<PackageReference Include="Nito.AsyncEx.Context" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<InternalsVisibleTo Include="TqkLibrary.Asp.ToolKit.Queue.Tests" />
+	</ItemGroup>
+
+</Project>
