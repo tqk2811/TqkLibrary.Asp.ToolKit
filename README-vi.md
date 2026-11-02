@@ -386,6 +386,20 @@ var result = await ticket.Completion;      // ticket.QueuePosition cho biết v�
 ```
 
 - `ConcurrencyCapPolicy<TItem>`: nhiều trần chồng nhau (`CapRule`), việc chỉ chạy khi lọt tất cả trần; `CompositeAdmissionPolicy<TItem>` ghép nhiều chính sách.
+- `RateLimitPolicy<TItem>`: giãn nhịp BẮT ĐẦU việc (không giới hạn số việc chạy cùng lúc), dùng chung cho mọi việc. Ghép với `ConcurrencyCapPolicy` qua `CompositeAdmissionPolicy`; việc bị chặn nhận `Delay` nên hàng đợi tự xét lại đúng lúc, không cần `Wake()`:
+
+  ```csharp
+  // "Mỗi thư cách nhau 2 phút" và "tối đa 20 việc / 2 phút", kèm trần song song như thường.
+  var policy = new CompositeAdmissionPolicy<Job>(
+      new RateLimitPolicy<Job>(new RateLimitOptions
+      {
+          MinInterval = TimeSpan.FromMinutes(2),   // khoảng cách tối thiểu giữa hai lần bắt đầu (Zero = tắt)
+          MaxPerWindow = 20,                       // cửa sổ trượt (null = tắt)
+          Window = TimeSpan.FromMinutes(2),
+          PriorityBypass = true,                   // việc ưu tiên luôn chạy nhưng vẫn được tính vào giới hạn
+      }),
+      new ConcurrencyCapPolicy<Job>(_ => [new CapRule("global", 3)]));
+  ```
 - `isPriority: true` dùng trần chờ riêng (`MaxPriorityPendingPerKey`) để hàng thường đầy không chặn việc ưu tiên.
 - Huỷ bằng `cancellationToken` được cả lúc còn chờ (gỡ khỏi hàng) lẫn lúc đang chạy.
 - Khi điều kiện của chính sách đổi từ bên ngoài (đổi cấu hình trần) phải gọi `queue.Wake()`, nếu không việc đang chờ chỉ được xét lại khi có việc mới hoặc việc khác xong.

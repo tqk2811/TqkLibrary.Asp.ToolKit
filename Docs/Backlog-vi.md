@@ -38,8 +38,22 @@ Việc còn treo và đề xuất của thư viện. Mỗi mục: vấn đề, v
 - **Đề xuất**: đọc token mới nhất của ticket nếu có thay vì giữ biến cũ.
 - **Ngày ghi**: 2026-10-28.
 
-### [Thấp] Repo chưa có project test
+### [Thấp] Auth/Caching chưa có test
 
-- **Vấn đề**: chưa có test cho các hành vi đã sửa: config danh sách thay thế mặc định (bind từ JSON), `SessionExpiredMiddleware` giữ header xoá cookie, `SessionAccessCache` vô hiệu theo thế hệ, refresh chủ động lỗi tạm dùng token cũ.
+- **Vấn đề**: repo mới có project test cho Queue; chưa có test cho các hành vi đã sửa: config danh sách thay thế mặc định (bind từ JSON), `SessionExpiredMiddleware` giữ header xoá cookie, `SessionAccessCache` vô hiệu theo thế hệ, refresh chủ động lỗi tạm dùng token cũ.
 - **Vì sao**: refactor sau dễ làm lỗi cũ quay lại mà không ai biết.
 - **Ngày ghi**: 2026-10-28.
+
+### [Thấp] Queue: DisposeAsync không dispose `_shutdown`/`_wake`, và bỏ sót vé khi vòng điều phối chết
+
+- **Vị trí**: `src/TqkLibrary.Asp.ToolKit.Queue/DispatchQueue.cs` `DisposeAsync` (~dòng 105-121).
+- **Vấn đề**: hai đối tượng đồng bộ nội bộ không được dispose. Nếu task điều phối faulted thì `await _dispatcher` ném lại lỗi, `CancelInbox()` phía sau không chạy, vé đang chờ/đang chạy treo mãi.
+- **Vì sao**: hiện chưa rò handle (không ai đọc `AvailableWaitHandle`) và `LoopAsync` đã bắt hết lỗi, nên chỉ là phòng xa; giữ nguyên lúc port để không đổi logic so với bản gốc.
+- **Đề xuất**: bọc `await _dispatcher` trong try/finally, luôn huỷ vé còn lại rồi dispose hai đối tượng.
+- **Ngày ghi**: 2026-11-03.
+
+### [Thấp] Queue: hai bản code song song với repo gốc
+
+- **Vấn đề**: package Queue được chép từ một repo khác, repo đó vẫn giữ bản riêng. Sửa lỗi ở một bên dễ quên bên kia.
+- **Đề xuất**: cho repo gốc chuyển sang dùng package này rồi xoá bản riêng.
+- **Ngày ghi**: 2026-11-03.

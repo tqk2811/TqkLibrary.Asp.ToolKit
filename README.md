@@ -176,3 +176,20 @@ var result = await ticket.Completion;      // ticket.QueuePosition tells where i
 // After a limit changes outside the queue (for example the cap configuration), re-check waiting items:
 queue.Wake();
 ```
+
+`RateLimitPolicy<TItem>` spaces out when work STARTS (it does not cap how many run at once), shared by all items.
+Combine it with `ConcurrencyCapPolicy` through `CompositeAdmissionPolicy`; a blocked item gets `Delay`, so the queue
+re-checks at the right moment without a `Wake()`:
+
+```csharp
+// "One mail every 2 minutes" and "at most 20 per 2 minutes", plus the usual concurrency cap.
+var policy = new CompositeAdmissionPolicy<Job>(
+    new RateLimitPolicy<Job>(new RateLimitOptions
+    {
+        MinInterval = TimeSpan.FromMinutes(2),   // min gap between two starts (Zero = off)
+        MaxPerWindow = 20,                       // sliding window (null = off)
+        Window = TimeSpan.FromMinutes(2),
+        PriorityBypass = true,                   // priority items always start, but still count toward the limits
+    }),
+    new ConcurrencyCapPolicy<Job>(_ => [new CapRule("global", 3)]));
+```
