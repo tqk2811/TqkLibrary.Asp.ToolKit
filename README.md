@@ -193,3 +193,16 @@ var policy = new CompositeAdmissionPolicy<Job>(
     }),
     new ConcurrencyCapPolicy<Job>(_ => [new CapRule("global", 3)]));
 ```
+
+## Releasing
+
+Every release is a tag `vM.N.P` on a commit of `master`; the tag pushes all packages to nuget.org through CI.
+
+```
+git tag v1.2.3
+git push origin v1.2.3      # triggers .github/workflows/release.yml
+```
+
+The tag must be higher than the highest version already on nuget.org. A commit after a tag builds as `M.N.P-dev.<commits since tag>`.
+
+One-time setup on nuget.org (NuGet Trusted Publishing, no API key secret): in the account of `tqk2811`, add a trusted publishing policy with repository owner `tqk2811`, repository `TqkLibrary.Asp.ToolKit`, workflow file `release.yml`, and select the packages of this repository.
