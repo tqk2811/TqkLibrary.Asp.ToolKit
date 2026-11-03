@@ -15,6 +15,12 @@ Yêu cầu là thêm giới hạn dung lượng: cache quá lớn hoặc RAM că
 - Hệ quả là key mới không được giữ lại, nên nhiều request cùng key lại load song song (mất single-flight).
 - Đổi size của entry sau khi load cũng có thể bị từ chối, và entry cũ của key đó bị xoá theo.
 
+Bản hiện tại vẫn dùng `MemoryCache` nhưng né được các lỗi trên:
+
+- Key mới đi qua một bảng phụ chứa lượt load đang chạy rồi mới `Set` vào cache, nên single-flight không phụ thuộc việc `Set` có được nhận hay không.
+- Mỗi key có `Size = 1` cố định, không đổi size sau khi load.
+- `CompactionPercentage` mặc định 5% làm compact xoá `(long)(số entry × 5%)` = 0 entry khi dưới 20 key, và cache đầy sẽ không bao giờ nhận key mới. Phải đặt tối thiểu `1.5 / maxEntries`.
+
 Hai thư viện dưới đây đã giải quyết sẵn việc chặn stampede trên nền `IMemoryCache`; cần giới hạn dung lượng thì cân nhắc dùng chúng thay vì vá cache tự viết.
 
 ## So sánh

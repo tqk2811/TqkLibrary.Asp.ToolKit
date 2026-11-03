@@ -9,9 +9,11 @@ namespace TqkLibrary.Asp.ToolKit.Caching
     /// data changes.
     /// <para>Call <c>Create</c> / <c>CreateKeyed</c> ONCE while building a singleton (constructor, field): the
     /// registry keeps a reference forever, so calling them per request leaks memory.</para>
+    /// <para>Disposing the registry disposes the caches it created; caches passed to <see cref="Attach"/> stay with
+    /// their owner.</para>
     /// </summary>
     /// <typeparam name="TGroup">App-defined enum that names the cache groups.</typeparam>
-    public sealed class CacheRegistry<TGroup> where TGroup : struct, Enum
+    public sealed class CacheRegistry<TGroup> : IDisposable where TGroup : struct, Enum
     {
         private const int WarnGroupSize = 100;
 
@@ -19,6 +21,7 @@ namespace TqkLibrary.Asp.ToolKit.Caching
         private readonly ILogger _logger;
         private readonly object _gate = new();
         private readonly Dictionary<TGroup, List<IInvalidatableCache>> _groups = new();
+        private readonly List<IDisposable> _owned = [];
 
         /// <summary>Creates the registry.</summary>
         /// <param name="timeProvider">Clock handed to every cache created through this registry.</param>
@@ -55,7 +58,22 @@ namespace TqkLibrary.Asp.ToolKit.Caching
             EnsureGroups(groups);
             var cache = new KeyedStaleWhileRefreshCache<TKey, T>(_timeProvider, ttl, maxEntries, _logger, comparer);
             Register(groups, cache);
+            lock (_gate)
+                _owned.Add(cache);
             return cache;
+        }
+
+        /// <summary>Disposes every cache created through <c>CreateKeyed</c>.</summary>
+        public void Dispose()
+        {
+            IDisposable[] owned;
+            lock (_gate)
+            {
+                owned = _owned.ToArray();
+                _owned.Clear();
+            }
+            foreach (var cache in owned)
+                cache.Dispose();
         }
 
         /// <summary>Attaches an existing cache (for example a custom <see cref="IInvalidatableCache"/>) to groups.</summary>

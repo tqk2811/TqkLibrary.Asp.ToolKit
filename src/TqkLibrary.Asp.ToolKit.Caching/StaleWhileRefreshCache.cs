@@ -76,6 +76,10 @@ namespace TqkLibrary.Asp.ToolKit.Caching
         public Task<T> GetAsync(Func<CancellationToken, Task<T>> load, CancellationToken cancellationToken = default)
         {
             ArgumentNullException.ThrowIfNull(load);
+            // Hit: skip the wrapping lambda and the async state machine below.
+            var entry = _entry;
+            if (entry is not null && _timeProvider.GetUtcNow() < entry.NextRefreshAt)
+                return Task.FromResult(entry.Value);
             return GetWithKeepAsync(async ct => (await load(ct).ConfigureAwait(false), (TimeSpan?)_ttl), cancellationToken);
         }
 

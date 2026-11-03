@@ -288,8 +288,12 @@ Cache trong process cho dữ liệu dùng chung, đọc nhiều, vô hiệu hoá
 
 ### `KeyedStaleWhileRefreshCache<TKey, T>`
 
-Mỗi key một cache con (hai key không chờ nhau). `maxEntries` là giới hạn **xấp xỉ**: dưới tải song song số key có thể vượt nhẹ vì kiểm tra kích thước và chèn không atomic;
-mỗi lần miss một key mới khi cache đầy sẽ quét toàn bộ key để loại key ít dùng nhất (O(n)), nên giữ `maxEntries` vừa phải.
+Mỗi key một cache con (hai key không chờ nhau). Các key nằm trong một `MemoryCache` riêng với `SizeLimit = maxEntries`
+(mỗi key tính 1): khi đầy, `MemoryCache` compact ở nền và bỏ các key lâu không dùng.
+- Key mới đi qua một bảng phụ chứa các lượt load đang chạy, nên nhiều caller cùng một key mới chỉ load **một** lần, kể cả khi cache đầy.
+- Load xong key mới được chuyển vào cache. Lúc cache đầy, lượt chuyển này có thể bị từ chối tới khi compact xong: kết quả vẫn trả về, chỉ là lần gọi sau phải load lại.
+- `Invalidate(key)`/`InvalidateAll()` bỏ key khỏi cache và chặn lượt load đang chạy ghi kết quả cũ.
+- Cache này giữ `MemoryCache` nên là `IDisposable`; cache tạo qua `CacheRegistry.CreateKeyed` được registry dispose theo.
 
 ### `CacheRegistry<TGroup>` và vô hiệu hoá theo group
 
