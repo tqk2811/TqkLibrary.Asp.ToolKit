@@ -20,14 +20,21 @@ Implement `ISessionAccessSource`:
 ```csharp
 public sealed class SessionAccessSource(AppDbContext db) : ISessionAccessSource
 {
-    public async Task<SessionAccessRecord?> GetAsync(string sessionId, string userId, CancellationToken ct)
+    public async Task<SessionAccessResult> GetAsync(string sessionId, string userId, CancellationToken ct)
     {
-        // Return null when the session is revoked/expired, belongs to another user, or the account is unusable.
+        // Reject (optionally with a reason) when the session is revoked/expired, belongs to another user, or the
+        // account is unusable. Rejections are never cached.
+        if (session is null || session.RevokedAt is not null) return SessionAccessResult.Reject(SessionRejectionReasons.Revoked);
+        if (user.IsLocked) return SessionAccessResult.Reject(SessionRejectionReasons.UserLocked);
         ...
+        // A SessionAccessRecord converts implicitly to SessionAccessResult.Grant(...).
         return new SessionAccessRecord { UserId = userId, UserName = name, Roles = roles, Permissions = permissions };
     }
 }
 ```
+
+If `ISessionAccessSource.GetAsync` throws, no rejection is recorded (`SessionTokenValidator.GetSessionRejection` returns
+null) and the request fails with that exception instead of a 401.
 
 Registration:
 
@@ -36,27 +43,52 @@ builder.Services.AddTqkApiAuth(o =>
 {
     o.Issuer = "my-api";
     o.SigningKey = builder.Configuration["Tokens:Key"]!;    // >= 32 bytes
-    o.MaxSessionLifetime = TimeSpan.FromDays(90);          // optional, default: no cap
+    // Normal session 7 days, "remember me" session 30 days (Persistent null = same as Normal). Default: 30 days.
+    o.SessionLifetimes = new SessionLifetimes(TimeSpan.FromDays(7), Persistent: TimeSpan.FromDays(30));
+    o.MaxSessionLifetime = TimeSpan.FromDays(90);          // optional absolute cap for both kinds, default: no cap
 });
 builder.Services.AddScoped<ISessionAccessSource, SessionAccessSource>();
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddTqkJwtBearer();
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddTqkJwtBearer(jwt =>
+{
+    // Optional: own 401 body with the rejection reason returned by ISessionAccessSource.
+    jwt.Events.OnChallenge = async context =>
+    {
+        if (SessionTokenValidator.GetSessionRejection(context.HttpContext) is not { } rejection) return;
+        context.HandleResponse();
+        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        await context.Response.WriteAsJsonAsync(new { code = "session_rejected", reason = rejection.Reason });
+    };
+});
 ```
+
+`SessionTokenValidator.GetSessionRejection(HttpContext)` returns a `SessionRejection(Reason, Message)` (stored as an
+`HttpContext.Features` entry) or null; `IsSessionRejected` stays as a shortcut. The library sets the reasons
+`no_session` (token without session/user id) and `user_mismatch` (record of another user) itself.
 
 Issuing and refreshing (inside the app's auth service):
 
 ```csharp
 // Login
 var refresh = RefreshTokenCodec.Create(sessionId);            // store refresh.SecretHash with the session
-var expires = slidingPolicy.GetInitialExpiry(now);
+var expires = slidingPolicy.GetInitialExpiry(now, persistent: model.RememberMe);   // store "persistent" with the session
 var access = accessTokenFactory.Create(userId, sessionId, now);
 
 // Refresh: same refresh token is returned, only the session expiry slides
 if (!RefreshTokenCodec.TryParse(token, out var sid, out var secret) || !RefreshTokenCodec.Verify(secret, session.SecretHash)) return Unauthorized();
-var next = slidingPolicy.GetNextExpiry(session.CreatedAt, now);   // null = absolute cap reached
+var next = slidingPolicy.GetNextExpiry(session.CreatedAt, now, session.IsPersistent);   // null = absolute cap reached
 ```
 
-After writes, invalidate `SessionAccessCache`: `InvalidateSession` (sign-out), `InvalidateUser` (password/role
-change, lock), `InvalidateAll` (role permissions changed).
+`SlidingSessionPolicy` is not sealed and both methods are `virtual`. `AddTqkApiAuth` registers it with
+`TryAddSingleton`, so a subclass registered BEFORE it wins:
+
+```csharp
+builder.Services.AddSingleton<SlidingSessionPolicy, MySlidingSessionPolicy>();
+builder.Services.AddTqkApiAuth(o => { ... });
+```
+
+After writes, invalidate `SessionAccessCache`: `InvalidateSession` (sign-out; only that session), `InvalidateUser`
+(password/role change, lock; only that user's sessions), `InvalidateAll` (role permissions changed). A lookup in flight
+during an invalidation is never served afterwards.
 
 ## Dependencies
 

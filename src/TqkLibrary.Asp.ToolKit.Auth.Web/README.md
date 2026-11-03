@@ -73,6 +73,43 @@ otherwise the first viewer's bearer decides what everybody gets. Wrap it INSIDE 
 (other requests never see it). Endpoints that are always anonymous go in `AnonymousPathSuffixes` instead. The library
 also uses the scope for `RefreshAsync`, so the handler does not re-enter itself during a refresh.
 
+Options (`AddTqkWebAuth(cookie => ..., options => ...)`), all optional:
+
+| Option | Default | Effect |
+|---|---|---|
+| `CurrentUserFailureMode` | `SessionOnly` | `me` failed (network/5xx/timeout): continue with the session-only principal (no permission), or `Throw` `CurrentUserUnavailableException`. |
+| `CurrentUserFailureCacheFor` | `null` | Remember a failed `me` per session for this long, so an API outage does not make every request wait `CurrentUserTimeout`. Only transient failures are remembered (network error without status, 5xx, 429, timeout); other exceptions follow `CurrentUserFailureMode` but are asked again on the next request. |
+| `SkipCurrentUser` | `null` | `Func<HttpContext, bool>`: no `me` call for matching requests (a cached user still applies). Do NOT use it on endpoints that need roles or policies: the request principal is then session-only (no roles, no permissions) unless a user is already cached. |
+| `IsAjaxRequest` | `X-Requested-With` / `Accept: application/json` | `Func<HttpRequest, bool>` used by `SessionExpiredMiddleware`. |
+| `WriteSessionExpiredAjaxResponse` | 401 `{ success, message, redirect }` | `Func<HttpContext, SessionExpiredException, string redirect, Task>`. |
+| `StableIdentityClaimType` | `"sub"` | Claim carrying the session id on every principal; see antiforgery below. |
+
+`CurrentUserInfo.ExtraClaims` (`CurrentUserClaim(Type, Value)` list) are added to the request principal and cached
+with the rest in memory, never written to the cookie. Claim types the library owns are ignored: the session id and
+`StableIdentityClaimType`, `ClaimTypes.Role`, `PermissionClaimType`, `ClaimTypes.NameIdentifier`, `ClaimTypes.Name`
+and `ClaimTypes.Email`.
+
+Uploads (`StreamContent`/`MultipartContent`) are not buffered by default, so they are not resent after a 401 + refresh
+(a 401 on an upload means the session expired). Opt in per request with
+`request.Options.Set(SessionBearerHandler.ReplayBufferLimitOption, bytes)`: a body of known length up to that many bytes
+(at most `int.MaxValue`) is buffered and resent. The limit is enforced while reading, so a body longer than its declared
+`Content-Length` fails the send with `HttpRequestException` before anything is sent.
+
+When `SessionBearerHandler` throws `SessionExpiredException`, it also registers a `Response.OnStarting` callback that
+drops the web session (deletes the cookie) unless that already happened, so the cookie is cleared even when an MVC
+exception filter or a `try/catch` in the action handles the exception instead of `SessionExpiredMiddleware`. If the
+response has already started nothing happens (headers can no longer be written; the next request clears the cookie). A
+sign-in later in the same request cancels the pending drop, and a failure of the drop is logged, never thrown.
+
+Antiforgery: ASP.NET Core binds its tokens to the `sub` claim (then `NameIdentifier`, then `upn`). Every web principal
+(cookie, session-only when the API is unreachable, full after `me`) carries `sub` = API session id, so a form issued in
+one state still posts in the other. Tokens are therefore bound to the session: after a new sign-in, forms need a new
+token. The user id stays in `ClaimTypes.NameIdentifier`.
+
+Consequences of `sub` = session id: forms opened before a deploy of this version, and forms opened before a re-login,
+fail the antiforgery check once (the page must be reloaded). Code that reads the `sub` claim as the user id must read
+`ClaimTypes.NameIdentifier` instead.
+
 ## Dependencies
 
 Targets net10.0 and uses the ASP.NET Core shared framework. It has no NuGet dependency on other packages of this toolkit; the API it signs in against is expected to use the scheme implemented by [TqkLibrary.Asp.ToolKit.Auth.Api](https://www.nuget.org/packages/TqkLibrary.Asp.ToolKit.Auth.Api) (non-rotating refresh tokens).

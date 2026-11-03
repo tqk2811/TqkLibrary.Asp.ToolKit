@@ -11,10 +11,11 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
     /// <see cref="WebSessionTicket"/>) to every call of the API client it is added to.
     /// <list type="bullet">
     ///   <item>Token about to expire (<see cref="WebAuthOptions.RefreshSkew"/>) → refresh before sending.</item>
-    ///   <item>API answers 401 → refresh EXACTLY once and resend. Upload bodies (multipart/stream) are not buffered,
-    ///   so they are not resent: a 401 for them means the session expired.</item>
+    ///   <item>API answers 401 → refresh EXACTLY once and resend. Upload bodies (multipart/stream) are not buffered by
+    ///   default, so they are not resent: a 401 for them means the session expired. Opt in per request with <see cref="ReplayBufferLimitOption"/>.</item>
     ///   <item>Still 401 after a refresh, or the refresh rejected → <see cref="SessionExpiredException"/>
-    ///   (<see cref="SessionExpiredMiddleware"/> signs out and redirects to login).</item>
+    ///   (<see cref="SessionExpiredMiddleware"/> signs out and redirects to login). The web session cookie is dropped
+    ///   before the response starts even when app code catches the exception (<c>Response.OnStarting</c>).</item>
     ///   <item>Transient refresh failures propagate as they are; the cookie is kept. The exception is the
     ///   PROACTIVE refresh (token only about to expire): if it fails transiently
     ///   (<see cref="WebAuthOptions.IsTransientRefreshFailure"/>) while the current access token is still valid for at
@@ -60,6 +61,21 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
                 return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
 
             var ticket = WebSessionTicket.For(context);
+            try
+            {
+                return await SendWithSessionAsync(request, ticket, options, cancellationToken).ConfigureAwait(false);
+            }
+            catch (SessionExpiredException)
+            {
+                // Drop the dead cookie even if the app catches the exception itself (see MarkSessionExpired).
+                ticket.MarkSessionExpired();
+                throw;
+            }
+        }
+
+        private async Task<HttpResponseMessage> SendWithSessionAsync(HttpRequestMessage request, WebSessionTicket ticket,
+            WebAuthOptions options, CancellationToken cancellationToken)
+        {
             var tokens = await ticket.GetTokensAsync(cancellationToken).ConfigureAwait(false)
                 ?? throw new SessionExpiredException(options.SessionExpiredMessage);
             var now = _clock.GetUtcNow().UtcDateTime;
@@ -81,10 +97,9 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
                 }
             }
 
-            // Upload bodies may be huge and StreamContent can be read once: not buffered, hence not resendable.
-            var replayable = IsReplayable(request.Content);
-            if (replayable && request.Content is not null)
-                await request.Content.LoadIntoBufferAsync(cancellationToken).ConfigureAwait(false);
+            // Upload bodies may be huge and StreamContent can be read once: buffered (hence resendable) only when the
+            // app opted in and the length is known and within the limit.
+            var replayable = await PrepareReplayAsync(request, options, cancellationToken).ConfigureAwait(false);
 
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", tokens.AccessToken);
             var response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
@@ -118,9 +133,40 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
             _ => false,
         };
 
-        /// <summary>Bufferable bodies (JSON, form, string...) can be resent; multipart and stream uploads cannot.</summary>
-        private static bool IsReplayable(HttpContent? content)
-            => content is not (MultipartContent or StreamContent);
+        /// <summary>
+        /// Per-request opt-in to buffering an upload (<c>StreamContent</c>, <c>MultipartContent</c>) so it can be resent
+        /// after a 401 + refresh (bytes, at most <see cref="int.MaxValue"/>; default / 0 = never buffer, a 401 on the
+        /// upload then means <see cref="SessionExpiredException"/>). The body length must be known up front and within
+        /// the limit; a body that turns out longer than declared makes the send fail with <see cref="HttpRequestException"/>
+        /// before anything is sent:
+        /// <c>request.Options.Set(SessionBearerHandler.ReplayBufferLimitOption, 10_000_000)</c>.
+        /// </summary>
+        public static readonly HttpRequestOptionsKey<long> ReplayBufferLimitOption = new("TqkLibrary.Asp.ToolKit.Auth.Web.ReplayBufferLimit");
+
+        /// <summary>
+        /// Buffers the body when it can be resent after a 401. Bodies other than multipart/stream (JSON, form, string...)
+        /// always; multipart and stream uploads only when the per-request limit is positive and their
+        /// length is known and within it. Never reads a body it cannot keep whole, so a refused upload is sent intact once.
+        /// </summary>
+        private static async Task<bool> PrepareReplayAsync(HttpRequestMessage request, WebAuthOptions options, CancellationToken cancellationToken)
+        {
+            var content = request.Content;
+            if (content is null)
+                return true;
+            if (content is MultipartContent or StreamContent)
+            {
+                var limit = request.Options.TryGetValue(ReplayBufferLimitOption, out var perRequest) ? perRequest : 0;
+                if (limit <= 0 || content.Headers.ContentLength is not { } length || length > limit)
+                    return false;
+                // The ContentLength header can lie (a stream longer than declared): enforce the limit while reading.
+                // A failure here (HttpRequestException) leaves the stream half-read, so it propagates instead of
+                // sending a truncated body.
+                await content.LoadIntoBufferAsync(Math.Min(limit, int.MaxValue), cancellationToken).ConfigureAwait(false);
+                return true;
+            }
+            await content.LoadIntoBufferAsync(cancellationToken).ConfigureAwait(false);
+            return true;
+        }
 
         private static bool IsAnonymousPath(HttpRequestMessage request, WebAuthOptions options)
         {

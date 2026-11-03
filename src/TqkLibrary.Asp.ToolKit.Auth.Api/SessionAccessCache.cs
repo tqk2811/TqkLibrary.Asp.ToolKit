@@ -1,26 +1,31 @@
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
+using System.Collections.Concurrent;
 using TqkLibrary.Asp.ToolKit.Auth.Api.Models;
 
 namespace TqkLibrary.Asp.ToolKit.Auth.Api
 {
     /// <summary>
     /// Short cache (singleton) of the per-request session lookup, keyed by session id, so the API does not query the
-    /// session, roles and permissions on EVERY authenticated request. A dead session (null) is never cached.
+    /// session, roles and permissions on EVERY authenticated request. A rejection is never cached.
     /// <para>
     /// Invalidate right after the write succeeds instead of waiting for
     /// <see cref="ApiAuthOptions.SessionAccessCacheLifetime"/>:
     /// <list type="bullet">
-    ///   <item><see cref="InvalidateSession"/>: one session revoked (sign-out).</item>
+    ///   <item><see cref="InvalidateSession"/>: one session revoked (sign-out); other sessions stay cached.</item>
     ///   <item><see cref="InvalidateUser"/>: every session of a user (password change, account deleted/locked, role or
-    ///   name/email change).</item>
+    ///   name/email change); other users stay cached.</item>
     ///   <item><see cref="InvalidateAll"/>: permissions of a role changed, role renamed/deleted.</item>
     /// </list>
-    /// All three increment ONE generation counter (a field: monotonic, never evicted) and every entry stores the
-    /// generation read before its load started, so a load in flight during an invalidation writes an entry that is
-    /// already stale. Writes are rare, so dropping a few seconds of cache on each one costs almost nothing, and no
-    /// evicted version number can ever "match again". The three names stay separate to state intent at call sites
-    /// (and allow narrowing the scope later).
+    /// A monotonic sequence number (a field, never evicted) is read before every load and stored in the entry; each
+    /// invalidation stamps its target (session id, user id, or everything) with a NEW sequence number. An entry is
+    /// served only when its load started after every stamp that applies to it, so a load in flight during an
+    /// invalidation writes an entry that is already stale.
+    /// </para>
+    /// <para>
+    /// Stamps older than the cache lifetime are pruned on an invalidation (at most once per lifetime, minimum 1 second); pruning raises a floor sequence first,
+    /// so only entries whose load started before the pruned stamps (already expired, or loads hanging longer than the
+    /// lifetime) are dropped: an old stamp can never stop applying.
     /// </para>
     /// <para>
     /// Uses its OWN <see cref="MemoryCache"/>, not the app's shared <see cref="IMemoryCache"/>: if the shared cache had a
@@ -33,12 +38,20 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
     /// </summary>
     public sealed class SessionAccessCache : IDisposable
     {
-        private sealed record Entry(SessionAccessRecord Access, DateTimeOffset ExpiresAt, long Generation);
+        private sealed record Entry(SessionAccessRecord Access, DateTimeOffset ExpiresAt, long Sequence);
+
+        private readonly record struct Stamp(long Sequence, DateTimeOffset At);
 
         private readonly MemoryCache _cache = new(new MemoryCacheOptions());
+        private readonly ConcurrentDictionary<string, Stamp> _sessionStamps = new(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<string, Stamp> _userStamps = new(StringComparer.Ordinal);
+        private readonly object _pruneLock = new();
         private readonly TimeProvider _clock;
         private readonly IOptions<ApiAuthOptions> _options;
-        private long _generation;
+        private long _sequence;
+        private long _allStamp;
+        private long _floor;
+        private DateTimeOffset _lastPrune = DateTimeOffset.MinValue;
 
         public SessionAccessCache(TimeProvider clock, IOptions<ApiAuthOptions> options)
         {
@@ -48,55 +61,138 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
             _options = options;
         }
 
-        /// <summary>The cached record of <paramref name="sessionId"/> when still valid, otherwise the result of <paramref name="load"/> (cached when not null).</summary>
-        public async Task<SessionAccessRecord?> GetAsync(string sessionId, string userId,
-            Func<CancellationToken, Task<SessionAccessRecord?>> load, CancellationToken cancellationToken = default)
+        /// <summary>
+        /// The cached access of <paramref name="sessionId"/> when still valid, otherwise the result of
+        /// <paramref name="load"/> (cached when granted to <paramref name="userId"/>). A granted record of another user is
+        /// returned as a rejection with <see cref="SessionRejectionReasons.UserMismatch"/>.
+        /// </summary>
+        public async Task<SessionAccessResult> GetAsync(string sessionId, string userId,
+            Func<CancellationToken, Task<SessionAccessResult>> load, CancellationToken cancellationToken = default)
         {
             ArgumentException.ThrowIfNullOrEmpty(sessionId);
             ArgumentException.ThrowIfNullOrEmpty(userId);
             ArgumentNullException.ThrowIfNull(load);
 
-            // Read the generation BEFORE loading: an invalidation during the load makes the stored entry stale at once.
-            var generation = Interlocked.Read(ref _generation);
+            // Read the sequence BEFORE loading: an invalidation during the load stamps a higher number.
+            var sequence = Interlocked.Read(ref _sequence);
 
             if (_cache.TryGetValue(sessionId, out Entry? hit) && hit is not null
                 && string.Equals(hit.Access.UserId, userId, StringComparison.Ordinal)
-                && hit.Generation == generation
-                && hit.ExpiresAt > _clock.GetUtcNow())
+                && hit.ExpiresAt > _clock.GetUtcNow()
+                && IsCurrent(hit, sessionId))
             {
-                return hit.Access;
+                return SessionAccessResult.Grant(hit.Access);
             }
 
-            var access = await load(cancellationToken).ConfigureAwait(false);
-            if (access is null || !string.Equals(access.UserId, userId, StringComparison.Ordinal))
+            var result = await load(cancellationToken).ConfigureAwait(false) ?? SessionAccessResult.Reject();
+            if (!result.IsGranted)
             {
                 _cache.Remove(sessionId);
-                // A record of another user is treated as a dead session.
-                return null;
+                return result;
+            }
+            if (!string.Equals(result.Access.UserId, userId, StringComparison.Ordinal))
+            {
+                _cache.Remove(sessionId);
+                return SessionAccessResult.Reject(SessionRejectionReasons.UserMismatch);
             }
 
             var lifetime = _options.Value.SessionAccessCacheLifetime;
             if (lifetime > TimeSpan.Zero)
-                _cache.Set(sessionId, new Entry(access, _clock.GetUtcNow().Add(lifetime), generation), lifetime);
-            return access;
+                _cache.Set(sessionId, new Entry(result.Access, _clock.GetUtcNow().Add(lifetime), sequence), lifetime);
+            return result;
         }
 
-        /// <summary>
-        /// Drops the result of one session (session just revoked). Currently clears all cached entries (single
-        /// generation counter), not only <paramref name="sessionId"/>.
-        /// </summary>
-        public void InvalidateSession(string sessionId) => InvalidateAll();
+        /// <summary>Drops the cached result of one session (session just revoked); other sessions stay cached.</summary>
+        public void InvalidateSession(string sessionId)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(sessionId);
+            AddStamp(_sessionStamps, sessionId);
+            _cache.Remove(sessionId);
+        }
 
-        /// <summary>
-        /// Drops the results of every session of a user. Currently clears all cached entries (single generation
-        /// counter), not only those of <paramref name="userId"/>.
-        /// </summary>
-        public void InvalidateUser(string userId) => InvalidateAll();
+        /// <summary>Drops the cached results of every session of a user; other users stay cached.</summary>
+        public void InvalidateUser(string userId)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(userId);
+            AddStamp(_userStamps, userId);
+        }
 
         /// <summary>Drops every result.</summary>
-        public void InvalidateAll() => Interlocked.Increment(ref _generation);
+        public void InvalidateAll()
+        {
+            var sequence = Interlocked.Increment(ref _sequence);
+            InterlockedMax(ref _allStamp, sequence);
+        }
+
+        /// <summary>Number of invalidation stamps currently kept (session + user); for tests.</summary>
+        internal int StampCount => _sessionStamps.Count + _userStamps.Count;
 
         /// <inheritdoc />
         public void Dispose() => _cache.Dispose();
+
+        /// <summary>
+        /// True when the entry's load started after every invalidation that applies to it. Stamps are read BEFORE the
+        /// floor: pruning raises the floor before removing a stamp, so a stamp removed meanwhile is covered by the floor.
+        /// </summary>
+        private bool IsCurrent(Entry entry, string sessionId)
+        {
+            if (_sessionStamps.TryGetValue(sessionId, out var sessionStamp) && entry.Sequence < sessionStamp.Sequence)
+                return false;
+            if (_userStamps.TryGetValue(entry.Access.UserId, out var userStamp) && entry.Sequence < userStamp.Sequence)
+                return false;
+            return entry.Sequence >= Interlocked.Read(ref _allStamp) && entry.Sequence >= Interlocked.Read(ref _floor);
+        }
+
+        private void AddStamp(ConcurrentDictionary<string, Stamp> stamps, string key)
+        {
+            var now = _clock.GetUtcNow();
+            var sequence = Interlocked.Increment(ref _sequence);
+            stamps.AddOrUpdate(key, new Stamp(sequence, now),
+                (_, old) => old.Sequence > sequence ? old : new Stamp(sequence, now));
+            Prune(now);
+        }
+
+        /// <summary>
+        /// Removes stamps older than the cache lifetime (raising the floor first). Runs at most once per
+        /// max(lifetime, 1 second) so a burst of invalidations does not scan the stamps every time.
+        /// </summary>
+        private void Prune(DateTimeOffset now)
+        {
+            var lifetime = _options.Value.SessionAccessCacheLifetime;
+            var interval = lifetime > TimeSpan.FromSeconds(1) ? lifetime : TimeSpan.FromSeconds(1);
+            var cutoff = now - (lifetime > TimeSpan.Zero ? lifetime : TimeSpan.Zero) - TimeSpan.FromSeconds(1);
+            lock (_pruneLock)
+            {
+                if (now - _lastPrune < interval)
+                    return;
+                _lastPrune = now;
+                PruneLocked(_sessionStamps, cutoff);
+                PruneLocked(_userStamps, cutoff);
+            }
+        }
+
+        private void PruneLocked(ConcurrentDictionary<string, Stamp> stamps, DateTimeOffset cutoff)
+        {
+            foreach (var pair in stamps)
+            {
+                if (pair.Value.At >= cutoff)
+                    continue;
+                InterlockedMax(ref _floor, pair.Value.Sequence);
+                // Only removes the exact stamp seen: a newer stamp written meanwhile stays.
+                stamps.TryRemove(pair);
+            }
+        }
+
+        private static void InterlockedMax(ref long target, long value)
+        {
+            var current = Interlocked.Read(ref target);
+            while (value > current)
+            {
+                var previous = Interlocked.CompareExchange(ref target, value, current);
+                if (previous == current)
+                    return;
+                current = previous;
+            }
+        }
     }
 }

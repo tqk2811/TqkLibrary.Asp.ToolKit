@@ -17,5 +17,13 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Models
 
         /// <summary>Permission names (become <see cref="WebAuthOptions.PermissionClaimType"/> claims).</summary>
         public IReadOnlyList<string> Permissions { get; init; } = Array.Empty<string>();
+
+        /// <summary>
+        /// Additional claims added to the request principal as they are (tenant, display name, feature flags...). Cached
+        /// with the rest in memory (<see cref="CurrentUserCache"/>), never written to the cookie. Claims whose type is
+        /// <see cref="WebAuthOptions.SessionIdClaimType"/> or <see cref="WebAuthOptions.StableIdentityClaimType"/> are
+        /// ignored (they would break the session binding).
+        /// </summary>
+        public IReadOnlyList<CurrentUserClaim> ExtraClaims { get; init; } = Array.Empty<CurrentUserClaim>();
     }
 }

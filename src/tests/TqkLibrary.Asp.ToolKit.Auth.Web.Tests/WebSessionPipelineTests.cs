@@ -1,0 +1,179 @@
+using Microsoft.Extensions.DependencyInjection;
+using System.Net;
+using System.Security.Claims;
+using System.Text.Json;
+using TqkLibrary.Asp.ToolKit.Auth.Web.Models;
+using Xunit;
+
+namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
+{
+    /// <summary>
+    /// <see cref="SessionExpiredMiddleware"/> and <see cref="CurrentUserMiddleware"/> through a real cookie pipeline.
+    /// </summary>
+    public class WebSessionPipelineTests
+    {
+        private const string Sid = "s-1";
+
+        // ---------- SessionExpiredMiddleware ----------
+
+        [Fact]
+        public async Task SessionExpired_NormalRequest_RedirectsToLoginWithReturnUrl_AndDeletesCookie()
+        {
+            await using var app = await WebAuthTestApp.StartAsync();
+            await app.SignInAsync(Sid);
+            Assert.NotEmpty(app.Cookies);
+
+            using var response = await app.SendAsync(HttpMethod.Get, "/expired?page=2");
+
+            Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+            Assert.Equal(WebAuthTestApp.LoginPath + "?ReturnUrl=%2Fexpired%3Fpage%3D2", response.Headers.Location?.OriginalString);
+            AssertCookieDeleted(response, app);
+        }
+
+        [Fact]
+        public async Task SessionExpired_ResponseClearedBeforeSignOut_PartialHeaderGone_DeleteCookieKept()
+        {
+            await using var app = await WebAuthTestApp.StartAsync();
+            await app.SignInAsync(Sid);
+
+            using var response = await app.SendAsync(HttpMethod.Get, "/expired");
+
+            // Clear() ran FIRST (the header written by the endpoint is gone), the sign-out AFTER (its Set-Cookie survives).
+            Assert.False(response.Headers.Contains(WebAuthTestApp.PartialHeader));
+            AssertCookieDeleted(response, app);
+        }
+
+        [Theory]
+        [InlineData("X-Requested-With", "XMLHttpRequest")]
+        [InlineData("Accept", "application/json")]
+        public async Task SessionExpired_AjaxRequest_Returns401Json_WithRedirect(string header, string value)
+        {
+            await using var app = await WebAuthTestApp.StartAsync();
+            await app.SignInAsync(Sid);
+
+            using var response = await app.SendAsync(HttpMethod.Get, "/expired?page=2", r => r.Headers.TryAddWithoutValidation(header, value));
+
+            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+            Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
+            using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            Assert.False(json.RootElement.GetProperty("success").GetBoolean());
+            Assert.Equal("Session gone.", json.RootElement.GetProperty("message").GetString());
+            Assert.Equal(WebAuthTestApp.LoginPath + "?ReturnUrl=%2Fexpired%3Fpage%3D2", json.RootElement.GetProperty("redirect").GetString());
+            AssertCookieDeleted(response, app);
+        }
+
+        // ---------- CurrentUserMiddleware ----------
+
+        [Fact]
+        public async Task Me_LoadedIntoPrincipal_AndCachedAcrossRequests()
+        {
+            await using var app = await WebAuthTestApp.StartAsync();
+            var permissions = new List<string> { "members.view" };
+            app.Api.Me = () => new CurrentUserInfo
+            {
+                Id = "u-1", UserName = "editor", Email = "e@x.test", Roles = ["Editor"], Permissions = [.. permissions],
+            };
+            await app.SignInAsync(Sid);
+
+            var first = await app.WhoAmIAsync();
+            permissions.Add("users.view");
+            var second = await app.WhoAmIAsync();
+
+            Assert.Equal(1, app.Api.MeCalls);
+            Assert.Contains("auth=true", first);
+            Assert.Contains(ClaimTypes.NameIdentifier + "=u-1", first);
+            Assert.Contains(ClaimTypes.Name + "=editor", first);
+            Assert.Contains(ClaimTypes.Email + "=e@x.test", first);
+            Assert.Contains(ClaimTypes.Role + "=Editor", first);
+            Assert.Contains("permission=members.view", first);
+            Assert.Contains("tqk_sid=" + Sid, first);
+            Assert.DoesNotContain("permission=users.view", second);
+        }
+
+        [Fact]
+        public async Task Me_CacheRemoved_AsksAgain_AndSeesNewPermissions()
+        {
+            await using var app = await WebAuthTestApp.StartAsync();
+            var permissions = new List<string> { "members.view" };
+            app.Api.Me = () => new CurrentUserInfo { Id = "u-1", UserName = "editor", Permissions = [.. permissions] };
+            await app.SignInAsync(Sid);
+            await app.WhoAmIAsync();
+
+            permissions.Add("users.view");
+            app.Services.GetRequiredService<CurrentUserCache>().Remove(Sid);
+            var after = await app.WhoAmIAsync();
+
+            Assert.Equal(2, app.Api.MeCalls);
+            Assert.Contains("permission=users.view", after);
+        }
+
+        [Fact]
+        public async Task Me_SignInAgainWithSameSession_DropsCachedUser()
+        {
+            await using var app = await WebAuthTestApp.StartAsync();
+            var permission = "members.view";
+            app.Api.Me = () => new CurrentUserInfo { Id = "u-1", UserName = "editor", Permissions = [permission] };
+            await app.SignInAsync(Sid);
+            await app.WhoAmIAsync();
+
+            permission = "users.view";
+            await app.SignInAsync(Sid);
+            var after = await app.WhoAmIAsync();
+
+            Assert.Contains("permission=users.view", after);
+            Assert.DoesNotContain("permission=members.view", after);
+        }
+
+        [Fact]
+        public async Task Me_SessionExpired_ClearsCookie_AndRunsAsAnonymous()
+        {
+            await using var app = await WebAuthTestApp.StartAsync();
+            app.Api.Me = () => throw new SessionExpiredException();
+            await app.SignInAsync(Sid);
+
+            using var response = await app.SendAsync(HttpMethod.Get, "/whoami");
+            var body = await response.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.StartsWith("auth=false", body);
+            Assert.DoesNotContain("tqk_sid=", body);
+            AssertCookieDeleted(response, app);
+        }
+
+        [Theory]
+        [InlineData("http")]
+        [InlineData("timeout")]
+        public async Task Me_TransientFailure_RunsWithSessionOnlyPrincipal_AndIsNotCached(string kind)
+        {
+            await using var app = await WebAuthTestApp.StartAsync();
+            app.Api.Me = () => throw (kind == "http" ? new HttpRequestException("down") : new OperationCanceledException("slow"));
+            await app.SignInAsync(Sid);
+
+            var first = await app.WhoAmIAsync();
+            await app.WhoAmIAsync();
+
+            Assert.Equal("auth=true\ntqk_sid=" + Sid + "\nsub=" + Sid, first);
+            Assert.NotEmpty(app.Cookies); // the session is kept
+            Assert.Equal(2, app.Api.MeCalls);
+        }
+
+        [Fact]
+        public async Task Anonymous_MeNeverCalled()
+        {
+            await using var app = await WebAuthTestApp.StartAsync();
+
+            var body = await app.WhoAmIAsync();
+
+            Assert.StartsWith("auth=false", body);
+            Assert.Equal(0, app.Api.MeCalls);
+        }
+
+        private static void AssertCookieDeleted(HttpResponseMessage response, WebAuthTestApp app)
+        {
+            var setCookies = WebAuthTestApp.SetCookies(response);
+            Assert.Contains(setCookies, c => c.StartsWith(".AspNetCore.Cookies=;", StringComparison.Ordinal)
+                && c.Contains("expires=Thu, 01 Jan 1970", StringComparison.OrdinalIgnoreCase));
+            Assert.Empty(app.Cookies);
+        }
+    }
+}

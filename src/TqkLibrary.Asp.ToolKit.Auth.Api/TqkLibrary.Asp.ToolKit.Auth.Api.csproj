@@ -14,4 +14,8 @@
 		<PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" />
 	</ItemGroup>
 
+	<ItemGroup>
+		<InternalsVisibleTo Include="TqkLibrary.Asp.ToolKit.Auth.Api.Tests" />
+	</ItemGroup>
+
 </Project>
