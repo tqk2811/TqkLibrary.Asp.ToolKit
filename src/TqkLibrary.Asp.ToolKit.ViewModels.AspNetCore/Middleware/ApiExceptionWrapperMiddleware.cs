@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Connections;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -44,7 +45,11 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Middleware
             {
                 await _next(context);
             }
-            catch (OperationCanceledException ex) when (context.RequestAborted.IsCancellationRequested)
+            // ConnectionResetException alone already means "client left" (it can arrive before RequestAborted is set);
+            // cancellation and IOException only count once RequestAborted is set, so a server side IOException (disk
+            // full...) while the client is still there stays a server error.
+            catch (Exception ex) when (ex is ConnectionResetException
+                || (context.RequestAborted.IsCancellationRequested && ex is OperationCanceledException or IOException))
             {
                 // Nobody reads the body any more; not a server error.
                 _logger.LogInformation(ex, "Request aborted by client. RequestId: {RequestId}", context.GetRequestId());
@@ -68,24 +73,38 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Middleware
         async Task HandleExceptionAsync(HttpContext context, Exception exception)
         {
             string requestId = context.GetRequestId();
-            ApiErrorMapping mapping = Map(context, exception);
+            ApiErrorMapping mapping = Transform(context, exception, Map(context, exception));
 
-            if (mapping.StatusCode >= 500)
+            LogLevel level = mapping.LogLevel ?? (mapping.StatusCode >= 500 ? LogLevel.Error : LogLevel.Warning);
+            if (mapping.StatusCode >= 500 && mapping.LogLevel is null)
             {
                 _logger.LogError(exception, "Unhandled exception. RequestId: {RequestId}", requestId);
             }
             else
             {
-                _logger.LogWarning("Request failed. RequestId: {RequestId}, Error: {ErrorCode}, Message: {Message}",
+                _logger.Log(level, level >= LogLevel.Error ? exception : null,
+                    "Request failed. RequestId: {RequestId}, Error: {ErrorCode}, Message: {Message}",
                     requestId, mapping.Code, mapping.Message);
             }
 
             ApiErrorResponse response = ApiErrorResponse.Create(
                 requestId,
-                ApiError.Create(mapping.Code, mapping.Message, mapping.Details));
+                new ApiError
+                {
+                    Code = mapping.Code,
+                    Message = mapping.Message,
+                    Details = mapping.Details,
+                    Fields = mapping.Fields,
+                    Retryable = mapping.Retryable,
+                });
 
             context.Response.StatusCode = mapping.StatusCode;
             context.Response.ContentType = "application/json; charset=utf-8";
+            if (mapping.Headers is not null)
+            {
+                foreach (KeyValuePair<string, string> header in mapping.Headers)
+                    context.Response.Headers[header.Key] = header.Value;
+            }
             try
             {
                 await context.Response.WriteAsync(_options.Value.SerializeError(response), context.RequestAborted);
@@ -93,6 +112,23 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Middleware
             catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
             {
                 // Client left while the error body was being written: nothing to report.
+            }
+        }
+
+        ApiErrorMapping Transform(HttpContext context, Exception exception, ApiErrorMapping mapping)
+        {
+            var transform = _options.Value.TransformError;
+            if (transform is null) return mapping;
+            try
+            {
+                return transform(context, exception, mapping) ?? mapping;
+            }
+            catch (Exception transformException)
+            {
+                // Same rule as a broken mapper: never hide the original error.
+                _logger.LogError(transformException, "TransformError threw while handling {ExceptionType}. RequestId: {RequestId}",
+                    exception.GetType().FullName, context.GetRequestId());
+                return mapping;
             }
         }
 

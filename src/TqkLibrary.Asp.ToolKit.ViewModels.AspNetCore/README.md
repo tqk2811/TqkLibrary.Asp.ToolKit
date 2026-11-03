@@ -60,10 +60,12 @@ public sealed class ProductsController(IProductService service) : ControllerBase
   `FileStreamResult`.
 - `UseTqkRequestId()`: reads `X-Request-Id` (printable ASCII, up to 128 chars) or generates `req_<guid N>`, echoes it
   on the response. Read it with `HttpContext.GetRequestId()` (falls back to `TraceIdentifier`).
-- `UseTqkApiExceptionWrapper()`: client abort -> 499 without body; response already started -> connection aborted;
+- `UseTqkApiExceptionWrapper()`: client abort (cancellation or `IOException` once `RequestAborted` is set, or `ConnectionResetException`) -> 499 without body; response already started -> connection aborted;
   `ApiErrorException` -> its status and code; then every registered `IApiExceptionMapper` in order
   (`ApiErrorMapping? Map(Exception)`); otherwise 500 `INTERNAL_ERROR` without exception details. Logs Error for 5xx,
-  Warning otherwise. The body is written with `SerializeError` (default System.Text.Json, camelCase, nulls ignored).
+  Warning otherwise (override per mapping with `LogLevel`; the exception is attached at Error and above). A mapping
+  can also carry `Fields`, `Retryable` (written to the error body) and response `Headers` (e.g. `Retry-After`).
+  `TransformError` (option) post-processes every mapping, whatever its source, before it is written. The body is written with `SerializeError` (default System.Text.Json, camelCase, nulls ignored).
   Apps whose MVC output uses Newtonsoft must set `SerializeError` to their own serializer so these bodies match the
   MVC responses (`o.SerializeError = v => JsonConvert.SerializeObject(v, settings)`); null properties (`meta`,
   `fields`, `details`...) are omitted only if that serializer ignores nulls.

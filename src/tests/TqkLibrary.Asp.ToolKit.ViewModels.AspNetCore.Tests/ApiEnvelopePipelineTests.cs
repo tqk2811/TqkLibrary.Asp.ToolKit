@@ -119,6 +119,58 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Tests
         }
 
         [Fact]
+        public async Task ExceptionWrapper_MapperExtras_WriteFieldsRetryableAndHeaders()
+        {
+            await using TestApp app = await TestApp.StartAsync(services => services.AddSingleton<IApiExceptionMapper, RichMapper>());
+            using HttpResponseMessage response = await app.Client.GetAsync("/t/mapped");
+
+            Assert.Equal((HttpStatusCode)429, response.StatusCode);
+            Assert.Equal("7", Assert.Single(response.Headers.GetValues("Retry-After")));
+            JsonElement error = (await TestApp.ReadJsonAsync(response)).GetProperty("error");
+            Assert.True(error.GetProperty("retryable").GetBoolean());
+            JsonElement field = Assert.Single(error.GetProperty("fields").EnumerateArray());
+            Assert.Equal("name", field.GetProperty("field").GetString());
+            Assert.Equal(ApiErrorCodes.FieldTooLong, field.GetProperty("code").GetString());
+        }
+
+        [Fact]
+        public async Task ExceptionWrapper_TransformError_AppliesToApiErrorException()
+        {
+            await using TestApp app = await TestApp.StartAsync(configure: o => o.TransformError = (_, _, m) => m.Code == "PRODUCT_NOT_FOUND"
+                ? m with { Retryable = false, Headers = new Dictionary<string, string> { ["X-Hint"] = "reload" } }
+                : m);
+            using HttpResponseMessage response = await app.Client.GetAsync("/t/api-error");
+
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+            Assert.Equal("reload", Assert.Single(response.Headers.GetValues("X-Hint")));
+            JsonElement error = (await TestApp.ReadJsonAsync(response)).GetProperty("error");
+            Assert.Equal("PRODUCT_NOT_FOUND", error.GetProperty("code").GetString());
+            Assert.False(error.GetProperty("retryable").GetBoolean());
+        }
+
+        [Fact]
+        public async Task ExceptionWrapper_ThrowingTransform_WritesOriginalMapping()
+        {
+            await using TestApp app = await TestApp.StartAsync(configure: o => o.TransformError = (_, _, _) => throw new InvalidOperationException("transform bug"));
+            using HttpResponseMessage response = await app.Client.GetAsync("/t/api-error");
+
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+            string text = await response.Content.ReadAsStringAsync();
+            Assert.DoesNotContain("transform bug", text);
+            Assert.Equal("PRODUCT_NOT_FOUND", JsonDocument.Parse(text).RootElement.GetProperty("error").GetProperty("code").GetString());
+        }
+
+        [Fact]
+        public async Task ExceptionWrapper_ConnectionReset_Is499WithoutBody()
+        {
+            await using TestApp app = await TestApp.StartAsync();
+            using HttpResponseMessage response = await app.Client.GetAsync("/t/reset");
+
+            Assert.Equal((HttpStatusCode)499, response.StatusCode);
+            Assert.Equal(string.Empty, await response.Content.ReadAsStringAsync());
+        }
+
+        [Fact]
         public async Task ExceptionWrapper_ThrowingMapper_FallsBackToInternalError()
         {
             await using TestApp app = await TestApp.StartAsync(services => services.AddSingleton<IApiExceptionMapper, ThrowingMapper>());

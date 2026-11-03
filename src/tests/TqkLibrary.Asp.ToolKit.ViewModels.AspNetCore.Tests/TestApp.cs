@@ -96,6 +96,20 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Tests
             => exception is KeyNotFoundException ? new ApiErrorMapping(404, "KEY_NOT_FOUND", exception.Message) : null;
     }
 
+    public sealed class RichMapper : IApiExceptionMapper
+    {
+        public ApiErrorMapping? Map(Exception exception)
+            => exception is KeyNotFoundException
+                ? new ApiErrorMapping(429, "SLOW_DOWN", exception.Message)
+                {
+                    Fields = new List<FieldError> { new FieldError { Field = "name", Code = ApiErrorCodes.FieldTooLong } },
+                    Retryable = true,
+                    Headers = new Dictionary<string, string> { ["Retry-After"] = "7" },
+                    LogLevel = Microsoft.Extensions.Logging.LogLevel.Information,
+                }
+                : null;
+    }
+
     public sealed class ThrowingMapper : IApiExceptionMapper
     {
         public ApiErrorMapping? Map(Exception exception) => throw new InvalidOperationException("mapper bug");
@@ -129,6 +143,9 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Tests
 
         [HttpGet("mapped")]
         public ProductDto Mapped() => throw new KeyNotFoundException("missing key");
+
+        [HttpGet("reset")]
+        public ProductDto Reset() => throw new Microsoft.AspNetCore.Connections.ConnectionResetException("peer reset");
 
         [HttpGet("crash")]
         public ProductDto Crash() => throw new InvalidOperationException("secret internal detail");

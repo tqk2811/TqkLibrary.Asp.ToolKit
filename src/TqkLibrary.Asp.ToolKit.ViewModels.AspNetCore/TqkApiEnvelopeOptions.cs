@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Http;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -42,6 +43,14 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore
         /// </para>
         /// </summary>
         public bool UseFieldErrorMessages { get; set; } = false;
+
+        /// <summary>
+        /// Optional last step of the exception wrapper middleware: receives every mapping (from
+        /// <see cref="ApiErrorException"/>, the mappers or the default 500) and returns the one to write. Use it for
+        /// rules keyed on the error code whatever the source, e.g. a <c>Retry-After</c> header or a retryable flag.
+        /// If it throws, the error is logged and the original mapping is written.
+        /// </summary>
+        public Func<HttpContext, Exception, Models.ApiErrorMapping, Models.ApiErrorMapping>? TransformError { get; set; }
 
         /// <summary>Sets <c>ApiBehaviorOptions.InvalidModelStateResponseFactory</c> to a 400 <c>VALIDATION_FAILED</c> response. Default true.</summary>
         public bool EnableValidationResponse { get; set; } = true;
