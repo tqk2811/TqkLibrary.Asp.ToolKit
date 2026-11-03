@@ -3,8 +3,22 @@
 	<Import Project="..\ProjectBuildProperties.targets" />
 
 	<PropertyGroup>
-		<VersionPrefix>1.1.1</VersionPrefix>
+		<VersionPrefix>2.0.0</VersionPrefix>
 	</PropertyGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\TqkLibrary.Asp.ToolKit.ViewModels\TqkLibrary.Asp.ToolKit.ViewModels.csproj" />
+	</ItemGroup>
+
+	<!-- The nuspec dependency on ViewModels uses the version ViewModels itself packs as, not this package's version -->
+	<Target Name="TqkSetViewModelsVersion" AfterTargets="TqkSetVersion" BeforeTargets="GenerateNuspec">
+		<MSBuild Projects="..\TqkLibrary.Asp.ToolKit.ViewModels\TqkLibrary.Asp.ToolKit.ViewModels.csproj" Targets="TqkGetPackageVersion">
+			<Output TaskParameter="TargetOutputs" PropertyName="_TqkViewModelsVersion" />
+		</MSBuild>
+		<PropertyGroup>
+			<NuspecProperties>$(NuspecProperties);viewModelsVersion=$(_TqkViewModelsVersion)</NuspecProperties>
+		</PropertyGroup>
+	</Target>
 
 	<ItemGroup>
 		<PackageReference Include="Microsoft.AspNetCore.Http.Extensions" />

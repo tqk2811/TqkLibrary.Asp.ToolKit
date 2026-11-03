@@ -34,6 +34,31 @@ public sealed class MyApi(IHttpClientFactory<MyApi> factory) : IMyApi
 }
 ```
 
+### Clients for the API envelope
+
+For APIs built with `TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore` (success `ApiResponse<T>`, error
+`ApiErrorResponse`), derive from `ApiBase` (a `TqkLibrary.Http` `BaseApi` + `IBaseAddress`; the `HttpClient` is not
+owned) and call the `RequestBuilderApiExtensions` of `TqkLibrary.Asp.ToolKit.Integration.Extensions`:
+
+- `ExecuteApiAsync<T>()`: returns `data`; throws `ApiException` when the body or `data` is missing. `T` must be a reference type; for value types use `ExecuteApiResponseAsync<T>()` and read `Data`.
+- `ExecuteApiResponseAsync<T>()`: returns the whole `ApiResponse<T>` (`meta`, `requestId`).
+- `ExecuteApiVoidAsync()`: for endpoints without data.
+- Error status: `ApiException<ApiErrorResponse>` whose `Body` is the server's error (`Error.Code`, `Error.Fields`...).
+
+The default JSON settings (`ApiBase.CreateDefaultJsonSerializerSettings()`) are camelCase with nulls ignored; pass
+your own `JsonSerializerSettings` to the second constructor to match the server.
+
+```csharp
+public sealed class ProductApi(IHttpClientFactory<ProductApi> factory) : ApiBase(factory.CreateClient())
+{
+    public Task<ProductDto> GetAsync(int id, CancellationToken ct = default)
+        => Build().WithUrlGet($"api/products/{id}").ExecuteApiAsync<ProductDto>(ct);
+}
+
+try { var product = await api.GetAsync(1); }
+catch (ApiException<ApiErrorResponse> ex) when (ex.Body?.Error.Code == "PRODUCT_NOT_FOUND") { /* ... */ }
+```
+
 ### Contracts
 
 - `IBaseAddress`: `Uri? BaseAddress { get; }`.
@@ -53,9 +78,9 @@ existingContainer.LoadCookies(saved);
 
 ## Dependencies
 
-Targets net10.0. Depends on `Microsoft.AspNetCore.Http.Extensions`, `Microsoft.AspNetCore.Identity`,
-`Microsoft.Extensions.Configuration`, `Microsoft.Extensions.Http`, `Newtonsoft.Json`,
-`System.Security.Cryptography.Xml`, `TqkLibrary.Http` and `TqkLibrary.Utils`.
+Targets net10.0. Depends on `Microsoft.AspNetCore.Http.Extensions`, `Microsoft.Extensions.Configuration`,
+`Microsoft.Extensions.Http`, `Newtonsoft.Json`, `System.Security.Cryptography.Xml`, `TqkLibrary.Http`,
+`TqkLibrary.Utils` and `TqkLibrary.Asp.ToolKit.ViewModels`.
 
 ## Links
 

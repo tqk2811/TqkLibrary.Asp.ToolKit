@@ -57,3 +57,17 @@ Việc còn treo và đề xuất của thư viện. Mỗi mục: vấn đề, v
 - **Vấn đề**: package Queue được chép từ một repo khác, repo đó vẫn giữ bản riêng. Sửa lỗi ở một bên dễ quên bên kia.
 - **Đề xuất**: cho repo gốc chuyển sang dùng package này rồi xoá bản riêng.
 - **Ngày ghi**: 2026-11-03.
+
+### [Vừa] Integration kéo theo System.Security.Cryptography.Pkcs có cảnh báo lỗ hổng
+
+- **Vị trí**: `src/TqkLibrary.Asp.ToolKit.Integration/TqkLibrary.Asp.ToolKit.Integration.csproj` (dependency `System.Security.Cryptography.Xml` 10.0.12 kéo theo `Pkcs` 10.0.12).
+- **Vấn đề**: restore báo NU1902/NU1903 (mức moderate và high); package publish ra mang theo dependency này.
+- **Đề xuất**: nâng `System.Security.Cryptography.Xml` lên bản đã vá, hoặc bỏ nếu Integration không thật sự cần.
+- **Ngày ghi**: 2026-11-03.
+
+### [Thấp] ViewModels.AspNetCore: mã lỗi field dựa vào ghi đè ErrorMessage toàn app
+
+- **Vị trí**: `src/TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore/Validation/FieldErrorMessageProvider.cs`, `FieldValidationErrors.cs`.
+- **Vấn đề**: muốn có mã lỗi chính xác (vd `FIELD_REQUIRED`) phải bật `UseFieldErrorMessages`, tuỳ chọn này nhét mã vào chuỗi `ErrorMessage` của mọi attribute trong app (ảnh hưởng Razor, validate phía client, bản dịch). Mặc định tắt thì `[Required]` chỉ ra `FIELD_INVALID_VALUE`.
+- **Đề xuất**: khi dựng response 400, lần từ `ModelError` về attribute qua `ModelMetadata.ValidatorMetadata` (hoặc `IModelValidatorProvider` riêng) để lấy mã và tham số, không sửa message.
+- **Ngày ghi**: 2026-11-03.

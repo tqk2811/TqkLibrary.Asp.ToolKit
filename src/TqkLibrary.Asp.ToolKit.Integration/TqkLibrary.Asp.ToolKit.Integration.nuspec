@@ -4,7 +4,7 @@
 	<metadata>
 		<id>$id$</id>
 		<version>$version$</version>
-		<description>HTTP integration helpers (typed HttpClient factory, download/post helpers, cookie persistence) for ASP.NET Core services.</description>
+		<description>HTTP integration helpers (typed HttpClient factory, download/post helpers, cookie persistence) for ASP.NET Core services, plus ApiBase / ExecuteApiAsync clients for the TqkLibrary.Asp.ToolKit.ViewModels API envelope.</description>
 		<authors>tqk2811</authors>
 		<projectUrl>https://github.com/tqk2811/TqkLibrary.Asp.ToolKit</projectUrl>
 		<repository type="git" url="https://github.com/tqk2811/TqkLibrary.Asp.ToolKit.git"/>
@@ -19,6 +19,7 @@
 				<dependency id="System.Security.Cryptography.Xml" version="10.0.12" />
 				<dependency id="TqkLibrary.Http" version="2.0.0" />
 				<dependency id="TqkLibrary.Utils" version="1.0.0" />
+				<dependency id="TqkLibrary.Asp.ToolKit.ViewModels" version="$viewModelsVersion$" />
 			</group>
 		</dependencies>
 	</metadata>

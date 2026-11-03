@@ -32,6 +32,31 @@ public sealed class MyApi(IHttpClientFactory<MyApi> factory) : IMyApi
 }
 ```
 
+### Client cho "vỏ" API
+
+Với API dựng bằng `TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore` (thành công là `ApiResponse<T>`, lỗi là
+`ApiErrorResponse`), kế thừa `ApiBase` (`BaseApi` của `TqkLibrary.Http` + `IBaseAddress`; lớp này không sở hữu
+`HttpClient`) rồi gọi các extension `RequestBuilderApiExtensions` trong `TqkLibrary.Asp.ToolKit.Integration.Extensions`:
+
+- `ExecuteApiAsync<T>()`: trả về `data`; ném `ApiException` khi thân hoặc `data` rỗng. `T` phải là reference type; với value type dùng `ExecuteApiResponseAsync<T>()` rồi đọc `Data`.
+- `ExecuteApiResponseAsync<T>()`: trả nguyên `ApiResponse<T>` (`meta`, `requestId`).
+- `ExecuteApiVoidAsync()`: cho endpoint không có dữ liệu.
+- Mã lỗi: ném `ApiException<ApiErrorResponse>`, `Body` là lỗi của server (`Error.Code`, `Error.Fields`...).
+
+Cấu hình JSON mặc định (`ApiBase.CreateDefaultJsonSerializerSettings()`) là camelCase, bỏ null; truyền
+`JsonSerializerSettings` riêng vào constructor thứ hai để khớp với server.
+
+```csharp
+public sealed class ProductApi(IHttpClientFactory<ProductApi> factory) : ApiBase(factory.CreateClient())
+{
+    public Task<ProductDto> GetAsync(int id, CancellationToken ct = default)
+        => Build().WithUrlGet($"api/products/{id}").ExecuteApiAsync<ProductDto>(ct);
+}
+
+try { var product = await api.GetAsync(1); }
+catch (ApiException<ApiErrorResponse> ex) when (ex.Body?.Error.Code == "PRODUCT_NOT_FOUND") { /* ... */ }
+```
+
 ### Các contract
 
 - `IBaseAddress`: `Uri? BaseAddress { get; }`.
@@ -51,9 +76,9 @@ existingContainer.LoadCookies(saved);
 
 ## Phụ thuộc
 
-Target net10.0. Phụ thuộc `Microsoft.AspNetCore.Http.Extensions`, `Microsoft.AspNetCore.Identity`,
-`Microsoft.Extensions.Configuration`, `Microsoft.Extensions.Http`, `Newtonsoft.Json`,
-`System.Security.Cryptography.Xml`, `TqkLibrary.Http` và `TqkLibrary.Utils`.
+Target net10.0. Phụ thuộc `Microsoft.AspNetCore.Http.Extensions`, `Microsoft.Extensions.Configuration`,
+`Microsoft.Extensions.Http`, `Newtonsoft.Json`, `System.Security.Cryptography.Xml`, `TqkLibrary.Http`,
+`TqkLibrary.Utils` và `TqkLibrary.Asp.ToolKit.ViewModels`.
 
 ## Liên kết
 

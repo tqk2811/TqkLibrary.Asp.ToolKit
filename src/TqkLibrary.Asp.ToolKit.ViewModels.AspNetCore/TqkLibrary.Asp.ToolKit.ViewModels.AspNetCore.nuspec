@@ -4,7 +4,7 @@
 	<metadata>
 		<id>$id$</id>
 		<version>$version$</version>
-		<description>ASP.NET Core server-side helpers for TqkLibrary.Asp.ToolKit.ViewModels: ModelState to ApiErrorResult / ValidationResult conversions.</description>
+		<description>ASP.NET Core server side of the TqkLibrary.Asp.ToolKit.ViewModels API envelope: result filter wrapping actions into ApiResponse, request id and exception wrapper middlewares, ApiErrorException and VALIDATION_FAILED field errors.</description>
 		<authors>tqk2811</authors>
 		<projectUrl>https://github.com/tqk2811/TqkLibrary.Asp.ToolKit</projectUrl>
 		<repository type="git" url="https://github.com/tqk2811/TqkLibrary.Asp.ToolKit.git"/>

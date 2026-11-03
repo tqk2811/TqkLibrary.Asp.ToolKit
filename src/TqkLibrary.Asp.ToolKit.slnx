@@ -14,5 +14,7 @@
     <Project Path="tests/TqkLibrary.Asp.ToolKit.Queue.Tests/TqkLibrary.Asp.ToolKit.Queue.Tests.csproj" />
     <Project Path="tests/TqkLibrary.Asp.ToolKit.Auth.Web.Tests/TqkLibrary.Asp.ToolKit.Auth.Web.Tests.csproj" />
     <Project Path="tests/TqkLibrary.Asp.ToolKit.Caching.Tests/TqkLibrary.Asp.ToolKit.Caching.Tests.csproj" />
+    <Project Path="tests/TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Tests/TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Tests.csproj" />
+    <Project Path="tests/TqkLibrary.Asp.ToolKit.Integration.Tests/TqkLibrary.Asp.ToolKit.Integration.Tests.csproj" />
   </Folder>
 </Solution>

@@ -2,7 +2,8 @@
 
 **English** · [Tiếng Việt](https://github.com/tqk2811/TqkLibrary.Asp.ToolKit/blob/master/src/TqkLibrary.Asp.ToolKit.ViewModels/README-vi.md)
 
-Common API result, validation result, exception info and page result view models shared by API servers and clients.
+API envelope view models shared by API servers and clients: every success is `ApiResponse<T>`, every error is
+`ApiErrorResponse`.
 
 ## Install
 
@@ -14,37 +15,36 @@ dotnet add package TqkLibrary.Asp.ToolKit.ViewModels
 
 All types live in the `TqkLibrary.Asp.ToolKit.ViewModels` namespace.
 
-- `ApiResult` / `ApiResult<T>` (and `IApiResult`, `IApiResult<out T>`): `IsSuccessed`, `Message`, `Validations`,
-  `ExceptionInfo` and, for the generic one, `ResultObj`. `GetErrorMsg(bool isDebug)` builds a display message;
-  `ApiResult<T>` also has `Map<TDest>(mapper)` and `As<TBase>()`.
-- `ApiSuccessResult` / `ApiSuccessResult<T>` and `ApiErrorResult` / `ApiErrorResult<T>`: ready-made success and error
-  results. Errors can be built from a message, an `ExceptionInfo`, a list of `ValidationResult` or an
-  `IReadOnlyDictionary<string, string[]>` map (same shape as `ValidationProblemDetails.Errors`).
-- `ValidationResult` (`Name`, `Messages`); `ValidationResult.FromErrors(errors)` builds them from that map.
-- Conversions from ASP.NET Core `ModelState` live in the separate package `TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore`.
-- `ExceptionInfo` (`ExceptionType`, `Message`, `StackTrace`): implicit conversion from `Exception`.
-- `PageResult<T>`: `PageIndex`, `PageSize`, `TotalCount`, `TotalPages`, `Items`.
-- `ApiException`: thrown by clients when an `IApiResult` reports failure; carries the `ApiResult`.
+| Type | Shape |
+| --- | --- |
+| `ApiResponse<T>` | `{ requestId, data, meta }`; `Ok(data, requestId, meta?)`, `Ok(data, requestId, page, pageSize, total)` |
+| `ApiResponseMetadata` | `{ page, pageSize, total, totalPages }` |
+| `ApiErrorResponse` | `{ requestId, error }`; `Create(requestId, error)` |
+| `ApiError` | `{ code, message, details, retryable, fields }`; `Create(code, message, details?)` |
+| `FieldError` | `{ field, code, params, message }`: `field` is the client path (`items[0].name`) |
+| `PagedResult<T>` | `{ items, page, pageSize, total, totalPages }`; `Create(items, page, pageSize, total)` |
+| `ApiErrorCodes` | `VALIDATION_FAILED`, `INTERNAL_ERROR`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `FIELD_REQUIRED`, `FIELD_INVALID_VALUE`, `FIELD_INVALID_FORMAT`, `FIELD_OUT_OF_RANGE`, `FIELD_TOO_LONG`, `FIELD_TOO_SHORT` |
+
+`totalPages` is 0 when `pageSize` is not positive (no divide by zero).
 
 ```csharp
-[HttpPost]
-public ApiResult<ProductDto> Create(CreateProductModel model)
-{
-    // ToApiErrorResult<T>() comes from TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore
-    if (!ModelState.IsValid) return ModelState.ToApiErrorResult<ProductDto>();
-    var product = service.Create(model);
-    return new ApiSuccessResult<ProductDto>(product, "Created");
-}
+ApiResponse<List<ProductDto>> page = ApiResponse<List<ProductDto>>.Ok(items, requestId, page: 1, pageSize: 20, total: 45);
+// meta.totalPages == 3
 
-// Client side
-var result = await api.CreateAsync(model);
-if (!result.IsSuccessed) throw new ApiException(result);
+ApiErrorResponse error = ApiErrorResponse.Create(requestId, ApiError.Create("PRODUCT_NOT_FOUND", "Product not found."));
 ```
+
+The types carry no JSON attributes. Configure the serializer of the app to use camelCase and to ignore nulls
+(System.Text.Json: `DefaultIgnoreCondition = WhenWritingNull`; Newtonsoft: `NullValueHandling.Ignore`), so optional
+members such as `retryable`, `fields` or `meta` are not written when empty.
+
+Server side (result filter, middlewares, validation response): `TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore`.
+Client side (`ExecuteApiAsync<T>`, `ApiBase`): `TqkLibrary.Asp.ToolKit.Integration`.
 
 ## Dependencies
 
-Targets net10.0 with NO ASP.NET Core dependency, so any client (WPF, console, worker...) can use it. No dependency
-on other packages of this toolkit.
+Targets net10.0 with NO ASP.NET Core and NO JSON library dependency, so any client (WPF, console, worker...) can use
+it. No dependency on other packages of this toolkit.
 
 ## Links
 

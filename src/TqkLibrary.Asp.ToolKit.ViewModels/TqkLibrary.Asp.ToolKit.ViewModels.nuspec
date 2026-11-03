@@ -4,7 +4,7 @@
 	<metadata>
 		<id>$id$</id>
 		<version>$version$</version>
-		<description>Common API result, validation result, exception info and page result view models shared by API servers and clients (no ASP.NET Core dependency).</description>
+		<description>API envelope view models (ApiResponse, ApiErrorResponse, FieldError, PagedResult, ApiErrorCodes) shared by API servers and clients (no ASP.NET Core dependency).</description>
 		<authors>tqk2811</authors>
 		<projectUrl>https://github.com/tqk2811/TqkLibrary.Asp.ToolKit</projectUrl>
 		<repository type="git" url="https://github.com/tqk2811/TqkLibrary.Asp.ToolKit.git"/>

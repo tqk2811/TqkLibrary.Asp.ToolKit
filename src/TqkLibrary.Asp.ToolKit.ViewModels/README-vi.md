@@ -2,6 +2,9 @@
 
 [English](https://github.com/tqk2811/TqkLibrary.Asp.ToolKit/blob/master/src/TqkLibrary.Asp.ToolKit.ViewModels/README.md) · **Tiếng Việt**
 
+Các view model "vỏ" (envelope) của API, dùng chung cho server và client: mọi phản hồi thành công là `ApiResponse<T>`,
+mọi phản hồi lỗi là `ApiErrorResponse`.
+
 ## Cài đặt
 
 ```
@@ -12,40 +15,38 @@ dotnet add package TqkLibrary.Asp.ToolKit.ViewModels
 
 Mọi kiểu đều nằm trong namespace `TqkLibrary.Asp.ToolKit.ViewModels`.
 
-- `ApiResult` / `ApiResult<T>` (cùng `IApiResult`, `IApiResult<out T>`): `IsSuccessed`, `Message`, `Validations`,
-  `ExceptionInfo` và, với bản generic, `ResultObj`. `GetErrorMsg(bool isDebug)` dựng thông báo để hiển thị;
-  `ApiResult<T>` còn có `Map<TDest>(mapper)` và `As<TBase>()`.
-- `ApiSuccessResult` / `ApiSuccessResult<T>` và `ApiErrorResult` / `ApiErrorResult<T>`: result thành công và lỗi dựng sẵn.
-  Lỗi có thể được dựng từ một message, một `ExceptionInfo`, một danh sách `ValidationResult` hoặc một map
-  `IReadOnlyDictionary<string, string[]>` (cùng dạng `ValidationProblemDetails.Errors`).
-- `ValidationResult` (`Name`, `Messages`); `ValidationResult.FromErrors(errors)` dựng từ map trên.
-- Chuyển từ `ModelState` của ASP.NET Core nằm ở package riêng `TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore`.
-- `ExceptionInfo` (`ExceptionType`, `Message`, `StackTrace`): chuyển đổi ngầm định từ `Exception`.
-- `PageResult<T>`: `PageIndex`, `PageSize`, `TotalCount`, `TotalPages`, `Items`.
-- `ApiException`: được client ném khi một `IApiResult` báo thất bại; mang theo `ApiResult`.
+| Kiểu | Hình dạng JSON |
+| --- | --- |
+| `ApiResponse<T>` | `{ requestId, data, meta }`; `Ok(data, requestId, meta?)`, `Ok(data, requestId, page, pageSize, total)` |
+| `ApiResponseMetadata` | `{ page, pageSize, total, totalPages }` |
+| `ApiErrorResponse` | `{ requestId, error }`; `Create(requestId, error)` |
+| `ApiError` | `{ code, message, details, retryable, fields }`; `Create(code, message, details?)` |
+| `FieldError` | `{ field, code, params, message }`: `field` là đường dẫn phía client (`items[0].name`) |
+| `PagedResult<T>` | `{ items, page, pageSize, total, totalPages }`; `Create(items, page, pageSize, total)` |
+| `ApiErrorCodes` | `VALIDATION_FAILED`, `INTERNAL_ERROR`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `FIELD_REQUIRED`, `FIELD_INVALID_VALUE`, `FIELD_INVALID_FORMAT`, `FIELD_OUT_OF_RANGE`, `FIELD_TOO_LONG`, `FIELD_TOO_SHORT` |
+
+`totalPages` bằng 0 khi `pageSize` không dương (không chia cho 0).
 
 ```csharp
-[HttpPost]
-public ApiResult<ProductDto> Create(CreateProductModel model)
-{
-    // ToApiErrorResult<T>() nằm ở package TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore
-    if (!ModelState.IsValid) return ModelState.ToApiErrorResult<ProductDto>();
-    var product = service.Create(model);
-    return new ApiSuccessResult<ProductDto>(product, "Created");
-}
+ApiResponse<List<ProductDto>> page = ApiResponse<List<ProductDto>>.Ok(items, requestId, page: 1, pageSize: 20, total: 45);
+// meta.totalPages == 3
 
-// Phía client
-var result = await api.CreateAsync(model);
-if (!result.IsSuccessed) throw new ApiException(result);
+ApiErrorResponse error = ApiErrorResponse.Create(requestId, ApiError.Create("PRODUCT_NOT_FOUND", "Product not found."));
 ```
+
+Các kiểu không gắn attribute JSON nào. Hãy cấu hình serializer của app dùng camelCase và bỏ qua giá trị null
+(System.Text.Json: `DefaultIgnoreCondition = WhenWritingNull`; Newtonsoft: `NullValueHandling.Ignore`), để các
+thành viên tuỳ chọn như `retryable`, `fields`, `meta` không bị ghi ra khi rỗng.
+
+Phía server (result filter, middleware, phản hồi validation): `TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore`.
+Phía client (`ExecuteApiAsync<T>`, `ApiBase`): `TqkLibrary.Asp.ToolKit.Integration`.
 
 ## Phụ thuộc
 
-Target net10.0, KHÔNG phụ thuộc ASP.NET Core, nên dùng được ở mọi client (WPF, console, worker...). Không phụ thuộc
-vào các package khác của toolkit này.
+Target net10.0, KHÔNG phụ thuộc ASP.NET Core hay thư viện JSON nào, nên mọi client (WPF, console, worker...) đều
+dùng được. Không phụ thuộc package nào khác của toolkit.
 
 ## Liên kết
 
 - Mã nguồn và issue: [https://github.com/tqk2811/TqkLibrary.Asp.ToolKit](https://github.com/tqk2811/TqkLibrary.Asp.ToolKit)
-- Hướng dẫn đầy đủ tiếng Việt: [README-vi.md](https://github.com/tqk2811/TqkLibrary.Asp.ToolKit/blob/master/README-vi.md)
 - Các package khác: [danh sách package](https://github.com/tqk2811/TqkLibrary.Asp.ToolKit#packages)
