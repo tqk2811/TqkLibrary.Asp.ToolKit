@@ -2,7 +2,7 @@
 
 **English** · [Tiếng Việt](https://github.com/tqk2811/TqkLibrary.Asp.ToolKit/blob/master/src/TqkLibrary.Asp.ToolKit.ViewModels/README-vi.md)
 
-Common API result, validation result, exception info and page result view models for ASP.NET Core APIs.
+Common API result, validation result, exception info and page result view models shared by API servers and clients.
 
 ## Install
 
@@ -18,10 +18,10 @@ All types live in the `TqkLibrary.Asp.ToolKit.ViewModels` namespace.
   `ExceptionInfo` and, for the generic one, `ResultObj`. `GetErrorMsg(bool isDebug)` builds a display message;
   `ApiResult<T>` also has `Map<TDest>(mapper)` and `As<TBase>()`.
 - `ApiSuccessResult` / `ApiSuccessResult<T>` and `ApiErrorResult` / `ApiErrorResult<T>`: ready-made success and error
-  results. Errors can be built from a message, an `ExceptionInfo`, a list of `ValidationResult` or an invalid
-  `ModelStateDictionary`.
-- `ValidationResult` (`Name`, `Messages`) and `ModelStateDictionary.Parse()` / `AddErrors(...)` to convert between
-  ASP.NET Core model state and validation results.
+  results. Errors can be built from a message, an `ExceptionInfo`, a list of `ValidationResult` or an
+  `IReadOnlyDictionary<string, string[]>` map (same shape as `ValidationProblemDetails.Errors`).
+- `ValidationResult` (`Name`, `Messages`); `ValidationResult.FromErrors(errors)` builds them from that map.
+- Conversions from ASP.NET Core `ModelState` live in the separate package `TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore`.
 - `ExceptionInfo` (`ExceptionType`, `Message`, `StackTrace`): implicit conversion from `Exception`.
 - `PageResult<T>`: `PageIndex`, `PageSize`, `TotalCount`, `TotalPages`, `Items`.
 - `ApiException`: thrown by clients when an `IApiResult` reports failure; carries the `ApiResult`.
@@ -30,7 +30,8 @@ All types live in the `TqkLibrary.Asp.ToolKit.ViewModels` namespace.
 [HttpPost]
 public ApiResult<ProductDto> Create(CreateProductModel model)
 {
-    if (!ModelState.IsValid) return ModelState;                  // ApiErrorResult<ProductDto> with validations
+    // ToApiErrorResult<T>() comes from TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore
+    if (!ModelState.IsValid) return ModelState.ToApiErrorResult<ProductDto>();
     var product = service.Create(model);
     return new ApiSuccessResult<ProductDto>(product, "Created");
 }
@@ -42,7 +43,8 @@ if (!result.IsSuccessed) throw new ApiException(result);
 
 ## Dependencies
 
-Targets net10.0 and uses the ASP.NET Core shared framework. No dependency on other packages of this toolkit.
+Targets net10.0 with NO ASP.NET Core dependency, so any client (WPF, console, worker...) can use it. No dependency
+on other packages of this toolkit.
 
 ## Links
 

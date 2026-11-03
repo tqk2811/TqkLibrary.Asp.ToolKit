@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<Import Project="..\ProjectBuildProperties.targets" />
+
+	<ItemGroup>
+		<FrameworkReference Include="Microsoft.AspNetCore.App" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\TqkLibrary.Asp.ToolKit.ViewModels\TqkLibrary.Asp.ToolKit.ViewModels.csproj" />
+	</ItemGroup>
+
+</Project>

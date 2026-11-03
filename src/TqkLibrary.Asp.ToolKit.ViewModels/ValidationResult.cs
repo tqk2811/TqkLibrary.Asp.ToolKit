@@ -1,4 +1,3 @@
-using Microsoft.AspNetCore.Mvc.ModelBinding;
 using System.Diagnostics.CodeAnalysis;
 
 namespace TqkLibrary.Asp.ToolKit.ViewModels
@@ -38,37 +37,16 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels
                 Messages = validationResult.Messages?.ToList(),
             };
         }
-    }
-    public static class ValidationResultExtension
-    {
-        public static IEnumerable<ValidationResult> Parse(this ModelStateDictionary modelStateDictionary)
+
+        /// <summary>
+        /// Builds validation results from a field → messages map (same shape as <c>ValidationProblemDetails.Errors</c>).
+        /// </summary>
+        public static List<ValidationResult> FromErrors(IReadOnlyDictionary<string, string[]> errors)
         {
-            foreach (var item in modelStateDictionary)
-            {
-                var result = new ValidationResult()
-                {
-                    Name = item.Key,
-                    Messages = new(),
-                };
-                foreach (var err in item.Value.Errors)
-                {
-                    result.Messages.Add(err.ErrorMessage);
-                }
-                yield return result;
-            }
-        }
-        public static void AddErrors(this ModelStateDictionary modelStateDictionary, IEnumerable<IValidationResult> validationResults)
-        {
-            foreach (var item in validationResults)
-            {
-                if (item?.Messages?.Any() == true)
-                {
-                    foreach (var item1 in item.Messages)
-                    {
-                        modelStateDictionary.AddModelError(item.Name, item1);
-                    }
-                }
-            }
+            ArgumentNullException.ThrowIfNull(errors);
+            return errors
+                .Select(x => new ValidationResult() { Name = x.Key, Messages = x.Value?.ToList() ?? new() })
+                .ToList();
         }
     }
 }

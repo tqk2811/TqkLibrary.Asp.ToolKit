@@ -1,4 +1,3 @@
-using Microsoft.AspNetCore.Mvc.ModelBinding;
 using System.Text;
 
 namespace TqkLibrary.Asp.ToolKit.ViewModels
@@ -23,7 +22,6 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels
 
         IExceptionInfo? IApiResult.ExceptionInfo => ExceptionInfo;
         IReadOnlyList<IValidationResult>? IApiResult.Validations => Validations;
-        public static implicit operator ApiResult(ModelStateDictionary modelStateDictionary) => new ApiErrorResult(modelStateDictionary);
         public static implicit operator ApiResult(bool isSuccessed) => new ApiResult() { IsSuccessed = isSuccessed };
 
         public string? GetErrorMsg(bool isDebug = false)
@@ -79,15 +77,12 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels
             this.Validations = validations?.ToList();
             this.Message = message;
         }
-        public ApiErrorResult(ModelStateDictionary modelStateDictionary, string? message = null)
+        public ApiErrorResult(IReadOnlyDictionary<string, string[]> errors, string? message = null)
         {
-            if (modelStateDictionary.IsValid) throw new InvalidOperationException();
-            this.IsSuccessed = modelStateDictionary.IsValid;
-            this.Validations = modelStateDictionary?.Parse()?.ToList();
+            this.IsSuccessed = false;
+            this.Validations = ValidationResult.FromErrors(errors);
             this.Message = message;
         }
-
-        public static implicit operator ApiErrorResult(ModelStateDictionary modelStateDictionary) => new(modelStateDictionary);
     }
     public class ApiResult<T> : ApiResult, IApiResult<T>
     {
@@ -103,7 +98,6 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels
         public static implicit operator ApiResult<T>(Tuple<string?, T> tuple) => new ApiSuccessResult<T>(tuple.Item2, tuple.Item1);
         public static implicit operator ApiResult<T>(ValueTuple<T, string?> tuple) => new ApiSuccessResult<T>(tuple.Item1, tuple.Item2);
         public static implicit operator ApiResult<T>(ValueTuple<string?, T> tuple) => new ApiSuccessResult<T>(tuple.Item2, tuple.Item1);
-        public static implicit operator ApiResult<T>(ModelStateDictionary modelStateDictionary) => new ApiErrorResult<T>(modelStateDictionary);
         public static implicit operator ApiResult<T>(ApiSuccessResult apiSuccessResult) => new ApiResult<T>()
         {
             IsSuccessed = apiSuccessResult.IsSuccessed,
@@ -184,11 +178,10 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels
             this.Validations = validations?.ToList();
             this.Message = message;
         }
-        public ApiErrorResult(ModelStateDictionary modelStateDictionary, string? message = null)
+        public ApiErrorResult(IReadOnlyDictionary<string, string[]> errors, string? message = null)
         {
-            if (modelStateDictionary.IsValid) throw new InvalidOperationException();
-            this.IsSuccessed = modelStateDictionary.IsValid;
-            this.Validations = modelStateDictionary?.Parse()?.ToList();
+            this.IsSuccessed = false;
+            this.Validations = ValidationResult.FromErrors(errors);
             this.Message = message;
         }
 
@@ -200,6 +193,5 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels
             ResultObj = default,
             Validations = apiErrorResult.Validations,
         };
-        public static implicit operator ApiErrorResult<T>(ModelStateDictionary modelStateDictionary) => new(modelStateDictionary);
     }
 }

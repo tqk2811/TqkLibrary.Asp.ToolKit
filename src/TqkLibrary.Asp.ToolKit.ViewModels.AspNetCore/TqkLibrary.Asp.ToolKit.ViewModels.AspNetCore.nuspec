@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2010/07/nuspec.xsd">
+	<!--https://docs.microsoft.com/en-us/nuget/reference/nuspec-->
+	<metadata>
+		<id>$id$</id>
+		<version>$version$</version>
+		<description>ASP.NET Core server-side helpers for TqkLibrary.Asp.ToolKit.ViewModels: ModelState to ApiErrorResult / ValidationResult conversions.</description>
+		<authors>tqk2811</authors>
+		<projectUrl>https://github.com/tqk2811/TqkLibrary.Asp.ToolKit</projectUrl>
+		<repository type="git" url="https://github.com/tqk2811/TqkLibrary.Asp.ToolKit.git"/>
+		<license type="expression">MIT</license>
+		<readme>docs\README.md</readme>
+		<frameworkReferences>
+			<group targetFramework="net10.0">
+				<frameworkReference name="Microsoft.AspNetCore.App"/>
+			</group>
+		</frameworkReferences>
+		<dependencies>
+			<group targetFramework="net10.0">
+				<dependency id="TqkLibrary.Asp.ToolKit.ViewModels" version="$version$" />
+			</group>
+		</dependencies>
+	</metadata>
+	<files>
+		<file src="README.md" target="docs\" />
+		<file src="bin\Release\net10.0\TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.dll" target="lib\net10.0\" />
+		<file src="bin\Release\net10.0\TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.pdb" target="lib\net10.0\" />
+		<file src="bin\Release\net10.0\TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.xml" target="lib\net10.0\" />
+	</files>
+</package>
