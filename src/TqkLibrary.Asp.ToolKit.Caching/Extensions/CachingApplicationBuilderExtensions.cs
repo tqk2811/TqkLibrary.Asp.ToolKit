@@ -11,7 +11,7 @@ namespace TqkLibrary.Asp.ToolKit.Caching.Extensions
         /// Short-circuits requests to <see cref="CacheInvalidationEndpointOptions.Path"/> into
         /// <see cref="CacheInvalidationEndpoint{TGroup}"/>. Place it BEFORE <c>UseForwardedHeaders</c>,
         /// <c>UseHttpsRedirection</c> and status code pages. Requires
-        /// <see cref="CachingServiceCollectionExtensions.AddTqkCacheInvalidationEndpoint{TGroup}"/>.
+        /// <see cref="CachingServiceCollectionExtensions.AddTqkCacheInvalidationEndpoint{TGroup}(IServiceCollection, Action{CacheInvalidationEndpointOptions})"/>.
         /// </summary>
         public static IApplicationBuilder UseTqkCacheInvalidationEndpoint<TGroup>(this IApplicationBuilder app) where TGroup : struct, Enum
         {
