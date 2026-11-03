@@ -1,5 +1,7 @@
 # TqkLibrary.Asp.ToolKit.Queue
 
+**English** · [Tiếng Việt](https://github.com/tqk2811/TqkLibrary.Asp.ToolKit/blob/master/src/TqkLibrary.Asp.ToolKit.Queue/README-vi.md)
+
 In-process dispatch queue with pluggable admission policies (concurrency caps, composite policies), fair round-robin scheduling by an app-defined key, bounded waiting lists and awaitable tickets.
 
 ## Install

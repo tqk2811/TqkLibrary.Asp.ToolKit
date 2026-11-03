@@ -1,5 +1,7 @@
 # TqkLibrary.Asp.ToolKit.Caching
 
+**English** · [Tiếng Việt](https://github.com/tqk2811/TqkLibrary.Asp.ToolKit/blob/master/src/TqkLibrary.Asp.ToolKit.Caching/README-vi.md)
+
 In-process stale-while-refresh caches (single value and keyed) with group-based invalidation through a registry keyed by an app-defined enum, plus an optional HTTP channel to invalidate caches in another process.
 
 ## Install

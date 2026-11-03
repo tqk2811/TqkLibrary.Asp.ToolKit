@@ -1,5 +1,7 @@
 # TqkLibrary.Asp.ToolKit.Auth.Web
 
+**English** · [Tiếng Việt](https://github.com/tqk2811/TqkLibrary.Asp.ToolKit/blob/master/src/TqkLibrary.Asp.ToolKit.Auth.Web/README-vi.md)
+
 ASP.NET Core web (BFF) authentication against a separate JWT API: API access/refresh tokens kept only in the encrypted auth cookie, a DelegatingHandler that attaches the bearer and refreshes it, a middleware that builds the current user from the API, and session-expiry handling.
 
 ## Install

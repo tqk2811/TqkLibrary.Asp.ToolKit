@@ -1,5 +1,7 @@
 # TqkLibrary.Asp.ToolKit.Integration
 
+**English** · [Tiếng Việt](https://github.com/tqk2811/TqkLibrary.Asp.ToolKit/blob/master/src/TqkLibrary.Asp.ToolKit.Integration/README-vi.md)
+
 HTTP integration helpers (typed HttpClient factory, download/post helpers, cookie persistence) for ASP.NET Core services.
 
 ## Install
