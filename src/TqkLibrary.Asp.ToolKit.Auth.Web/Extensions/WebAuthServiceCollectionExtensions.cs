@@ -1,6 +1,5 @@
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
-using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -19,7 +18,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Extensions
         /// <c>UseAuthentication()</c> → <see cref="WebAuthApplicationBuilderExtensions.UseTqkWebSession"/> →
         /// <c>UseAuthorization()</c>.
         /// <para>Nothing is stored server side per session; with several instances only the Data Protection key ring
-        /// must be shared (<see cref="AddTqkDataProtectionKeyRing"/>).</para>
+        /// must be shared (persist it with the app's own <c>AddDataProtection()</c> setup).</para>
         /// </summary>
         /// <param name="services">Services.</param>
         /// <param name="configureCookie">
@@ -69,31 +68,6 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Extensions
                     options.SlidingExpiration = false;
                     configureCookie(options);
                 });
-        }
-
-        /// <summary>
-        /// Persists the Data Protection key ring (it encrypts the cookie and therefore the API tokens) so sessions
-        /// survive a restart. Default directory: <c>&lt;ContentRoot&gt;/../Data/&lt;ApplicationName&gt;/keys</c>, outside the
-        /// publish folder so a redeploy does not wipe it. Losing the key ring invalidates every cookie (users sign in
-        /// again). Several instances must point to the same directory and application name.
-        /// </summary>
-        /// <param name="services">Services.</param>
-        /// <param name="environment">Host environment (content root, application name).</param>
-        /// <param name="keysDirectory">Absolute or content-root relative directory; null for the default.</param>
-        /// <param name="applicationName">Fixed application name; null for <see cref="IHostEnvironment.ApplicationName"/>.</param>
-        public static IDataProtectionBuilder AddTqkDataProtectionKeyRing(this IServiceCollection services, IHostEnvironment environment,
-            string? keysDirectory = null, string? applicationName = null)
-        {
-            ArgumentNullException.ThrowIfNull(services);
-            ArgumentNullException.ThrowIfNull(environment);
-            var name = string.IsNullOrWhiteSpace(applicationName) ? environment.ApplicationName : applicationName;
-            var directory = string.IsNullOrWhiteSpace(keysDirectory)
-                ? Path.GetFullPath(Path.Combine(environment.ContentRootPath, "..", "Data", name, "keys"))
-                : Path.GetFullPath(keysDirectory, environment.ContentRootPath);
-
-            return services.AddDataProtection()
-                .SetApplicationName(name)
-                .PersistKeysToFileSystem(new DirectoryInfo(directory));
         }
 
         /// <summary>Adds <see cref="SessionBearerHandler"/> to an API client.</summary>

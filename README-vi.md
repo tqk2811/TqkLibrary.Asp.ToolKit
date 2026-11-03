@@ -110,7 +110,8 @@ Lưu ý:
 ### Đăng ký trong `Program.cs` (Web)
 
 ```csharp
-builder.Services.AddTqkDataProtectionKeyRing(builder.Environment);   // giữ phiên qua lần restart; nhiều instance dùng chung thư mục
+builder.Services.AddDataProtection()                                 // giữ phiên qua lần restart; nhiều instance dùng chung thư mục
+    .SetApplicationName("my-web").PersistKeysToFileSystem(new DirectoryInfo(keysPath));
 
 builder.Services.AddTqkWebAuth(
     cookie =>
@@ -416,7 +417,7 @@ var result = await ticket.Completion;      // ticket.QueuePosition cho biết v�
 | Dùng `JwtBearerOptions.EventsType` | Bước kiểm phiên bị bỏ qua | Thư viện ném `InvalidOperationException`; gọi `SessionTokenValidator.ValidateAsync` từ events type của app |
 | App gán lại `TokenValidationParameters` | Mất khoá ký/issuer/audience của thư viện | Chỉnh instance có sẵn, đừng `new` |
 | Token (hoặc ticket) to | Cookie bị chia chunk, có thể vượt giới hạn header của proxy/IIS/nginx (lỗi 400/431) | Giữ access token gọn (chỉ `sub`, `sid`, `jti`), không nhét claim/permission vào token; nới giới hạn header của proxy nếu cần |
-| Nhiều instance Web | Cookie giải mã được ở instance này mà không giải mã được ở instance kia | Dùng chung key ring Data Protection và cùng `ApplicationName` (`AddTqkDataProtectionKeyRing`); mất key ring = mọi người phải đăng nhập lại |
+| Nhiều instance Web | Cookie giải mã được ở instance này mà không giải mã được ở instance kia | Dùng chung key ring Data Protection và cùng `ApplicationName` (`AddDataProtection().SetApplicationName(...).PersistKeysToFileSystem(...)`); mất key ring = mọi người phải đăng nhập lại |
 | Nhiều instance API | Invalidate `SessionAccessCache` chỉ tới instance xử lý lần ghi | Chấp nhận trễ tới `SessionAccessCacheLifetime`, hoặc thêm kênh chung |
 | Nhiều instance Web + cache | Một instance bị invalidate, instance khác thì không | Gửi tín hiệu tới từng instance qua kênh HTTP (mỗi instance có endpoint riêng) hoặc chấp nhận chờ TTL |
 | Refresh token bị API xoay vòng một lần dùng | Request song song bị đăng xuất | Xem [Điều kiện bắt buộc phía API](#điều-kiện-bắt-buộc-phía-api) |

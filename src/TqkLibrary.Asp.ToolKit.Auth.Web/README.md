@@ -49,7 +49,8 @@ public sealed class MyAuthApiClient(IMyApi api) : IAuthApiClient
 Registration:
 
 ```csharp
-builder.Services.AddTqkDataProtectionKeyRing(builder.Environment);   // keep sessions across restarts
+builder.Services.AddDataProtection()                                 // keep sessions across restarts
+    .SetApplicationName("my-web").PersistKeysToFileSystem(new DirectoryInfo(keysPath));
 builder.Services.AddTqkWebAuth(
     cookie => { cookie.Cookie.Name = "app_auth"; cookie.LoginPath = "/account/login"; },
     options => options.AnonymousPathSuffixes.Add("/auth/login"));

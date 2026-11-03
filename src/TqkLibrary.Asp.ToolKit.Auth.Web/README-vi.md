@@ -47,7 +47,8 @@ public sealed class MyAuthApiClient(IMyApi api) : IAuthApiClient
 Đăng ký:
 
 ```csharp
-builder.Services.AddTqkDataProtectionKeyRing(builder.Environment);   // giữ session qua các lần restart
+builder.Services.AddDataProtection()                                 // giữ session qua các lần restart
+    .SetApplicationName("my-web").PersistKeysToFileSystem(new DirectoryInfo(keysPath));
 builder.Services.AddTqkWebAuth(
     cookie => { cookie.Cookie.Name = "app_auth"; cookie.LoginPath = "/account/login"; },
     options => options.AnonymousPathSuffixes.Add("/auth/login"));
