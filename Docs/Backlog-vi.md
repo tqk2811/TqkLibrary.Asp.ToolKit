@@ -10,25 +10,11 @@ Việc còn treo và đề xuất của thư viện. Mỗi mục: vấn đề, v
 - **Vì sao**: API auth chậm làm cả trang Web chậm theo bội số số lời gọi.
 - **Ngày ghi**: 2026-10-28.
 
-### [Thấp] Sender đọc CurrentValue hai lần mỗi lô, không kiểm lại TargetUrl lúc chạy
-
-- **Vị trí**: `src/TqkLibrary.Asp.ToolKit.Caching/Remote/HttpCacheInvalidationSender.cs:84`, `:92`.
-- **Vấn đề**: debounce và phần gửi lấy từ hai bản options khác nhau. `TargetUrl` và bật/tắt chỉ xét lúc khởi động; reload sang URL sai thì `new HttpRequestMessage` ném ở mỗi lần thử và retry vô ích.
-- **Đề xuất**: đọc `CurrentValue` một lần mỗi lô; kiểm lại URL mỗi lô (sai thì LogError, bỏ lô, không retry). Hoặc ghi rõ trong README chỉ Debounce/Timeout/RetryDelays/Key được reload.
-- **Ngày ghi**: 2026-10-28.
-
 ### [Thấp] Chặn EventsType quá cứng
 
 - **Vị trí**: `src/TqkLibrary.Asp.ToolKit.Auth.Api/Extensions/ApiAuthServiceCollectionExtensions.cs:63-72`.
 - **Vấn đề**: `PostConfigure` ném lỗi khi `EventsType != null`, chặn luôn ca hợp lệ: app dùng EventsType riêng và tự gọi `SessionTokenValidator.ValidateAsync` (README có hướng dẫn cách này). Ngược lại, app đặt EventsType trong PostConfigure đăng ký sau thư viện thì vẫn lọt.
 - **Đề xuất**: option opt-out (vd `AllowCustomEventsType`), hoặc kiểm lúc chạy: validator đánh dấu vào `HttpContext.Items`, thiếu dấu thì từ chối.
-- **Ngày ghi**: 2026-10-28.
-
-### [Thấp] README chưa cảnh báo ForwardingHeaders = [] tắt bước chặn request qua proxy
-
-- **Vị trí**: `src/TqkLibrary.Asp.ToolKit.Caching/Remote/CacheInvalidationEndpointOptions.cs:30`, `README-vi.md:360`.
-- **Vấn đề**: đặt `ForwardingHeaders = []` bằng code thì endpoint chỉ còn kiểm loopback, mà sau reverse proxy cùng máy thì loopback luôn đúng → ai gọi qua proxy cũng xoá được cache.
-- **Đề xuất**: thêm cảnh báo vào README (cả `README.md`), hoặc log warning lúc khởi động khi mảng rỗng.
 - **Ngày ghi**: 2026-10-28.
 
 ### [Thấp] Lỗi ghi cookie sau refresh chủ động bị nuốt
@@ -38,7 +24,7 @@ Việc còn treo và đề xuất của thư viện. Mỗi mục: vấn đề, v
 - **Đề xuất**: đọc token mới nhất của ticket nếu có thay vì giữ biến cũ.
 - **Ngày ghi**: 2026-10-28.
 
-### [Thấp] Auth/Caching chưa có test
+### [Thấp] Auth chưa có test
 
 - **Vấn đề**: repo mới có project test cho Queue; chưa có test cho các hành vi đã sửa: config danh sách thay thế mặc định (bind từ JSON), `SessionExpiredMiddleware` giữ header xoá cookie, `SessionAccessCache` vô hiệu theo thế hệ, refresh chủ động lỗi tạm dùng token cũ.
 - **Vì sao**: refactor sau dễ làm lỗi cũ quay lại mà không ai biết.
