@@ -14,5 +14,6 @@
   <Folder Name="/tests/">
     <Project Path="tests/TqkLibrary.Asp.ToolKit.Queue.Tests/TqkLibrary.Asp.ToolKit.Queue.Tests.csproj" />
     <Project Path="tests/TqkLibrary.Asp.ToolKit.Auth.Web.Tests/TqkLibrary.Asp.ToolKit.Auth.Web.Tests.csproj" />
+    <Project Path="tests/TqkLibrary.Asp.ToolKit.Caching.Tests/TqkLibrary.Asp.ToolKit.Caching.Tests.csproj" />
   </Folder>
 </Solution>
