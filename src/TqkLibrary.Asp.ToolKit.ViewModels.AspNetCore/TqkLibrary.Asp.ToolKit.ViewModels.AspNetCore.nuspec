@@ -17,7 +17,7 @@
 		</frameworkReferences>
 		<dependencies>
 			<group targetFramework="net10.0">
-				<dependency id="TqkLibrary.Asp.ToolKit.ViewModels" version="$version$" />
+				<dependency id="TqkLibrary.Asp.ToolKit.ViewModels" version="$viewModelsVersion$" />
 			</group>
 		</dependencies>
 	</metadata>

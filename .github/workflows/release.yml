@@ -1,103 +1,117 @@
 name: Release
 
-# Push a tag vM.N.P (on a commit of master) -> test, pack every package as M.N.P, GitHub Release with
-# git-cliff notes, push nuget.org with NuGet Trusted Publishing (OIDC, no API key secret).
-#   git tag v1.2.0 && git push origin v1.2.0
+# Run manually on master (Actions -> Release -> Run workflow) -> test, pack every package with the <VersionPrefix> of
+# its csproj, push to nuget.org only the versions nuget.org does not have yet (NuGet Trusted Publishing, OIDC, no API
+# key secret), and tag each published version as <Package>/vM.N.P, e.g. Auth.Web/v2.0.0.
+# To release a package: bump <VersionPrefix> in its csproj, merge to master, run this workflow.
 
 on:
-  push:
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
-  workflow_dispatch:          # rerun a release: pick the TAG as ref, not a branch
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: write             # push the per-package tags
   id-token: write             # NuGet/login exchanges the OIDC token for a short-lived API key
 
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      # Fail loudly instead of skipping: an all-skipped green run reads like a release that happened.
+      - name: Run on master only
+        if: github.ref != 'refs/heads/master'
+        run: |
+          echo "Release must run on master, not ${GITHUB_REF}"
+          exit 1
+
   test:
-    if: github.ref_type == 'tag'
+    needs: check
     uses: ./.github/workflows/test.yml
 
   release:
     needs: test
-    if: github.ref_type == 'tag'
     runs-on: windows-latest
-    env:
-      GH_TOKEN: ${{ github.token }}
-      TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0      # GitVersion and release notes need history + tags
+          fetch-depth: 0      # existing tags are checked before pushing new ones
 
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
 
-      - name: Check tag is on master
-        shell: pwsh
-        run: |
-          git fetch origin master
-          git merge-base --is-ancestor $env:GITHUB_SHA origin/master
-          if ($LASTEXITCODE -ne 0) { Write-Error "Tag $env:TAG is not on master"; exit 1 }
-          # GitVersion fails on a detached HEAD ("No base versions determined"), even on a tagged commit.
-          # Put a local 'master' on the tagged commit so the master branch config applies.
-          git checkout -B master $env:GITHUB_SHA
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-
       - name: Pack
         shell: pwsh
         run: |
           # Packs every packable project of the solution (test projects have IsPackable=false).
-          dotnet pack src/TqkLibrary.Asp.ToolKit.slnx -c Release -o artifacts
+          dotnet pack src/TqkLibrary.Asp.ToolKit.slnx -c Release -p:TqkRelease=true -o artifacts
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          $expected = $env:TAG.TrimStart('v')
-          $nupkgs = @(Get-ChildItem artifacts -Filter *.nupkg)
-          if ($nupkgs.Count -eq 0) { Write-Error "No nupkg was produced"; exit 1 }
-          foreach ($n in $nupkgs) {
-            if (-not $n.Name.EndsWith(".$expected.nupkg")) {
-              Write-Error "Packed $($n.Name) does not match tag $env:TAG"; exit 1
+
+      - name: Select new versions
+        id: select
+        shell: pwsh
+        run: |
+          $prefix = 'TqkLibrary.Asp.ToolKit.'
+          $releases = @()
+          foreach ($n in Get-ChildItem artifacts -Filter *.nupkg) {
+            # <Id>.<M.N.P>.nupkg; the release build never has a prerelease suffix
+            if ($n.Name -notmatch '^(?<id>.+)\.(?<ver>\d+\.\d+\.\d+)\.nupkg$') {
+              Write-Error "Unexpected package name $($n.Name)"; exit 1
             }
+            $id = $Matches.id; $ver = $Matches.ver
+            if (-not $id.StartsWith($prefix)) { Write-Error "Package id $id does not start with $prefix"; exit 1 }
+            $tag = "$($id.Substring($prefix.Length))/v$ver"
+            $published = @()
+            try {
+              $index = Invoke-RestMethod "https://api.nuget.org/v3-flatcontainer/$($id.ToLowerInvariant())/index.json"
+              $published = @($index.versions)
+            } catch {
+              if ($_.Exception.Response.StatusCode.value__ -ne 404) { throw }   # 404 = package never published
+            }
+            git rev-parse -q --verify "refs/tags/$tag" *> $null
+            $tagged = $LASTEXITCODE -eq 0
+            if ($published -contains $ver) {
+              # Already released. Without a tag it was published before per-package tags existed (or a previous run
+              # failed between push and tag): this commit is not necessarily the published one, so no tag is guessed.
+              if (-not $tagged) { Write-Host "skip    $id $ver (already on nuget.org, no tag $tag)" }
+              continue
+            }
+            if ($tagged) { Write-Error "$tag exists but $id $ver is not on nuget.org: bump <VersionPrefix> or delete the tag"; exit 1 }
+            $highest = $published | Where-Object { $_ -notmatch '-' } |
+              ForEach-Object { [version]$_ } | Sort-Object -Descending | Select-Object -First 1
+            if ($highest -and [version]$ver -lt $highest) {
+              Write-Error "$id $ver is lower than $highest already on nuget.org"; exit 1
+            }
+            $releases += "$($n.FullName)|$tag"
+            Write-Host "release $id $ver"
           }
-
-      - name: Release notes
-        shell: pwsh
-        run: |
-          $prev = git describe --tags --abbrev=0 --match "v[0-9]*.[0-9]*.[0-9]*" "$env:TAG^"
-          # First release has no previous tag: no range = whole history up to HEAD (the tagged commit).
-          # A bare tag is not a valid git-cliff range ("unable to parse OID").
-          $range = if ($LASTEXITCODE -eq 0 -and $prev) { @("$prev..$env:TAG") } else { @() }
-          npx -y git-cliff@2 --config cliff.toml --tag $env:TAG @range -o RELEASE_NOTES.md
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-
-      - name: GitHub Release
-        shell: pwsh
-        run: |
-          gh release view $env:TAG *> $null
-          if ($LASTEXITCODE -eq 0) {
-            gh release edit $env:TAG --notes-file RELEASE_NOTES.md
-          } else {
-            gh release create $env:TAG --title $env:TAG --notes-file RELEASE_NOTES.md --verify-tag
-          }
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          gh release upload $env:TAG (Get-ChildItem artifacts -Filter *.nupkg).FullName --clobber
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if ($releases.Count -eq 0) { Write-Host 'Nothing to release: every version is already on nuget.org.' }
+          $releases | Set-Content releases.txt
+          "count=$($releases.Count)" >> $env:GITHUB_OUTPUT
 
       # NuGet Trusted Publishing: needs a trusted publishing policy on nuget.org (owner tqk2811,
       # repo TqkLibrary.Asp.ToolKit, workflow release.yml). 'user' is the nuget.org profile name, not an email.
       - name: NuGet login (OIDC)
+        if: steps.select.outputs.count != '0'
         id: nuget-login
         uses: NuGet/login@v1
         with:
           user: tqk2811
 
-      - name: Push nuget.org
+      # Tag each package right after its own push, so a failure later in the loop never leaves an already pushed
+      # package untagged. Tags are pushed one at a time: GitHub drops the push event when more than 3 arrive at once.
+      - name: Push nuget.org and tag
+        if: steps.select.outputs.count != '0'
         shell: pwsh
         env:
           NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
         run: |
-          foreach ($p in Get-ChildItem artifacts -Filter *.nupkg) {
-            dotnet nuget push $p.FullName --api-key $env:NUGET_API_KEY --source https://api.nuget.org/v3/index.json --skip-duplicate
-            if ($LASTEXITCODE -ne 0) { Write-Error "Push failed: $($p.Name)"; exit 1 }
+          foreach ($line in Get-Content releases.txt) {
+            if (-not $line) { continue }
+            $path, $tag = $line -split '\|', 2
+            dotnet nuget push $path --api-key $env:NUGET_API_KEY --source https://api.nuget.org/v3/index.json --skip-duplicate
+            if ($LASTEXITCODE -ne 0) { Write-Error "Push failed: $path"; exit 1 }
+            git tag $tag $env:GITHUB_SHA
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+            git push origin "refs/tags/$tag"
+            if ($LASTEXITCODE -ne 0) { Write-Error "Pushed $path but could not push tag $tag: push it by hand on $env:GITHUB_SHA"; exit 1 }
           }

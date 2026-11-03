@@ -2,6 +2,10 @@
 
 	<Import Project="..\ProjectBuildProperties.targets" />
 
+	<PropertyGroup>
+		<VersionPrefix>1.1.1</VersionPrefix>
+	</PropertyGroup>
+
 	<ItemGroup>
 		<PackageReference Include="Microsoft.AspNetCore.Http.Extensions" />
 		<PackageReference Include="Microsoft.Extensions.Configuration" />

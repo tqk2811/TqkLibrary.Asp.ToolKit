@@ -2,6 +2,10 @@
 
 	<Import Project="..\ProjectBuildProperties.targets" />
 
+	<PropertyGroup>
+		<VersionPrefix>1.1.0</VersionPrefix>
+	</PropertyGroup>
+
 	<ItemGroup>
 		<!-- AsyncContext: the dispatcher thread has a single-threaded SynchronizationContext, so every continuation of the
 		     loop and of the wrapper around each work item returns to that thread (waiting lists + counters need no locking). -->

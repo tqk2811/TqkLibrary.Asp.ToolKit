@@ -20,51 +20,34 @@
 	</PropertyGroup>
 
 	<!--
-		Debug skips GitVersion entirely so feature/branch builds don't fail when the branch
-		isn't covered by GitVersion.yml (orphaned-branch error). Version is hard-coded so
-		MSBuild's NETSDK1018 ('.' invalid) doesn't fire when GitVersion outputs are empty.
-		Release still goes through GitVersion and produces a real version.
-
-		DisableGitVersionTask alone only skips RunGitVersion/GetVersion — the other
-		GitVersion targets (WriteVersionInfoToBuildLog, GenerateGitVersionInformation,
-		UpdateAssemblyInfo) still try to read obj/gitversion.json. Turn them all off.
+		Version: each packable project sets its own <VersionPrefix>M.N.P</VersionPrefix> in its csproj, bumped in the
+		commit that changes that package. The release workflow builds with -p:TqkRelease=true and gets exactly M.N.P
+		(it pushes only the versions nuget.org does not have yet). Any other build gets M.N.P-dev, so a locally packed
+		package never collides with a published one.
+		The csproj body is evaluated after this file, so only VersionSuffix is set here; the SDK combines it with the
+		project's VersionPrefix later.
 	-->
-	<PropertyGroup Condition="'$(Configuration)' == 'Debug'">
-		<DisableGitVersionTask>true</DisableGitVersionTask>
-		<WriteVersionInfoToBuildLog>false</WriteVersionInfoToBuildLog>
-		<GenerateGitVersionInformation>false</GenerateGitVersionInformation>
-		<UpdateAssemblyInfo>false</UpdateAssemblyInfo>
-		<GenerateGitVersionFiles>false</GenerateGitVersionFiles>
-		<Version>0.0.0-debug</Version>
-		<PackageVersion>0.0.0-debug</PackageVersion>
+	<PropertyGroup Condition="'$(TqkRelease)' != 'true' And '$(VersionSuffix)' == ''">
+		<VersionSuffix>dev</VersionSuffix>
 	</PropertyGroup>
 
 	<!-- NuSpec support for dotnet pack -->
 	<PropertyGroup Condition="Exists('$(MSBuildProjectDirectory)\$(MSBuildProjectName).nuspec')">
 		<NuspecFile>$(MSBuildProjectName).nuspec</NuspecFile>
+		<TqkPackable>true</TqkPackable>
 	</PropertyGroup>
 
-	<ItemGroup>
-		<PackageReference Include="GitVersion.MsBuild">
-			<PrivateAssets>all</PrivateAssets>
-			<IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-		</PackageReference>
-	</ItemGroup>
-
-	<!-- Set version after GitVersion runs: the tagged commit (vM.N.P) builds exactly M.N.P, later commits build
-	     M.N.P-dev.<commits since tag> so they never collide with a release (Release only — Debug short-circuits via DisableGitVersionTask above) -->
-	<Target Name="SetVersionFromGitVersion" AfterTargets="GetVersion" Condition="'$(DisableGitVersionTask)' != 'true'">
+	<!-- AssemblyVersion = Major.Minor.0.0 (patch releases need no binding redirect); FileVersion = M.N.P.0.
+	     Runs as a target because VersionPrefix comes from the csproj body, after this file is evaluated. -->
+	<Target Name="TqkSetVersion" BeforeTargets="GetAssemblyVersion;GenerateNuspec" Condition="'$(TqkPackable)' == 'true'">
 		<PropertyGroup>
-			<Version>$(GitVersion_MajorMinorPatch)</Version>
-			<Version Condition="'$(GitVersion_CommitsSinceVersionSource)' != '0'">$(GitVersion_MajorMinorPatch)-dev.$(GitVersion_CommitsSinceVersionSource)</Version>
-			<PackageVersion>$(Version)</PackageVersion>
-			<AssemblyVersion>$(GitVersion_Major).$(GitVersion_Minor).0.0</AssemblyVersion>
-			<FileVersion>$(GitVersion_MajorMinorPatch).0</FileVersion>
-			<InformationalVersion>$(Version)</InformationalVersion>
-		</PropertyGroup>
-		<PropertyGroup Condition="Exists('$(MSBuildProjectDirectory)\$(MSBuildProjectName).nuspec')">
-			<NuspecProperties>id=$(MSBuildProjectName);version=$(Version)</NuspecProperties>
+			<AssemblyVersion>$([System.Version]::Parse('$(VersionPrefix)').Major).$([System.Version]::Parse('$(VersionPrefix)').Minor).0.0</AssemblyVersion>
+			<FileVersion>$(VersionPrefix).0</FileVersion>
+			<NuspecProperties>id=$(MSBuildProjectName);version=$(PackageVersion)</NuspecProperties>
 		</PropertyGroup>
 	</Target>
+
+	<!-- Returns the version this project packs as (used by release.yml and by packages whose nuspec depends on another package) -->
+	<Target Name="TqkGetPackageVersion" Returns="$(PackageVersion)" />
 
 </Project>

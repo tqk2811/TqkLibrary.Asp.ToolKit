@@ -469,13 +469,8 @@ var result = await ticket.Completion;      // ticket.QueuePosition cho biết v�
 
 ## Phát hành
 
-Mỗi bản phát hành là một tag `vM.N.P` gắn trên commit của `master`; CI sẽ push toàn bộ package lên nuget.org.
+Mỗi package có version riêng, đặt bằng `<VersionPrefix>` trong csproj của nó. Muốn phát hành một package: tăng `<VersionPrefix>` ngay trong commit sửa package đó (thay đổi breaking chỉ tăng major của riêng package đó), merge vào `master`, rồi chạy tay workflow **Release** trên `master` (Actions -> Release -> Run workflow).
 
-```
-git tag v1.2.3
-git push origin v1.2.3      # kích hoạt .github/workflows/release.yml
-```
-
-Tag phải lớn hơn version cao nhất đang có trên nuget.org. Commit sau tag build ra `M.N.P-dev.<số commit kể từ tag>`.
+Workflow pack mọi package, chỉ push lên nuget.org những version nuget.org chưa có, rồi gắn tag `<Package>/vM.N.P` cho từng version vừa phát hành (vd `Auth.Web/v2.0.0`). Package không đổi version thì bỏ qua. Version mới phải lớn hơn version cao nhất đang có trên nuget.org. Mọi bản build khác ngoài workflow phát hành (`-p:TqkRelease=true`) đều ra `M.N.P-dev`.
 
 Cấu hình một lần trên nuget.org (NuGet Trusted Publishing, không cần secret API key): vào tài khoản `tqk2811`, thêm trusted publishing policy với repository owner `tqk2811`, repository `TqkLibrary.Asp.ToolKit`, workflow file `release.yml`, chọn các package của repo này.

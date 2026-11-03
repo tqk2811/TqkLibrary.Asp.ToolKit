@@ -18,13 +18,8 @@ Each package has its own README (shown on nuget.org) with install command and us
 
 ## Releasing
 
-Every release is a tag `vM.N.P` on a commit of `master`; the tag pushes all packages to nuget.org through CI.
+Each package has its own version, set by `<VersionPrefix>` in its csproj. To release a package, bump its `<VersionPrefix>` in the commit that changes it (a breaking change bumps the major of that package only), merge to `master`, then run the **Release** workflow manually on `master` (Actions -> Release -> Run workflow).
 
-```
-git tag v1.2.3
-git push origin v1.2.3      # triggers .github/workflows/release.yml
-```
-
-The tag must be higher than the highest version already on nuget.org. A commit after a tag builds as `M.N.P-dev.<commits since tag>`.
+The workflow packs every package, pushes to nuget.org only the versions nuget.org does not have yet, and tags each published version as `<Package>/vM.N.P` (for example `Auth.Web/v2.0.0`). Packages whose version did not change are skipped. The new version must be higher than the highest version already on nuget.org. Any build other than the release workflow (`-p:TqkRelease=true`) produces `M.N.P-dev`.
 
 One-time setup on nuget.org (NuGet Trusted Publishing, no API key secret): in the account of `tqk2811`, add a trusted publishing policy with repository owner `tqk2811`, repository `TqkLibrary.Asp.ToolKit`, workflow file `release.yml`, and select the packages of this repository.

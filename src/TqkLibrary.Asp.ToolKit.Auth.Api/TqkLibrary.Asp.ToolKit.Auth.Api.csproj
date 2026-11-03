@@ -2,6 +2,10 @@
 
 	<Import Project="..\ProjectBuildProperties.targets" />
 
+	<PropertyGroup>
+		<VersionPrefix>2.0.0</VersionPrefix>
+	</PropertyGroup>
+
 	<ItemGroup>
 		<FrameworkReference Include="Microsoft.AspNetCore.App" />
 	</ItemGroup>
