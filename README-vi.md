@@ -1,7 +1,7 @@
 # TqkLibrary.Asp.ToolKit — hướng dẫn sử dụng (tiếng Việt)
 
-Bản tiếng Anh ngắn gọn: [README.md](README.md). Tài liệu này giải thích đầy đủ cách dùng ba package ASP.NET Core:
-`TqkLibrary.Asp.ToolKit.Caching`, `TqkLibrary.Asp.ToolKit.Auth.Web`, `TqkLibrary.Asp.ToolKit.Auth.Api`.
+Bản tiếng Anh ngắn gọn: [README.md](README.md). Tài liệu này giải thích đầy đủ cách dùng các package ASP.NET Core:
+`TqkLibrary.Asp.ToolKit.Auth.Web`, `TqkLibrary.Asp.ToolKit.Auth.Api`.
 
 ## Mục lục
 
@@ -10,14 +10,12 @@ Bản tiếng Anh ngắn gọn: [README.md](README.md). Tài liệu này giải 
 - [Auth.Web — host Web (MVC/Razor)](#authweb--host-web-mvcrazor)
 - [Auth.Api — host API (JWT)](#authapi--host-api-jwt)
 - [Điều kiện bắt buộc phía API](#điều-kiện-bắt-buộc-phía-api)
-- [Caching](#caching)
 - [Queue](#queue)
 - [Các bẫy thường gặp](#các-bẫy-thường-gặp)
 
 ## Cài đặt và chọn package
 
 ```
-dotnet add package TqkLibrary.Asp.ToolKit.Caching
 dotnet add package TqkLibrary.Asp.ToolKit.Auth.Web
 dotnet add package TqkLibrary.Asp.ToolKit.Auth.Api
 dotnet add package TqkLibrary.Asp.ToolKit.Queue
@@ -27,10 +25,9 @@ dotnet add package TqkLibrary.Asp.ToolKit.Queue
 |---|---|---|
 | `TqkLibrary.Asp.ToolKit.Auth.Web` | Web front end (MVC/Razor) đăng nhập qua một API riêng | Giữ access/refresh token của API trong cookie đã mã hoá, tự gắn bearer, tự refresh, dựng lại user hiện tại cho UI |
 | `TqkLibrary.Asp.ToolKit.Auth.Api` | API phát hành JWT | Phát access token gọn, refresh token không xoay vòng, kiểm phiên mỗi request (có cache ngắn) |
-| `TqkLibrary.Asp.ToolKit.Caching` | Web hoặc API (hoặc cả hai) | Cache `stale-while-refresh` theo nhóm (group), vô hiệu hoá theo group, kênh vô hiệu hoá giữa hai process qua HTTP |
 | `TqkLibrary.Asp.ToolKit.Queue` | Bất kỳ host nào cần xếp hàng việc nền | Hàng đợi điều phối trong process: chính sách cho chạy (trần song song), chia lượt công bằng theo khoá, vé await kết quả |
 
-Web và API là hai app tách biệt: Web cài `Auth.Web`, API cài `Auth.Api`. `Caching` và `Queue` độc lập với các package còn lại.
+Web và API là hai app tách biệt: Web cài `Auth.Web`, API cài `Auth.Api`. `Queue` độc lập với các package còn lại.
 
 ## Cơ chế tổng quan của Auth
 
@@ -270,103 +267,11 @@ Web và API chỉ chạy đúng khi API tuân thủ các điều kiện sau:
    Hiện tại cả ba hàm đều xoá **toàn bộ** entry trong cache (một bộ đếm generation duy nhất); ba tên được giữ riêng để nói rõ ý định ở nơi gọi.
    Không gọi invalidate thì phiên bị thu hồi vẫn hợp lệ tới hết `SessionAccessCacheLifetime`.
 5. **Nhiều instance API:** cache là theo process, invalidate chỉ tới instance xử lý lần ghi; các instance khác trễ tối đa `SessionAccessCacheLifetime`
-   (hoặc dùng thêm kênh chung như Redis pub/sub, hoặc kênh HTTP của `Caching` nếu phù hợp).
+   (hoặc dùng thêm kênh chung như Redis pub/sub).
 
 ## Caching
 
-Cache trong process cho dữ liệu dùng chung, đọc nhiều, vô hiệu hoá theo nhóm (group) mà app đặt tên bằng enum riêng.
-
-### `StaleWhileRefreshCache<T>`
-
-- Một giá trị + hạn (TTL). Khi hết hạn, **đúng một** caller làm mới; các caller khác nhận ngay giá trị cũ (không xếp hàng). Chỉ lần nạp đầu và lần nạp sau `Invalidate` mới phải chờ.
-- Làm mới lỗi mà còn giá trị cũ → ghi warning, trả giá trị cũ và kéo dài thêm `min(ttl, maxStaleBackoff)`. Chưa có giá trị cũ → ném lỗi và nhớ lỗi trong `failureHoldFor`
-  để các caller đang xếp hàng nhận cùng lỗi thay vì mỗi người nạp lại. Mặc định `StaleWhileRefreshCache<T>.FailureHoldFor` = 2 giây và `MaxStaleBackoff` = 10 giây;
-  chỉnh được bằng tham số tuỳ chọn `failureHoldFor` / `maxStaleBackoff` của constructor.
-- Hàm `load` **phải đọc dữ liệu bên trong lambda** (không capture giá trị đã tính sẵn), nếu không `Invalidate` không an toàn (lần nạp sau ghi lại dữ liệu cũ).
-- Hàm `load` **phải tự có timeout.** Lần nạp đầu (và lần nạp sau `Invalidate`) giữ lock và chỉ nhìn token của caller; thư viện không đặt timeout nội bộ,
-  nên `load` treo vĩnh viễn sẽ chặn mọi caller chưa có giá trị cũ.
-- Giá trị được chia sẻ cho mọi caller: không sửa nó.
-
-### `KeyedStaleWhileRefreshCache<TKey, T>`
-
-Mỗi key một cache con (hai key không chờ nhau). `maxEntries` là giới hạn **xấp xỉ**: dưới tải song song số key có thể vượt nhẹ vì kiểm tra kích thước và chèn không atomic;
-mỗi lần miss một key mới khi cache đầy sẽ quét toàn bộ key để loại key ít dùng nhất (O(n)), nên giữ `maxEntries` vừa phải.
-
-### `CacheRegistry<TGroup>` và vô hiệu hoá theo group
-
-```csharp
-public enum CacheGroup { News, Settings }
-
-builder.Services.AddTqkCaching<CacheGroup>();
-
-public sealed class NewsCache
-{
-    public NewsCache(CacheRegistry<CacheGroup> registry)
-    {
-        // Tạo cache MỘT LẦN (singleton), không tạo theo request: registry giữ tham chiếu mãi mãi.
-        Latest = registry.CreateKeyed<int, IReadOnlyList<NewsItem>>(TimeSpan.FromSeconds(60), 8, CacheGroup.News);
-    }
-    public KeyedStaleWhileRefreshCache<int, IReadOnlyList<NewsItem>> Latest { get; }
-}
-
-var items = await newsCache.Latest.GetAsync(10, ct => repository.GetLatestAsync(10, ct));
-
-// Sau khi lần ghi thành công:
-invalidator.Invalidate(CacheGroup.News);       // ICacheInvalidator<CacheGroup>
-```
-
-- Một cache có thể gắn nhiều group (`Create<T>(ttl, groupA, groupB)`): invalidate **bất kỳ** group nào cũng làm nó stale.
-- `CacheInvalidator<TGroup>` invalidate local trước rồi báo cho mọi `ICacheInvalidationNotifier<TGroup>`; notifier lỗi chỉ ghi warning, không làm hỏng lần ghi đã thành công.
-
-### Kênh vô hiệu hoá qua HTTP giữa hai process (ví dụ API -> Web)
-
-```csharp
-// Bên gửi (process ghi dữ liệu)
-builder.Services.AddTqkCacheInvalidationSender<CacheGroup>(o =>
-{
-    o.TargetUrl = "http://localhost:5000/_internal/cache/invalidate";
-    o.Key = builder.Configuration["Caching:InternalKey"]!;
-});
-
-// Bên nhận (process giữ cache); chỉ loopback, có khoá, còn lại trả 404
-builder.Services.AddTqkCacheInvalidationEndpoint<CacheGroup>(o => o.Key = builder.Configuration["Caching:InternalKey"]);
-app.UseTqkCacheInvalidationEndpoint<CacheGroup>();   // đặt TRƯỚC UseForwardedHeaders / UseHttpsRedirection / status code pages
-```
-
-Bên gửi (`HttpCacheInvalidationSender<TGroup>`, một `BackgroundService`):
-
-- Gom các group trong cửa sổ `Debounce` (200 ms) thành một lần gọi `POST {"groups":["News"]}` kèm header khoá (`X-Cache-Key`).
-- Lỗi tạm thì thử lại theo `RetryDelays` (mặc định 0,5 s / 1 s / 2 s); 401/403/404 là cấu hình sai, không retry và ghi error.
-- `TargetUrl` không phải URL tuyệt đối http/https → ghi error lúc khởi động và **không chạy vòng gửi** (khỏi retry vô ích).
-- Options được đọc qua `IOptionsMonitor` mỗi lô, nên đổi URL/khoá/retry không cần restart. Việc bật/tắt (thiếu `TargetUrl` hoặc `Key`) và tính hợp lệ của URL chỉ xét lúc khởi động.
-- Hàng đợi có sức chứa `QueueCapacity` (256); đầy thì bỏ group cũ nhất (bên nhận vẫn hết hạn theo TTL).
-- **Lô đang chờ debounce hoặc retry sẽ bị bỏ khi app tắt**; bên nhận chỉ còn dựa vào TTL.
-
-Bên nhận (`CacheInvalidationEndpoint<TGroup>`):
-
-- Chỉ nhận khi **đồng thời**: đã cấu hình `Key`; kết nối TCP thật là loopback và **không có** header proxy (`ForwardingHeaders`); header khoá khớp (`RequireLoopback` mặc định `true`). Còn lại trả 404 như thể endpoint không tồn tại.
-- Gọi thẳng `CacheRegistry` (không qua `ICacheInvalidator`) nên hai process không phát lại tín hiệu cho nhau.
-- Body tối đa `MaxBodyBytes` (4096); group chỉ nhận theo **tên** enum, số hoặc tên lạ → 400.
-
-Options của kênh:
-
-| Option | Mặc định |
-|---|---|
-| `CacheInvalidationSenderOptions.TargetUrl` / `Key` | rỗng (rỗng = tắt) |
-| `KeyHeader` | `X-Cache-Key` |
-| `Debounce` | 200 ms |
-| `Timeout` (mỗi lần gọi HTTP) | 5 giây |
-| `RetryDelays` | `null` = `DefaultRetryDelays` (0,5 s, 1 s, 2 s); mảng rỗng đặt bằng code = không retry |
-| `QueueCapacity` | 256 |
-| `CacheInvalidationEndpointOptions.Path` | `/_internal/cache/invalidate` |
-| `Key` | `null` (tắt endpoint) |
-| `RequireLoopback` | `true` |
-| `MaxBodyBytes` | 4096 |
-| `ForwardingHeaders` | `null` = `DefaultForwardingHeaders` (`X-Forwarded-For`, `Forwarded`, `X-Real-IP`, `CF-Connecting-IP`, `X-Original-For`) |
-
-Về `RetryDelays` và `ForwardingHeaders`: binder cấu hình (`IConfiguration`) **nối thêm** phần tử vào mọi collection/mảng đã có sẵn giá trị, nên hai option này mặc định là `null`
-và giá trị mặc định nằm ở property tĩnh riêng (`Default*`, đọc giá trị hiệu lực qua `Effective*`). Cấu hình danh sách trong `appsettings` sẽ **thay thế** mặc định. Muốn tắt retry
-phải đặt mảng rỗng bằng code (`o.RetryDelays = [];`) vì binder bỏ qua section rỗng.
+Package `TqkLibrary.Asp.ToolKit.Caching` đã bị bỏ. Dùng `HybridCache` của Microsoft (gói `Microsoft.Extensions.Caching.Hybrid`): có chặn stampede (mỗi key một lần load), giới hạn dung lượng qua `IMemoryCache`, xoá theo tag. So sánh với `FusionCache`: [Docs/Caching-vi.md](Docs/Caching-vi.md).
 
 ## Queue
 
@@ -413,19 +318,15 @@ var result = await ticket.Completion;      // ticket.QueuePosition cho biết v�
 | Bẫy | Hậu quả | Cách xử lý |
 |---|---|---|
 | Hạn chờ `me` (`CurrentUserTimeout`) quá ngắn | Request ngẫu nhiên chạy không có permission khi API khởi động nguội hoặc đang refresh token | Giữ >= 15 giây; phải đủ cho một lần refresh + cold start |
-| IIS cho app "ngủ" (idle timeout, recycle) | Cache và hàng đợi gửi vô hiệu hoá mất; lô đang chờ bị bỏ; lần đầu sau khi ngủ rất chậm | Đặt Start Mode `AlwaysRunning`, tắt idle timeout / bật preload cho app pool của cả Web lẫn API |
+| IIS cho app "ngủ" (idle timeout, recycle) | Mất trạng thái trong bộ nhớ (cache, hàng đợi); lần đầu sau khi ngủ rất chậm | Đặt Start Mode `AlwaysRunning`, tắt idle timeout / bật preload cho app pool của cả Web lẫn API |
 | Dùng `JwtBearerOptions.EventsType` | Bước kiểm phiên bị bỏ qua | Thư viện ném `InvalidOperationException`; gọi `SessionTokenValidator.ValidateAsync` từ events type của app |
 | App gán lại `TokenValidationParameters` | Mất khoá ký/issuer/audience của thư viện | Chỉnh instance có sẵn, đừng `new` |
 | Token (hoặc ticket) to | Cookie bị chia chunk, có thể vượt giới hạn header của proxy/IIS/nginx (lỗi 400/431) | Giữ access token gọn (chỉ `sub`, `sid`, `jti`), không nhét claim/permission vào token; nới giới hạn header của proxy nếu cần |
 | Nhiều instance Web | Cookie giải mã được ở instance này mà không giải mã được ở instance kia | Dùng chung key ring Data Protection và cùng `ApplicationName` (`AddTqkDataProtectionKeyRing`); mất key ring = mọi người phải đăng nhập lại |
 | Nhiều instance API | Invalidate `SessionAccessCache` chỉ tới instance xử lý lần ghi | Chấp nhận trễ tới `SessionAccessCacheLifetime`, hoặc thêm kênh chung |
-| Nhiều instance Web + cache | Một instance bị invalidate, instance khác thì không | Gửi tín hiệu tới từng instance qua kênh HTTP (mỗi instance có endpoint riêng) hoặc chấp nhận chờ TTL |
 | Refresh token bị API xoay vòng một lần dùng | Request song song bị đăng xuất | Xem [Điều kiện bắt buộc phía API](#điều-kiện-bắt-buộc-phía-api) |
 | `IAuthApiClient` biến lỗi tạm thành `SessionExpiredException` (hoặc nuốt 401/403) | Đăng xuất oan, hoặc phiên chết mà không đăng xuất | Chỉ 401/403 -> `SessionExpiredException` (dùng `ThrowIfSessionRejected`), lỗi khác để nguyên |
-| Hàm `load` của cache không có timeout | Lần nạp đầu treo sẽ chặn mọi caller chưa có giá trị cũ | Tự đặt timeout (ví dụ `CancellationTokenSource.CancelAfter`) trong `load` |
 | `load` capture giá trị đã tính | `Invalidate` không an toàn, dữ liệu cũ được ghi lại | Đọc dữ liệu bên trong lambda |
-| Gọi `registry.Create`/`CreateKeyed` theo request | Rò rỉ bộ nhớ (registry giữ tham chiếu mãi) | Tạo một lần trong singleton; registry cảnh báo khi một group có hơn 100 cache |
-| Đặt `UseTqkCacheInvalidationEndpoint` sau `UseForwardedHeaders` / HTTPS redirect | Địa chỉ nguồn bị đổi hoặc response bị viết lại, endpoint từ chối | Đặt endpoint trước các middleware đó |
 | Gọi `AddTqkWebAuth` với `configure` có side-effect | Side-effect chạy hai lần | Delegate chỉ được đụng tới đối tượng options |
 
 ## Phát hành
