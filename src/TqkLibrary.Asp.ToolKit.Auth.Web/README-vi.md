@@ -65,7 +65,11 @@ await sessionManager.SignInAsync(HttpContext, tokens, persistent: model.Remember
 await sessionManager.SignOutAsync(HttpContext);
 ```
 
-Các loader của cache dùng chung cho mọi người xem phải chạy ở chế độ ẩn danh: `AnonymousApiScope.RunAsync(() => api.GetNewsAsync(ct))`.
+Muốn gọi API ẩn danh qua cùng client (không gắn bearer của người xem, không refresh) thì bọc lời gọi trong
+`AnonymousApiScope.RunAsync(() => api.GetNewsAsync(ct))`. Trường hợp hay gặp: hàm tải của cache dùng chung cho mọi
+người xem, nếu không thì token của người kích hoạt đầu tiên quyết định dữ liệu cho tất cả. Bọc BÊN TRONG hàm tải. Cờ
+riêng cho từng luồng async (request khác không thấy). Endpoint luôn ẩn danh thì khai trong `AnonymousPathSuffixes`.
+Thư viện cũng dùng scope này cho `RefreshAsync` để handler không tự gọi vòng vào chính nó khi refresh.
 
 ## Phụ thuộc
 

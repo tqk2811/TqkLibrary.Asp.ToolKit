@@ -67,7 +67,11 @@ await sessionManager.SignInAsync(HttpContext, tokens, persistent: model.Remember
 await sessionManager.SignOutAsync(HttpContext);
 ```
 
-Loaders of caches shared by every viewer must run anonymously: `AnonymousApiScope.RunAsync(() => api.GetNewsAsync(ct))`.
+To call the API anonymously through the same client (no viewer bearer, no refresh), wrap the call in
+`AnonymousApiScope.RunAsync(() => api.GetNewsAsync(ct))`. Typical case: the loader of a cache shared by every viewer,
+otherwise the first viewer's bearer decides what everybody gets. Wrap it INSIDE the loader. The flag is per async flow
+(other requests never see it). Endpoints that are always anonymous go in `AnonymousPathSuffixes` instead. The library
+also uses the scope for `RefreshAsync`, so the handler does not re-enter itself during a refresh.
 
 ## Dependencies
 

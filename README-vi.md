@@ -143,8 +143,43 @@ await sessionManager.SignInAsync(HttpContext, tokens, persistent: model.Remember
 await sessionManager.SignOutAsync(HttpContext);                                        // gọi API logout rồi xoá cookie
 ```
 
-Loader của cache dùng chung cho mọi người xem phải chạy ẩn danh để không dính token của người đang xem:
-`AnonymousApiScope.RunAsync(() => api.GetNewsAsync(ct))`.
+#### Gọi API ẩn danh: `AnonymousApiScope`
+
+Mọi request đi qua client có `AddTqkSessionBearer()` đều được `SessionBearerHandler` gắn token của người đang xem
+(và refresh nếu token sắp hết hạn). `AnonymousApiScope.RunAsync(...)` tắt việc đó cho các lời gọi nằm bên trong: request
+đi ra nguyên trạng, không bearer, không refresh, không thử lại khi 401.
+
+Vì sao cần:
+
+1. **Refresh token không được đi qua handler.** Thư viện gọi `IAuthApiClient.RefreshAsync` trong lúc đang giữ khoá
+   của ticket. App thường viết hàm đó bằng chính client có `SessionBearerHandler`; nếu handler xử lý lời gọi này, nó sẽ
+   chờ đúng cái khoá đang bị giữ (treo tới `RefreshTimeout`), gắn access token cũ và đòi refresh lồng nhau. Thư viện tự
+   bọc lời gọi refresh trong scope, nên app viết `RefreshAsync` kiểu gì cũng an toàn.
+2. **Dữ liệu dùng chung cho mọi người.** Hàm tải của cache dùng chung chạy với token của request nào kích hoạt nó
+   trước. Nếu đó là admin, dữ liệu riêng của admin bị cache và hiện cho khách; nếu session của người đó vừa hết hạn,
+   lỗi `SessionExpiredException` bị trao cho mọi request đang chờ cùng cache. Bọc lời gọi trong scope thì ai kích hoạt
+   cũng ra cùng một lời gọi ẩn danh.
+
+```csharp
+public Task<IReadOnlyList<NewsItem>> GetLatestAsync(CancellationToken ct)
+    => cache.GetOrCreateAsync("news:latest", entry =>
+    {
+        entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(1);
+        return AnonymousApiScope.RunAsync(() => api.GetLatestNewsAsync(ct));   // bọc BÊN TRONG hàm tải
+    })!;
+```
+
+So với `AnonymousPathSuffixes`: endpoint **luôn** ẩn danh (login, quên mật khẩu) thì khai một lần ở đó; scope dành cho
+endpoint lúc cần token, lúc không (cùng `GetLatestNewsAsync` vừa được gọi riêng cho người đăng nhập, vừa được tải ẩn
+danh cho cache chung).
+
+Cách hoạt động và nhiều người dùng cùng lúc:
+
+- Cờ nằm trong `AsyncLocal<bool>`, được gán bên trong một method `async`. Giá trị thật nằm trong `ExecutionContext` của
+  từng luồng async, không phải biến dùng chung, nên request của người khác chạy song song không thấy cờ.
+- Không có dòng nào gán lại `false`: khi `RunAsync` return, runtime trả lại `ExecutionContext` cũ cho nơi gọi, nên code
+  sau `RunAsync` lại có token như thường, kể cả khi `call()` ném lỗi.
+- Việc chạy nền tạo **bên trong** scope (`Task.Run`, fire-and-forget) mang theo cờ cả sau khi scope đã return.
 
 Về cookie:
 

@@ -1,14 +1,27 @@
 namespace TqkLibrary.Asp.ToolKit.Auth.Web
 {
     /// <summary>
-    /// Marks "API calls inside this scope MUST be anonymous": <see cref="SessionBearerHandler"/> passes them through
-    /// without the viewer's bearer and without refreshing.
+    /// Sends API calls anonymously through a client wired with <see cref="SessionBearerHandler"/>: inside
+    /// <see cref="RunAsync{T}"/> / <see cref="RunAsync"/> the handler passes requests through untouched (no viewer
+    /// bearer, no refresh, no retry on 401).
+    /// <para>Uses:</para>
+    /// <list type="bullet">
+    ///   <item>The library runs <see cref="Interfaces.IAuthApiClient.RefreshAsync"/> inside it. That call usually goes
+    ///   through the same client; without the scope the handler would wait for the ticket lock the refresh already
+    ///   holds (deadlock until <see cref="WebAuthOptions.RefreshTimeout"/>) and attach the old access token.</item>
+    ///   <item>The app calls an endpoint anonymously only SOMETIMES, for example the loader of a cache shared by every
+    ///   viewer: a shared load (and its error) is handed to every waiting caller, so a load carrying ONE viewer's
+    ///   bearer could cache that viewer's private data or hand that viewer's <see cref="SessionExpiredException"/> to
+    ///   everybody. Wrap the call INSIDE the loader, so whichever request starts the load runs it anonymously.
+    ///   Endpoints that are ALWAYS anonymous (login, password reset) belong in
+    ///   <see cref="WebAuthOptions.AnonymousPathSuffixes"/> instead.</item>
+    /// </list>
     /// <para>
-    /// Needed for caches shared by every viewer: a shared load (and its error) is handed to every waiting caller, so a
-    /// loader carrying ONE viewer's bearer could store that viewer's private data in the shared cache, or hand that
-    /// viewer's <see cref="SessionExpiredException"/> to everybody else.
+    /// The flag lives in an <see cref="AsyncLocal{T}"/> set inside an async method: it flows only to the code awaited
+    /// inside the scope, concurrent requests (other users) never see it, and the caller sees the old value again when
+    /// the method returns (the runtime restores the execution context; no reset code is needed). Work started inside
+    /// the scope (<c>Task.Run</c>, fire-and-forget) keeps the flag even after the scope returns.
     /// </para>
-    /// <para>The flag lives in an <see cref="AsyncLocal{T}"/>: it flows with the async call only and never leaks to other requests.</para>
     /// </summary>
     public static class AnonymousApiScope
     {
