@@ -103,14 +103,5 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Extensions
             builder.Services.TryAddTransient<SessionBearerHandler>();
             return builder.AddHttpMessageHandler<SessionBearerHandler>();
         }
-
-        /// <summary>Adds <see cref="ClientIpForwardingHandler"/> (viewer IP → <c>X-Forwarded-For</c>) to an API client.</summary>
-        public static IHttpClientBuilder AddTqkClientIpForwarding(this IHttpClientBuilder builder)
-        {
-            ArgumentNullException.ThrowIfNull(builder);
-            builder.Services.AddHttpContextAccessor();
-            builder.Services.TryAddTransient<ClientIpForwardingHandler>();
-            return builder.AddHttpMessageHandler<ClientIpForwardingHandler>();
-        }
     }
 }

@@ -127,8 +127,7 @@ builder.Services.AddTqkWebAuth(
 
 builder.Services
     .AddHttpClient<IAuthApiClient, MyAuthApiClient>(c => c.BaseAddress = new Uri(apiUrl))
-    .AddTqkSessionBearer()          // gắn bearer + refresh
-    .AddTqkClientIpForwarding();    // tuỳ chọn: chuyển IP người xem sang API qua X-Forwarded-For
+    .AddTqkSessionBearer();         // gắn bearer + refresh
 
 var app = builder.Build();
 app.UseAuthentication();
