@@ -64,7 +64,8 @@ namespace TqkLibrary.Asp.ToolKit.Caching.Remote
             var startup = _options.CurrentValue;
             if (!startup.IsEnabled)
             {
-                _logger.LogInformation("Remote cache invalidation is disabled (TargetUrl or Key is empty).");
+                _logger.Log(startup.DisabledLogLevel,
+                    "Remote cache invalidation is disabled (TargetUrl or Key is empty): invalidations are NOT sent to other processes.");
                 return;
             }
             if (!Uri.TryCreate(startup.TargetUrl, UriKind.Absolute, out var startupUri)

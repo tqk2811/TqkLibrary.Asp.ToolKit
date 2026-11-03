@@ -52,7 +52,15 @@ builder.Services.AddTqkCacheInvalidationSender<CacheGroup>(o =>
 // Bên nhận (process giữ cache); chỉ loopback, bảo vệ bằng key, các trường hợp khác trả 404
 builder.Services.AddTqkCacheInvalidationEndpoint<CacheGroup>(o => o.Key = builder.Configuration["Caching:InternalKey"]);
 app.UseTqkCacheInvalidationEndpoint<CacheGroup>();   // đặt trước UseForwardedHeaders / UseHttpsRedirection
+
+// Hoặc bind thẳng từ configuration (key = tên property của options, tự reload khi config đổi):
+//   "Caching": { "Sender": { "TargetUrl": "...", "Key": "..." }, "Endpoint": { "Key": "..." } }
+builder.Services.AddTqkCacheInvalidationSender<CacheGroup>(builder.Configuration.GetSection("Caching:Sender"));
+builder.Services.AddTqkCacheInvalidationEndpoint<CacheGroup>(builder.Configuration.GetSection("Caching:Endpoint"));
 ```
+
+Sender đăng ký mà thiếu `TargetUrl` hoặc `Key` thì không gửi gì và ghi một log **Warning** lúc khởi động; tắt chủ ý
+thì đặt `DisabledLogLevel = LogLevel.None` (hoặc mức khác).
 
 ## Phụ thuộc
 

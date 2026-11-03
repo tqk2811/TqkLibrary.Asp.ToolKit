@@ -54,7 +54,15 @@ builder.Services.AddTqkCacheInvalidationSender<CacheGroup>(o =>
 // Receiver (process that caches); loopback only, key protected, 404 otherwise
 builder.Services.AddTqkCacheInvalidationEndpoint<CacheGroup>(o => o.Key = builder.Configuration["Caching:InternalKey"]);
 app.UseTqkCacheInvalidationEndpoint<CacheGroup>();   // before UseForwardedHeaders / UseHttpsRedirection
+
+// Or bind straight from configuration (keys = option property names, reloaded on change):
+//   "Caching": { "Sender": { "TargetUrl": "...", "Key": "..." }, "Endpoint": { "Key": "..." } }
+builder.Services.AddTqkCacheInvalidationSender<CacheGroup>(builder.Configuration.GetSection("Caching:Sender"));
+builder.Services.AddTqkCacheInvalidationEndpoint<CacheGroup>(builder.Configuration.GetSection("Caching:Endpoint"));
 ```
+
+A sender registered without `TargetUrl` or `Key` sends nothing and logs one **Warning** at startup; set
+`DisabledLogLevel = LogLevel.None` (or another level) when disabling is intentional.
 
 ## Dependencies
 

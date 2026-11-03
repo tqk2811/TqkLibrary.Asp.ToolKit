@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using TqkLibrary.Asp.ToolKit.Caching.Interfaces;
@@ -32,8 +33,31 @@ namespace TqkLibrary.Asp.ToolKit.Caching.Extensions
         {
             ArgumentNullException.ThrowIfNull(services);
             ArgumentNullException.ThrowIfNull(configure);
-            services.AddTqkCaching<TGroup>();
             services.Configure(configure);
+            return services.AddTqkCacheInvalidationSenderCore<TGroup>();
+        }
+
+        /// <summary>
+        /// Same as <see cref="AddTqkCacheInvalidationSender{TGroup}(IServiceCollection, Action{CacheInvalidationSenderOptions})"/>
+        /// but binds <see cref="CacheInvalidationSenderOptions"/> from <paramref name="section"/> (keys are the option
+        /// property names: <c>TargetUrl</c>, <c>Key</c>, <c>KeyHeader</c>, <c>Debounce</c>, ...). The binding is
+        /// reloaded when the configuration changes, so the per-batch values (URL, key, timeout, retries) follow it;
+        /// whether sending is enabled is still decided once at startup.
+        /// </summary>
+        public static IServiceCollection AddTqkCacheInvalidationSender<TGroup>(this IServiceCollection services,
+            IConfiguration section) where TGroup : struct, Enum
+        {
+            ArgumentNullException.ThrowIfNull(services);
+            ArgumentNullException.ThrowIfNull(section);
+            // Bind registers a ConfigurationChangeTokenSource, so IOptionsMonitor sees configuration reloads.
+            services.AddOptions<CacheInvalidationSenderOptions>().Bind(section);
+            return services.AddTqkCacheInvalidationSenderCore<TGroup>();
+        }
+
+        private static IServiceCollection AddTqkCacheInvalidationSenderCore<TGroup>(this IServiceCollection services)
+            where TGroup : struct, Enum
+        {
+            services.AddTqkCaching<TGroup>();
             // Calling this method twice must not register the notifier twice (it would be notified twice per invalidation).
             if (!services.Any(d => d.ServiceType == typeof(HttpCacheInvalidationNotifier<TGroup>)))
             {
@@ -54,8 +78,29 @@ namespace TqkLibrary.Asp.ToolKit.Caching.Extensions
         {
             ArgumentNullException.ThrowIfNull(services);
             ArgumentNullException.ThrowIfNull(configure);
-            services.AddTqkCaching<TGroup>();
             services.Configure(configure);
+            return services.AddTqkCacheInvalidationEndpointCore<TGroup>();
+        }
+
+        /// <summary>
+        /// Same as <see cref="AddTqkCacheInvalidationEndpoint{TGroup}(IServiceCollection, Action{CacheInvalidationEndpointOptions})"/>
+        /// but binds <see cref="CacheInvalidationEndpointOptions"/> from <paramref name="section"/> (keys are the option
+        /// property names: <c>Path</c>, <c>KeyHeader</c>, <c>Key</c>, <c>RequireLoopback</c>, ...), reloaded when the
+        /// configuration changes.
+        /// </summary>
+        public static IServiceCollection AddTqkCacheInvalidationEndpoint<TGroup>(this IServiceCollection services,
+            IConfiguration section) where TGroup : struct, Enum
+        {
+            ArgumentNullException.ThrowIfNull(services);
+            ArgumentNullException.ThrowIfNull(section);
+            services.AddOptions<CacheInvalidationEndpointOptions>().Bind(section);
+            return services.AddTqkCacheInvalidationEndpointCore<TGroup>();
+        }
+
+        private static IServiceCollection AddTqkCacheInvalidationEndpointCore<TGroup>(this IServiceCollection services)
+            where TGroup : struct, Enum
+        {
+            services.AddTqkCaching<TGroup>();
             services.TryAddSingleton<CacheInvalidationEndpoint<TGroup>>();
             return services;
         }

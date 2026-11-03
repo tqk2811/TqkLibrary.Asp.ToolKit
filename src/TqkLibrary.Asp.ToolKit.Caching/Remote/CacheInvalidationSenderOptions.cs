@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+
 namespace TqkLibrary.Asp.ToolKit.Caching.Remote
 {
     /// <summary>Options of <see cref="HttpCacheInvalidationSender{TGroup}"/> (the sending side).</summary>
@@ -41,6 +43,13 @@ namespace TqkLibrary.Asp.ToolKit.Caching.Remote
 
         /// <summary>Capacity of the pending queue; when full the oldest group is dropped (it still expires by TTL remotely).</summary>
         public int QueueCapacity { get; set; } = 256;
+
+        /// <summary>
+        /// Level of the single startup log written when sending is disabled (<see cref="IsEnabled"/> is false).
+        /// Default <see cref="LogLevel.Warning"/>, because a registered but unconfigured sender usually means a missing
+        /// setting; set <see cref="LogLevel.None"/> to opt out (for example when disabling is intentional).
+        /// </summary>
+        public LogLevel DisabledLogLevel { get; set; } = LogLevel.Warning;
 
         /// <summary>True when both <see cref="TargetUrl"/> and <see cref="Key"/> are set.</summary>
         public bool IsEnabled => !string.IsNullOrWhiteSpace(TargetUrl) && !string.IsNullOrEmpty(Key);
