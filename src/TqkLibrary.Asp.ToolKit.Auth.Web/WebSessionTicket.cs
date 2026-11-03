@@ -31,6 +31,8 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         private string? _sessionId;
         private WebSessionTokens? _tokens;
         private AuthenticationProperties? _properties;
+        private volatile bool _dropPending;
+        private int _dropHooked;
 
         private WebSessionTicket(HttpContext context)
         {
@@ -124,6 +126,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         /// <summary>Sets the tokens of a ticket just issued (sign-in) so later API calls in the same request use them.</summary>
         internal void Replace(string sessionId, WebSessionTokens tokens, AuthenticationProperties properties)
         {
+            _dropPending = false;
             _sessionId = sessionId;
             _tokens = tokens;
             _properties = properties;
@@ -133,10 +136,44 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         /// <summary>Forgets the request tokens (session just dropped).</summary>
         internal void Clear()
         {
+            _dropPending = false;
             _sessionId = null;
             _tokens = null;
             _properties = null;
             _loaded = true;
+        }
+
+        /// <summary>
+        /// The session was reported dead (a <see cref="SessionExpiredException"/> is being thrown). Registers once a
+        /// <c>Response.OnStarting</c> callback that drops the web session (<see cref="WebSessionManager.DropAsync"/>)
+        /// when nobody did it before the headers are sent, so the dead cookie is deleted even when the exception is
+        /// caught by app code instead of <see cref="SessionExpiredMiddleware"/>. Nothing happens once the response has
+        /// started (headers can no longer be written).
+        /// </summary>
+        internal void MarkSessionExpired()
+        {
+            if (_context.Response.HasStarted)
+                return;
+            _dropPending = true;
+            if (Interlocked.Exchange(ref _dropHooked, 1) == 1)
+                return;
+            _context.Response.OnStarting(async () =>
+            {
+                if (!_dropPending)
+                    return;
+                // Never throw from an OnStarting callback: it would abort writing the response headers.
+                try
+                {
+                    var sessions = _context.RequestServices.GetService<WebSessionManager>();
+                    if (sessions is not null)
+                        await sessions.DropAsync(_context).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _context.RequestServices.GetService<ILoggerFactory>()?.CreateLogger<WebSessionTicket>()
+                        .LogWarning(ex, "Could not drop the expired web session cookie.");
+                }
+            });
         }
 
         /// <summary>

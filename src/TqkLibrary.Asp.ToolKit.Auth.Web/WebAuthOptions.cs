@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Http;
 
 namespace TqkLibrary.Asp.ToolKit.Auth.Web
 {
@@ -13,6 +14,16 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         /// <see cref="CurrentUserCache"/>. Tokens are not claims; they live in the ticket's authentication properties.
         /// </summary>
         public string SessionIdClaimType { get; set; } = "tqk_sid";
+
+        /// <summary>
+        /// Claim added with the API session id as value to EVERY web principal (cookie, session-only and full), so
+        /// ASP.NET Core antiforgery (which binds its token to <c>sub</c>, then <c>NameIdentifier</c>, then <c>upn</c>) sees
+        /// the same identity whether or not <c>me</c> could be loaded. Default <c>"sub"</c> because antiforgery checks it
+        /// first; antiforgery tokens are therefore bound to the session (a new sign-in needs a new form token). The user id
+        /// stays in <c>ClaimTypes.NameIdentifier</c>. Null or empty = not added (antiforgery then uses NameIdentifier on
+        /// the full principal and every claim on the session-only one, which differ).
+        /// </summary>
+        public string? StableIdentityClaimType { get; set; } = "sub";
 
         /// <summary>Claim type used for permissions on the principal built from the API user.</summary>
         public string PermissionClaimType { get; set; } = "permission";
@@ -57,6 +68,40 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
 
         /// <summary>How long a current-user lookup is cached per session.</summary>
         public TimeSpan CurrentUserCacheLifetime { get; set; } = TimeSpan.FromSeconds(10);
+
+        /// <summary>
+        /// What <see cref="CurrentUserMiddleware"/> does when <c>me</c> fails for another reason than an expired session
+        /// (network, 5xx, timeout): <see cref="Web.CurrentUserFailureMode.SessionOnly"/> (default) or
+        /// <see cref="Web.CurrentUserFailureMode.Throw"/>.
+        /// </summary>
+        public CurrentUserFailureMode CurrentUserFailureMode { get; set; } = CurrentUserFailureMode.SessionOnly;
+
+        /// <summary>
+        /// When set, a failed <c>me</c> lookup is remembered per session for this long: following requests of that
+        /// session apply <see cref="CurrentUserFailureMode"/> at once instead of waiting <see cref="CurrentUserTimeout"/>
+        /// again during an API outage. Null (default) = every request asks again.
+        /// </summary>
+        public TimeSpan? CurrentUserFailureCacheFor { get; set; }
+
+        /// <summary>
+        /// Requests for which <see cref="CurrentUserMiddleware"/> does not call <c>me</c> (static files, health checks,
+        /// endpoints that need no user data). A cached user is still applied; otherwise the request keeps the
+        /// session-only principal. Null (default) = never skip.
+        /// </summary>
+        public Func<HttpContext, bool>? SkipCurrentUser { get; set; }
+
+        /// <summary>
+        /// Decides whether <see cref="SessionExpiredMiddleware"/> answers a request as AJAX (401 body) instead of
+        /// redirecting. Null = <see cref="SessionExpiredMiddleware.DefaultIsAjaxRequest"/>.
+        /// </summary>
+        public Func<HttpRequest, bool>? IsAjaxRequest { get; set; }
+
+        /// <summary>
+        /// Writes the AJAX response of <see cref="SessionExpiredMiddleware"/> (the session is already dropped and the
+        /// response cleared; arguments: context, exception, login redirect URL with <c>returnUrl</c>). Null =
+        /// <see cref="SessionExpiredMiddleware.DefaultWriteAjaxResponseAsync"/> (401 JSON <c>{ success, message, redirect }</c>).
+        /// </summary>
+        public Func<HttpContext, SessionExpiredException, string, Task>? WriteSessionExpiredAjaxResponse { get; set; }
 
         /// <summary>
         /// Path suffixes (case-insensitive) of anonymous API endpoints (login, refresh, password reset...): the bearer

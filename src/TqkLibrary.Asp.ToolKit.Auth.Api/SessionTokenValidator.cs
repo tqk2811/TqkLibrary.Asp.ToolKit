@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using System.Security.Claims;
 using TqkLibrary.Asp.ToolKit.Auth.Api.Interfaces;
+using TqkLibrary.Asp.ToolKit.Auth.Api.Models;
 
 namespace TqkLibrary.Asp.ToolKit.Auth.Api
 {
@@ -14,19 +15,26 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
     /// apply on the next request instead of when the token expires.
     /// <para>
     /// A token without session id/user id, or with a dead session, fails authentication (401) and the request is
-    /// marked so <see cref="IsSessionRejected"/> lets a custom <c>OnChallenge</c> write a specific error body (the
-    /// web reads it to sign out instead of retrying).
+    /// marked so <see cref="IsSessionRejected"/> / <see cref="GetSessionRejection"/> let a custom <c>OnChallenge</c>
+    /// write a specific error body (the web reads it to sign out instead of retrying). The rejection, with the reason
+    /// returned by <see cref="SessionAccessResult.Reject"/>, is stored as the <see cref="SessionRejection"/> feature of
+    /// <see cref="HttpContext.Features"/>.
     /// </para>
     /// </summary>
     public static class SessionTokenValidator
     {
-        private static readonly object SessionRejectedKey = new();
-
         /// <summary>True when authentication failed because the token's session is missing, revoked or expired.</summary>
-        public static bool IsSessionRejected(HttpContext context)
+        public static bool IsSessionRejected(HttpContext context) => GetSessionRejection(context) is not null;
+
+        /// <summary>
+        /// Why the session of the request was rejected (reason code from <see cref="ISessionAccessSource"/> or
+        /// <see cref="SessionRejectionReasons.NoSession"/> / <see cref="SessionRejectionReasons.UserMismatch"/>), or null
+        /// when it was not rejected. Use it in <c>JwtBearerEvents.OnChallenge</c> to write the 401 body.
+        /// </summary>
+        public static SessionRejection? GetSessionRejection(HttpContext context)
         {
             ArgumentNullException.ThrowIfNull(context);
-            return context.Items.ContainsKey(SessionRejectedKey);
+            return context.Features.Get<SessionRejection>();
         }
 
         /// <summary>Validates the session of <paramref name="context"/> and rebuilds its principal.</summary>
@@ -43,19 +51,21 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
             if (principal is null || string.IsNullOrEmpty(sessionId) || string.IsNullOrEmpty(userId))
             {
                 // Correctly signed but carries no session: not issued by this scheme.
-                Reject(context, "The token carries no session.");
+                Reject(context, SessionRejectionReasons.NoSession, "The token carries no session.");
                 return;
             }
 
             var source = services.GetRequiredService<ISessionAccessSource>();
-            var access = await services.GetRequiredService<SessionAccessCache>()
+            var result = await services.GetRequiredService<SessionAccessCache>()
                 .GetAsync(sessionId, userId, ct => source.GetAsync(sessionId, userId, ct), context.HttpContext.RequestAborted)
                 .ConfigureAwait(false);
-            if (access is null)
+            if (!result.IsGranted)
             {
-                Reject(context, "The session was revoked or has expired.");
+                Reject(context, result.Reason, "The session was revoked or has expired"
+                    + (result.Reason is null ? "." : " (" + result.Reason + ")."));
                 return;
             }
+            var access = result.Access;
 
             // Keep the identity claims of the token, REPLACE name/email/roles/permissions with current data.
             var replaced = new HashSet<string>(StringComparer.Ordinal)
@@ -73,10 +83,10 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
             context.Principal = new ClaimsPrincipal(new ClaimsIdentity(claims, context.Scheme.Name, ClaimTypes.Name, ClaimTypes.Role));
         }
 
-        private static void Reject(TokenValidatedContext context, string reason)
+        private static void Reject(TokenValidatedContext context, string? reason, string message)
         {
-            context.HttpContext.Items[SessionRejectedKey] = true;
-            context.Fail(reason);
+            context.HttpContext.Features.Set(new SessionRejection(reason, message));
+            context.Fail(message);
         }
     }
 }

@@ -219,14 +219,15 @@ Về cookie:
 
 ### Interface app phải cài: `ISessionAccessSource`
 
-Chạy (qua `SessionAccessCache`) cho **mỗi request có xác thực**. Trả `null` khi phiên bị thu hồi, hết hạn, thuộc user khác hoặc tài khoản không dùng được:
+Chạy (qua `SessionAccessCache`) cho **mỗi request có xác thực**. Trả `SessionAccessResult.Reject(reason)` (lý do tùy chọn, đọc được trong `OnChallenge` qua `SessionTokenValidator.GetSessionRejection`) khi phiên bị thu hồi, hết hạn, thuộc user khác hoặc tài khoản không dùng được:
 
 ```csharp
 public sealed class SessionAccessSource(AppDbContext db) : ISessionAccessSource
 {
-    public async Task<SessionAccessRecord?> GetAsync(string sessionId, string userId, CancellationToken ct)
+    public async Task<SessionAccessResult> GetAsync(string sessionId, string userId, CancellationToken ct)
     {
-        // null khi phiên đã bị thu hồi / hết hạn / không thuộc userId / tài khoản bị khoá
+        // SessionAccessResult.Reject(SessionRejectionReasons.Revoked / Expired / UserLocked ...) khi phiên đã bị thu hồi /
+        // hết hạn / không thuộc userId / tài khoản bị khoá; SessionAccessRecord tự chuyển ngầm thành Grant
         ...
         return new SessionAccessRecord { UserId = userId, UserName = name, Roles = roles, Permissions = permissions };
     }
@@ -274,7 +275,7 @@ Refresh token có dạng `<sessionId>.<secret>`; chỉ lưu hash của `secret`.
 | `SigningKey` | bắt buộc | Khoá HMAC-SHA256, tối thiểu 32 byte |
 | `UserIdClaimType` / `SessionIdClaimType` / `PermissionClaimType` | `sub` / `sid` / `permission` | Loại claim |
 | `AccessTokenLifetime` | 15 phút | Hạn access token |
-| `RefreshTokenLifetime` | 30 ngày | Hạn trượt của phiên / refresh token |
+| `SessionLifetimes` | `new(30 ngày)` | Hạn trượt của phiên / refresh token: `Normal` và `Persistent` ("ghi nhớ đăng nhập", null = như `Normal`), chọn theo tham số `persistent` của `SlidingSessionPolicy` |
 | `MaxSessionLifetime` | không | Trần tuyệt đối tính từ lúc đăng nhập |
 | `ClockSkew` | 0 | Độ lệch đồng hồ cho phép |
 | `SessionAccessCacheLifetime` | 30 giây | Cache kết quả `ISessionAccessSource` theo phiên |
@@ -302,7 +303,7 @@ Web và API chỉ chạy đúng khi API tuân thủ các điều kiện sau:
    - `InvalidateUser(userId)` khi đổi mật khẩu, khoá/xoá tài khoản, đổi role hoặc tên/email;
    - `InvalidateAll()` khi permission của role đổi, role bị đổi tên/xoá.
 
-   Hiện tại cả ba hàm đều xoá **toàn bộ** entry trong cache (một bộ đếm generation duy nhất); ba tên được giữ riêng để nói rõ ý định ở nơi gọi.
+   `InvalidateSession` / `InvalidateUser` chỉ bỏ entry của đúng phiên / user đó; lượt tra cứu đang chạy dở lúc invalidate không được dùng lại.
    Không gọi invalidate thì phiên bị thu hồi vẫn hợp lệ tới hết `SessionAccessCacheLifetime`.
 5. **Nhiều instance API:** cache là theo process, invalidate chỉ tới instance xử lý lần ghi; các instance khác trễ tối đa `SessionAccessCacheLifetime`
    (hoặc dùng thêm kênh chung như Redis pub/sub, hoặc kênh HTTP của `Caching` nếu phù hợp).

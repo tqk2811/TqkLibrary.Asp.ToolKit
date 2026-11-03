@@ -9,7 +9,13 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
     /// Catches <see cref="SessionExpiredException"/> thrown anywhere downstream (action, view component, filter):
     /// drops the web session, then redirects a normal navigation to the login page with <c>returnUrl</c>; an AJAX
     /// call gets 401 JSON <c>{ success: false, message, redirect }</c> so script can navigate itself (instead of fetch
-    /// silently following a 302 and failing to parse JSON).
+    /// silently following a 302 and failing to parse JSON). The AJAX test and body are customisable through
+    /// <see cref="WebAuthOptions.IsAjaxRequest"/> and <see cref="WebAuthOptions.WriteSessionExpiredAjaxResponse"/>.
+    /// <para>
+    /// When <see cref="SessionBearerHandler"/> throws the exception and something else catches it (an MVC exception
+    /// filter, a try/catch in the action), the cookie is still dropped: the handler registers a
+    /// <c>Response.OnStarting</c> callback that drops the session unless it was dropped already.
+    /// </para>
     /// </summary>
     public sealed class SessionExpiredMiddleware
     {
@@ -41,20 +47,33 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
                 var redirect = context.Request.PathBase + cookie.LoginPath
                     + QueryString.Create(cookie.ReturnUrlParameter, returnUrl.ToString());
 
-                if (IsAjax(context.Request))
+                if ((options.Value.IsAjaxRequest ?? DefaultIsAjaxRequest)(context.Request))
                 {
-                    context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-                    context.Response.ContentType = "application/json; charset=utf-8";
-                    var body = JsonSerializer.Serialize(new { success = false, message = ex.Message, redirect = redirect.ToString() });
-                    await context.Response.WriteAsync(body).ConfigureAwait(false);
+                    await (options.Value.WriteSessionExpiredAjaxResponse ?? DefaultWriteAjaxResponseAsync)(context, ex, redirect.ToString())
+                        .ConfigureAwait(false);
                     return;
                 }
                 context.Response.Redirect(redirect.ToString());
             }
         }
 
-        private static bool IsAjax(HttpRequest request)
-            => string.Equals(request.Headers["X-Requested-With"], "XMLHttpRequest", StringComparison.OrdinalIgnoreCase)
-               || request.Headers.Accept.Any(a => a?.Contains("application/json", StringComparison.OrdinalIgnoreCase) == true);
+        /// <summary>Default AJAX test: <c>X-Requested-With: XMLHttpRequest</c>, or an <c>Accept</c> header containing <c>application/json</c>.</summary>
+        public static bool DefaultIsAjaxRequest(HttpRequest request)
+        {
+            ArgumentNullException.ThrowIfNull(request);
+            return string.Equals(request.Headers["X-Requested-With"], "XMLHttpRequest", StringComparison.OrdinalIgnoreCase)
+                   || request.Headers.Accept.Any(a => a?.Contains("application/json", StringComparison.OrdinalIgnoreCase) == true);
+        }
+
+        /// <summary>Default AJAX response: 401 JSON <c>{ success: false, message, redirect }</c>.</summary>
+        public static Task DefaultWriteAjaxResponseAsync(HttpContext context, SessionExpiredException exception, string redirect)
+        {
+            ArgumentNullException.ThrowIfNull(context);
+            ArgumentNullException.ThrowIfNull(exception);
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            context.Response.ContentType = "application/json; charset=utf-8";
+            var body = JsonSerializer.Serialize(new { success = false, message = exception.Message, redirect });
+            return context.Response.WriteAsync(body);
+        }
     }
 }

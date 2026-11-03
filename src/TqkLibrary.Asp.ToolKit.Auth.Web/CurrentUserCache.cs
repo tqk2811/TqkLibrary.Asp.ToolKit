@@ -15,6 +15,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
     public sealed class CurrentUserCache
     {
         private const string KeyPrefix = "tqk-web-current-user:";
+        private const string FailurePrefix = "tqk-web-current-user-failed:";
 
         private readonly IMemoryCache _cache;
         private readonly IOptions<WebAuthOptions> _options;
@@ -37,16 +38,38 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
             CancellationToken resetToken;
             lock (_resetLock)
                 resetToken = _reset.Token;
+            _cache.Remove(FailurePrefix + sessionId);
             _cache.Set(KeyPrefix + sessionId, user, new MemoryCacheEntryOptions()
                 .SetAbsoluteExpiration(_options.Value.CurrentUserCacheLifetime)
                 .AddExpirationToken(new CancellationChangeToken(resetToken)));
         }
 
-        /// <summary>Removes the entry of <paramref name="sessionId"/> (sign-in, sign-out, session dropped).</summary>
+        /// <summary>True when a failed lookup of <paramref name="sessionId"/> is still remembered (<see cref="SetFailure"/>).</summary>
+        public bool HasFailure(string sessionId) => _cache.TryGetValue(FailurePrefix + sessionId, out _);
+
+        /// <summary>
+        /// Remembers for <paramref name="duration"/> that the lookup of <paramref name="sessionId"/> failed
+        /// (<see cref="WebAuthOptions.CurrentUserFailureCacheFor"/>). A later successful <see cref="Set"/> clears it.
+        /// </summary>
+        public void SetFailure(string sessionId, TimeSpan duration)
+        {
+            if (duration <= TimeSpan.Zero)
+                return;
+            CancellationToken resetToken;
+            lock (_resetLock)
+                resetToken = _reset.Token;
+            _cache.Set(FailurePrefix + sessionId, true, new MemoryCacheEntryOptions()
+                .SetAbsoluteExpiration(duration)
+                .AddExpirationToken(new CancellationChangeToken(resetToken)));
+        }
+
+        /// <summary>Removes the entry (and remembered failure) of <paramref name="sessionId"/> (sign-in, sign-out, session dropped).</summary>
         public void Remove(string? sessionId)
         {
-            if (!string.IsNullOrEmpty(sessionId))
-                _cache.Remove(KeyPrefix + sessionId);
+            if (string.IsNullOrEmpty(sessionId))
+                return;
+            _cache.Remove(KeyPrefix + sessionId);
+            _cache.Remove(FailurePrefix + sessionId);
         }
 
         /// <summary>Drops every entry (forces new permissions to apply for everybody right now).</summary>

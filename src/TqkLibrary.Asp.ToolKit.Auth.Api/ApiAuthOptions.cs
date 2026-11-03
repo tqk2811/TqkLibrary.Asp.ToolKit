@@ -27,8 +27,11 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
         /// <summary>Lifetime of an access token.</summary>
         public TimeSpan AccessTokenLifetime { get; set; } = TimeSpan.FromMinutes(15);
 
-        /// <summary>Sliding lifetime of a session / refresh token: each refresh moves the expiry to now + this.</summary>
-        public TimeSpan RefreshTokenLifetime { get; set; } = TimeSpan.FromDays(30);
+        /// <summary>
+        /// Sliding lifetimes of a session / refresh token (normal and "remember me"): each refresh moves the expiry to
+        /// now + the lifetime picked by <see cref="SlidingSessionPolicy"/>. Default: 30 days for both.
+        /// </summary>
+        public SessionLifetimes SessionLifetimes { get; set; } = new(TimeSpan.FromDays(30));
 
         /// <summary>
         /// Optional absolute cap counted from sign-in: sliding stops there and the user must sign in again.
@@ -48,6 +51,8 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
         /// <summary>Signing key built from <see cref="SigningKey"/>.</summary>
         public SymmetricSecurityKey CreateSigningKey() => new(Encoding.UTF8.GetBytes(SigningKey));
 
+        private static readonly TimeSpan MaxLifetimeLimit = TimeSpan.FromDays(3650);
+
         /// <summary>Throws when the options cannot produce or validate tokens.</summary>
         public void Validate()
         {
@@ -55,10 +60,23 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
                 throw new InvalidOperationException("ApiAuthOptions.Issuer is required.");
             if (Encoding.UTF8.GetByteCount(SigningKey ?? string.Empty) < 32)
                 throw new InvalidOperationException("ApiAuthOptions.SigningKey must be at least 32 bytes.");
-            if (AccessTokenLifetime <= TimeSpan.Zero || RefreshTokenLifetime <= TimeSpan.Zero)
-                throw new InvalidOperationException("ApiAuthOptions token lifetimes must be positive.");
+            if (AccessTokenLifetime <= TimeSpan.Zero)
+                throw new InvalidOperationException("ApiAuthOptions.AccessTokenLifetime must be positive.");
+            if (SessionLifetimes is null)
+                throw new InvalidOperationException("ApiAuthOptions.SessionLifetimes is required.");
+            if (SessionLifetimes.Normal <= TimeSpan.Zero)
+                throw new InvalidOperationException("ApiAuthOptions.SessionLifetimes.Normal must be positive.");
+            if (SessionLifetimes.Persistent is { } persistent && persistent <= TimeSpan.Zero)
+                throw new InvalidOperationException("ApiAuthOptions.SessionLifetimes.Persistent must be positive when set.");
             if (MaxSessionLifetime is { } max && max <= TimeSpan.Zero)
                 throw new InvalidOperationException("ApiAuthOptions.MaxSessionLifetime must be positive when set.");
+            // Expiry arithmetic (now + lifetime) must not overflow DateTime.
+            if (SessionLifetimes.Normal > MaxLifetimeLimit)
+                throw new InvalidOperationException("ApiAuthOptions.SessionLifetimes.Normal must not exceed 3650 days.");
+            if (SessionLifetimes.Persistent is { } persistentMax && persistentMax > MaxLifetimeLimit)
+                throw new InvalidOperationException("ApiAuthOptions.SessionLifetimes.Persistent must not exceed 3650 days.");
+            if (MaxSessionLifetime is { } maxLimit && maxLimit > MaxLifetimeLimit)
+                throw new InvalidOperationException("ApiAuthOptions.MaxSessionLifetime must not exceed 3650 days.");
             if (string.IsNullOrEmpty(UserIdClaimType) || string.IsNullOrEmpty(SessionIdClaimType) || string.IsNullOrEmpty(PermissionClaimType))
                 throw new InvalidOperationException("ApiAuthOptions claim types must not be empty.");
         }

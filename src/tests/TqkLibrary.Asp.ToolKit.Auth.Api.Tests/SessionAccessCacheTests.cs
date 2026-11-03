@@ -20,22 +20,26 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
             public int Calls { get; private set; }
             public Func<SessionAccessRecord?> Value { get; set; } = value;
 
-            public Task<SessionAccessRecord?> LoadAsync(CancellationToken _)
+            public Task<SessionAccessResult> LoadAsync(CancellationToken _)
             {
                 Calls++;
-                return Task.FromResult(Value());
+                return Task.FromResult(Value() is { } access ? SessionAccessResult.Grant(access) : SessionAccessResult.Reject());
             }
         }
+
+        private static async Task<SessionAccessRecord?> GetAccessAsync(SessionAccessCache cache, string sessionId, string userId,
+            Func<CancellationToken, Task<SessionAccessResult>> load)
+            => (await cache.GetAsync(sessionId, userId, load)).Access;
 
         [Fact]
         public async Task Hit_WithinLifetime_NoReload()
         {
             using var cache = NewCache();
             var loader = new Loader(() => Access("old"));
-            await cache.GetAsync("s-1", "u-1", loader.LoadAsync);
+            await GetAccessAsync(cache, "s-1", "u-1", loader.LoadAsync);
             loader.Value = () => Access("new");
 
-            var next = await cache.GetAsync("s-1", "u-1", loader.LoadAsync);
+            var next = await GetAccessAsync(cache, "s-1", "u-1", loader.LoadAsync);
 
             Assert.Equal(1, loader.Calls);
             Assert.Equal(["old"], next!.Permissions);
@@ -46,11 +50,11 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
         {
             using var cache = NewCache(TimeSpan.FromSeconds(30));
             var loader = new Loader(() => Access("old"));
-            await cache.GetAsync("s-1", "u-1", loader.LoadAsync);
+            await GetAccessAsync(cache, "s-1", "u-1", loader.LoadAsync);
             loader.Value = () => Access("new");
             _clock.Advance(TimeSpan.FromSeconds(31));
 
-            var next = await cache.GetAsync("s-1", "u-1", loader.LoadAsync);
+            var next = await GetAccessAsync(cache, "s-1", "u-1", loader.LoadAsync);
 
             Assert.Equal(2, loader.Calls);
             Assert.Equal(["new"], next!.Permissions);
@@ -61,8 +65,8 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
         {
             using var cache = NewCache(TimeSpan.Zero);
             var loader = new Loader(() => Access("old"));
-            await cache.GetAsync("s-1", "u-1", loader.LoadAsync);
-            await cache.GetAsync("s-1", "u-1", loader.LoadAsync);
+            await GetAccessAsync(cache, "s-1", "u-1", loader.LoadAsync);
+            await GetAccessAsync(cache, "s-1", "u-1", loader.LoadAsync);
             Assert.Equal(2, loader.Calls);
         }
 
@@ -84,11 +88,11 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
         {
             using var cache = NewCache();
             var loader = new Loader(() => Access("old"));
-            await cache.GetAsync("s-1", "u-1", loader.LoadAsync);
+            await GetAccessAsync(cache, "s-1", "u-1", loader.LoadAsync);
             loader.Value = () => Access("new");
 
             Invalidate(cache, kind);
-            var next = await cache.GetAsync("s-1", "u-1", loader.LoadAsync);
+            var next = await GetAccessAsync(cache, "s-1", "u-1", loader.LoadAsync);
 
             Assert.Equal(2, loader.Calls);
             Assert.Equal(["new"], next!.Permissions);
@@ -100,16 +104,55 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
         {
             using var cache = NewCache();
             var gate = new TaskCompletionSource<SessionAccessRecord?>(TaskCreationOptions.RunContinuationsAsynchronously);
-            var inFlight = cache.GetAsync("s-1", "u-1", _ => gate.Task);
+            var inFlight = GetAccessAsync(cache, "s-1", "u-1", async _ => SessionAccessResult.Grant((await gate.Task)!));
 
             Invalidate(cache, kind);
             gate.SetResult(Access("old"));
             Assert.Equal(["old"], (await inFlight)!.Permissions); // the caller that started the load still gets its result
 
             var loader = new Loader(() => Access("new"));
-            var next = await cache.GetAsync("s-1", "u-1", loader.LoadAsync);
+            var next = await GetAccessAsync(cache, "s-1", "u-1", loader.LoadAsync);
             Assert.Equal(1, loader.Calls);
             Assert.Equal(["new"], next!.Permissions);
+        }
+
+        [Fact]
+        public async Task InvalidateSession_KeepsOtherSessionsCached()
+        {
+            using var cache = NewCache();
+            await GetAccessAsync(cache, "s-1", "u-1", new Loader(() => Access("a")).LoadAsync);
+            await GetAccessAsync(cache, "s-2", "u-1", new Loader(() => Access("b")).LoadAsync);
+
+            cache.InvalidateSession("s-1");
+
+            var other = new Loader(() => Access("reloaded"));
+            var result = await GetAccessAsync(cache, "s-2", "u-1", other.LoadAsync);
+            Assert.Equal(0, other.Calls);
+            Assert.Equal(["b"], result!.Permissions);
+
+            var invalidated = new Loader(() => Access("new"));
+            await GetAccessAsync(cache, "s-1", "u-1", invalidated.LoadAsync);
+            Assert.Equal(1, invalidated.Calls);
+        }
+
+        [Fact]
+        public async Task InvalidateUser_KeepsOtherUsersCached_DropsEverySessionOfThatUser()
+        {
+            using var cache = NewCache();
+            await GetAccessAsync(cache, "s-1", "u-1", new Loader(() => Access("a")).LoadAsync);
+            await GetAccessAsync(cache, "s-2", "u-1", new Loader(() => Access("a")).LoadAsync);
+            await GetAccessAsync(cache, "s-3", "u-2", new Loader(() => Access("b", userId: "u-2")).LoadAsync);
+
+            cache.InvalidateUser("u-1");
+
+            var other = new Loader(() => Access("reloaded", userId: "u-2"));
+            Assert.Equal(["b"], (await GetAccessAsync(cache, "s-3", "u-2", other.LoadAsync))!.Permissions);
+            Assert.Equal(0, other.Calls);
+
+            var same = new Loader(() => Access("new"));
+            await GetAccessAsync(cache, "s-1", "u-1", same.LoadAsync);
+            await GetAccessAsync(cache, "s-2", "u-1", same.LoadAsync);
+            Assert.Equal(2, same.Calls);
         }
 
         [Fact]
@@ -117,8 +160,8 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
         {
             using var cache = NewCache();
             var loader = new Loader(() => null);
-            Assert.Null(await cache.GetAsync("s-1", "u-1", loader.LoadAsync));
-            Assert.Null(await cache.GetAsync("s-1", "u-1", loader.LoadAsync));
+            Assert.Null(await GetAccessAsync(cache, "s-1", "u-1", loader.LoadAsync));
+            Assert.Null(await GetAccessAsync(cache, "s-1", "u-1", loader.LoadAsync));
             Assert.Equal(2, loader.Calls);
         }
 
@@ -127,20 +170,108 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
         {
             using var cache = NewCache();
             var loader = new Loader(() => Access("x", userId: "u-2"));
-            Assert.Null(await cache.GetAsync("s-1", "u-1", loader.LoadAsync));
+            var result = await cache.GetAsync("s-1", "u-1", loader.LoadAsync);
+            Assert.False(result.IsGranted);
+            Assert.Equal(SessionRejectionReasons.UserMismatch, result.Reason);
+        }
+
+        [Fact]
+        public async Task Rejection_ReasonIsReturned_AndNotCached()
+        {
+            using var cache = NewCache();
+            var calls = 0;
+            Task<SessionAccessResult> Load(CancellationToken _)
+            {
+                calls++;
+                return Task.FromResult(SessionAccessResult.Reject(SessionRejectionReasons.UserLocked));
+            }
+
+            var first = await cache.GetAsync("s-1", "u-1", Load);
+            var second = await cache.GetAsync("s-1", "u-1", Load);
+
+            Assert.Equal(SessionRejectionReasons.UserLocked, first.Reason);
+            Assert.Equal(SessionRejectionReasons.UserLocked, second.Reason);
+            Assert.Equal(2, calls);
+        }
+
+        [Fact]
+        public async Task InvalidateUser_DuringLoad_InFlightResultIsNotServedLater_OtherUserUnaffected()
+        {
+            using var cache = NewCache();
+            await GetAccessAsync(cache, "s-9", "u-2", new Loader(() => Access("b", userId: "u-2")).LoadAsync);
+            var gate = new TaskCompletionSource<SessionAccessRecord>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var inFlight = GetAccessAsync(cache, "s-1", "u-1", async _ => SessionAccessResult.Grant(await gate.Task));
+
+            cache.InvalidateUser("u-1");
+            gate.SetResult(Access("old"));
+            await inFlight;
+
+            var loader = new Loader(() => Access("new"));
+            Assert.Equal(["new"], (await GetAccessAsync(cache, "s-1", "u-1", loader.LoadAsync))!.Permissions);
+            var other = new Loader(() => Access("x", userId: "u-2"));
+            Assert.Equal(["b"], (await GetAccessAsync(cache, "s-9", "u-2", other.LoadAsync))!.Permissions);
+            Assert.Equal(0, other.Calls);
+        }
+
+        [Fact]
+        public async Task OldStamps_ArePruned_WithoutServingStaleEntries()
+        {
+            using var cache = NewCache(TimeSpan.FromSeconds(30));
+            var gate = new TaskCompletionSource<SessionAccessRecord>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var inFlight = GetAccessAsync(cache, "s-1", "u-1", async _ => SessionAccessResult.Grant(await gate.Task));
+            cache.InvalidateSession("s-1");
+
+            // Much later another invalidation prunes the stamp of s-1; the hanging load then finishes.
+            _clock.Advance(TimeSpan.FromMinutes(5));
+            cache.InvalidateSession("s-other");
+            gate.SetResult(Access("old"));
+            await inFlight;
+
+            var loader = new Loader(() => Access("new"));
+            Assert.Equal(["new"], (await GetAccessAsync(cache, "s-1", "u-1", loader.LoadAsync))!.Permissions);
+            Assert.Equal(1, loader.Calls);
         }
 
         [Fact]
         public async Task CachedEntry_AskedForAnotherUser_Reloads()
         {
             using var cache = NewCache();
-            await cache.GetAsync("s-1", "u-1", new Loader(() => Access("a")).LoadAsync);
+            await GetAccessAsync(cache, "s-1", "u-1", new Loader(() => Access("a")).LoadAsync);
 
             var other = new Loader(() => Access("b", userId: "u-2"));
-            var result = await cache.GetAsync("s-1", "u-2", other.LoadAsync);
+            var result = await GetAccessAsync(cache, "s-1", "u-2", other.LoadAsync);
 
             Assert.Equal(1, other.Calls);
             Assert.Equal("u-2", result!.UserId);
+        }
+
+        [Fact]
+        public void Invalidate_PrunesStampsOlderThanLifetime()
+        {
+            using var cache = NewCache(TimeSpan.FromSeconds(30));
+            cache.InvalidateSession("s-old");
+            cache.InvalidateUser("u-old");
+            Assert.Equal(2, cache.StampCount);
+
+            _clock.Advance(TimeSpan.FromSeconds(40));
+            cache.InvalidateSession("s-new");
+
+            Assert.Equal(1, cache.StampCount);
+        }
+
+        [Fact]
+        public async Task PrunedStamp_StillInvalidatesOlderEntry()
+        {
+            using var cache = NewCache(TimeSpan.FromSeconds(30));
+            var loader = new Loader(() => Access("old"));
+            await GetAccessAsync(cache, "s-1", "u-1", loader.LoadAsync);
+            cache.InvalidateSession("s-1");
+            _clock.Advance(TimeSpan.FromSeconds(40));
+            cache.InvalidateSession("s-other");          // prunes the s-1 stamp, raising the floor
+
+            await GetAccessAsync(cache, "s-1", "u-1", loader.LoadAsync);
+
+            Assert.Equal(2, loader.Calls);
         }
     }
 }

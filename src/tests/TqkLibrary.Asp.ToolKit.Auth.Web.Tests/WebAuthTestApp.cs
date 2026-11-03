@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -38,7 +39,9 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
         public IServiceProvider Services => _host.Services;
         public IReadOnlyDictionary<string, string> Cookies => _cookies;
 
-        public static async Task<WebAuthTestApp> StartAsync()
+        public static async Task<WebAuthTestApp> StartAsync(Action<WebAuthOptions>? configure = null,
+            Action<IServiceCollection>? configureServices = null, Action<IEndpointRouteBuilder>? mapEndpoints = null,
+            Action<IApplicationBuilder>? beforeWebSession = null)
         {
             var api = new FakeAuthApi();
             var host = new HostBuilder()
@@ -47,14 +50,16 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
                     .ConfigureServices(services =>
                     {
                         services.AddDataProtection().UseEphemeralDataProtectionProvider();
-                        services.AddTqkWebAuth(cookie => cookie.LoginPath = LoginPath);
+                        services.AddTqkWebAuth(cookie => cookie.LoginPath = LoginPath, configure);
                         services.Replace(ServiceDescriptor.Singleton<IAuthApiClient>(api));
                         services.AddRouting();
+                        configureServices?.Invoke(services);
                     })
                     .Configure(app =>
                     {
                         app.UseRouting();
                         app.UseAuthentication();
+                        beforeWebSession?.Invoke(app);
                         app.UseTqkWebSession();
                         app.UseEndpoints(endpoints =>
                         {
@@ -77,6 +82,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
                                 context.Response.Headers[PartialHeader] = "1";
                                 throw new SessionExpiredException("Session gone.");
                             });
+                            mapEndpoints?.Invoke(endpoints);
                         });
                     }))
                 .Build();

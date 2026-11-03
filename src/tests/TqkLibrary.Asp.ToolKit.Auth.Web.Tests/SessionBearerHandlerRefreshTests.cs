@@ -35,9 +35,10 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             Assert.Equal(["old-access", "new-access"], h.Inner.Bearers);
             Assert.Equal(1, h.Auth.SignInCount);
             Assert.Equal("new-access", h.Auth.LastSignInProperties!.GetTokenValue(h.Options.AccessTokenName));
-            // The rewritten cookie still carries only the session id.
+            // The rewritten cookie still carries only the session id (and the stable identity claim with the same value).
             Assert.Equal("sid", h.Auth.LastSignInPrincipal!.FindFirst(h.Options.SessionIdClaimType)?.Value);
-            Assert.Single(h.Auth.LastSignInPrincipal.Claims);
+            Assert.Equal([h.Options.SessionIdClaimType + "=sid", "sub=sid"],
+                h.Auth.LastSignInPrincipal.Claims.Select(c => c.Type + "=" + c.Value));
         }
 
         [Fact]
@@ -157,6 +158,118 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
 
             Assert.Equal(1, h.Inner.Calls);
             Assert.Equal(0, h.Api.RefreshCalls);
+        }
+
+        [Theory]
+        [InlineData("stream")]
+        [InlineData("multipart")]
+        public async Task UploadWithinReplayLimit_Unauthorized_RefreshesAndResendsSameBody(string kind)
+        {
+            var h = new Harness();
+            h.Inner.Respond = bearer => bearer == "old-access" ? HttpStatusCode.Unauthorized : HttpStatusCode.OK;
+            h.Inner.RecordBytes = true;
+            using HttpContent content = kind == "stream"
+                ? new StreamContent(new MemoryStream([1, 2, 3]))
+                : new MultipartFormDataContent { { new ByteArrayContent([1, 2, 3]), "file", "a.bin" } };
+            using var request = new HttpRequestMessage(HttpMethod.Post, "http://api/upload") { Content = content };
+            request.Options.Set(SessionBearerHandler.ReplayBufferLimitOption, 1024L);
+
+            using var response = await h.Client.SendAsync(request);
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal(["old-access", "new-access"], h.Inner.Bearers);
+            Assert.Equal(2, h.Inner.ByteBodies.Count);
+            Assert.NotEmpty(h.Inner.ByteBodies[0]);
+            Assert.Equal(h.Inner.ByteBodies[0], h.Inner.ByteBodies[1]);
+        }
+
+        [Fact]
+        public async Task PerRequestReplayLimit_AllowsReplay()
+        {
+            var h = new Harness();
+            h.Inner.Respond = bearer => bearer == "old-access" ? HttpStatusCode.Unauthorized : HttpStatusCode.OK;
+            using var request = new HttpRequestMessage(HttpMethod.Post, "http://api/upload")
+            {
+                Content = new StreamContent(new MemoryStream([1, 2, 3])),
+            };
+            request.Options.Set(SessionBearerHandler.ReplayBufferLimitOption, 10L);
+
+            using var response = await h.Client.SendAsync(request);
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal(1, h.Api.RefreshCalls);
+        }
+
+        [Fact]
+        public async Task PerRequestReplayLimitZero_DoesNotBuffer()
+        {
+            var h = new Harness();
+            h.Inner.Respond = _ => HttpStatusCode.Unauthorized;
+            using var request = new HttpRequestMessage(HttpMethod.Post, "http://api/upload")
+            {
+                Content = new StreamContent(new MemoryStream([1, 2, 3])),
+            };
+            request.Options.Set(SessionBearerHandler.ReplayBufferLimitOption, 0L);
+
+            await Assert.ThrowsAsync<SessionExpiredException>(() => h.Client.SendAsync(request));
+            Assert.Equal(0, h.Api.RefreshCalls);
+        }
+
+        [Fact]
+        public async Task UploadOverReplayLimit_NotResent_ThrowsSessionExpired()
+        {
+            var h = new Harness();
+            h.Inner.Respond = _ => HttpStatusCode.Unauthorized;
+            using var request = new HttpRequestMessage(HttpMethod.Post, "http://api/upload")
+            {
+                Content = new StreamContent(new MemoryStream([1, 2, 3])),
+            };
+            request.Options.Set(SessionBearerHandler.ReplayBufferLimitOption, 2L);
+
+            await Assert.ThrowsAsync<SessionExpiredException>(() => h.Client.SendAsync(request));
+
+            Assert.Equal(1, h.Inner.Calls);
+            Assert.Equal(0, h.Api.RefreshCalls);
+        }
+
+        [Fact]
+        public async Task UploadOfUnknownLength_NotBuffered_NotResent()
+        {
+            var h = new Harness();
+            h.Inner.Respond = _ => HttpStatusCode.Unauthorized;
+            using var request = new HttpRequestMessage(HttpMethod.Post, "http://api/upload")
+            {
+                Content = new StreamContent(new NonSeekableStream([1, 2, 3])),
+            };
+            request.Options.Set(SessionBearerHandler.ReplayBufferLimitOption, 1024L);
+
+            await Assert.ThrowsAsync<SessionExpiredException>(() => h.Client.SendAsync(request));
+
+            Assert.Equal(1, h.Inner.Calls);
+            Assert.Equal(0, h.Api.RefreshCalls);
+        }
+
+        [Fact]
+        public async Task UploadLongerThanDeclaredLength_BufferingFails_NothingIsSent()
+        {
+            var h = new Harness();
+            h.Inner.Respond = bearer => bearer == "old-access" ? HttpStatusCode.Unauthorized : HttpStatusCode.OK;
+            // ContentLength header lies (5) while the stream holds 100 bytes: the limit (10) must still be enforced.
+            var content = new StreamContent(new MemoryStream(new byte[100]));
+            content.Headers.ContentLength = 5;
+            using var request = new HttpRequestMessage(HttpMethod.Post, "http://api/upload") { Content = content };
+            request.Options.Set(SessionBearerHandler.ReplayBufferLimitOption, 10L);
+
+            await Assert.ThrowsAsync<HttpRequestException>(() => h.Client.SendAsync(request));
+
+            // A half-read stream is never sent.
+            Assert.Equal(0, h.Inner.Calls);
+            Assert.Equal(0, h.Api.RefreshCalls);
+        }
+
+        private sealed class NonSeekableStream(byte[] data) : MemoryStream(data)
+        {
+            public override bool CanSeek => false;
         }
 
         [Fact]
@@ -302,6 +415,8 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             public int Calls => _calls;
             public List<string?> Bearers { get; } = new();
             public List<string> Bodies { get; } = new();
+            public bool RecordBytes { get; set; }
+            public List<byte[]> ByteBodies { get; } = new();
             public Func<string?, HttpStatusCode> Respond { get; set; } = _ => HttpStatusCode.OK;
             public Func<string?, Task<HttpStatusCode>>? RespondAsync { get; set; }
 
@@ -311,7 +426,13 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
                 var bearer = request.Headers.Authorization?.Parameter;
                 lock (Bearers)
                     Bearers.Add(bearer);
-                if (request.Content is StringContent)
+                if (RecordBytes && request.Content is not null)
+                {
+                    var bytes = await request.Content.ReadAsByteArrayAsync(cancellationToken);
+                    lock (ByteBodies)
+                        ByteBodies.Add(bytes);
+                }
+                else if (request.Content is StringContent)
                 {
                     var body = await request.Content.ReadAsStringAsync(cancellationToken);
                     lock (Bodies)

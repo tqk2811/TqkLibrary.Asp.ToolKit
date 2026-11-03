@@ -152,7 +152,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             var first = await app.WhoAmIAsync();
             await app.WhoAmIAsync();
 
-            Assert.Equal("auth=true\ntqk_sid=" + Sid, first);
+            Assert.Equal("auth=true\ntqk_sid=" + Sid + "\nsub=" + Sid, first);
             Assert.NotEmpty(app.Cookies); // the session is kept
             Assert.Equal(2, app.Api.MeCalls);
         }

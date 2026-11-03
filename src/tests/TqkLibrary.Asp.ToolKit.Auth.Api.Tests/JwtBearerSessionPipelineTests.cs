@@ -32,10 +32,15 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
                 UserId = userId, UserName = "editor", Email = "e@x.test", Roles = ["Editor"], Permissions = ["items.edit"],
             };
 
-            public Task<SessionAccessRecord?> GetAsync(string sessionId, string userId, CancellationToken cancellationToken)
+            /// <summary>When set, wins over <see cref="Get"/>.</summary>
+            public Func<string, string, SessionAccessResult>? Result { get; set; }
+
+            public Task<SessionAccessResult> GetAsync(string sessionId, string userId, CancellationToken cancellationToken)
             {
                 Interlocked.Increment(ref _calls);
-                return Task.FromResult(Get(sessionId, userId));
+                if (Result is not null)
+                    return Task.FromResult(Result(sessionId, userId));
+                return Task.FromResult(Get(sessionId, userId) is { } access ? SessionAccessResult.Grant(access) : SessionAccessResult.Reject());
             }
         }
 
@@ -144,6 +149,27 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
 
             Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
             Assert.Equal("1", Rejected(response));
+        }
+
+        [Fact]
+        public async Task RejectionReason_IsReadableInOnChallenge()
+        {
+            await using var app = await App.StartAsync(jwt => jwt.Events.OnChallenge = async context =>
+            {
+                var rejection = SessionTokenValidator.GetSessionRejection(context.HttpContext);
+                if (rejection is null)
+                    return;
+                context.HandleResponse();
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                await context.Response.WriteAsync("reason=" + rejection.Reason);
+            });
+            app.Source.Result = (_, _) => SessionAccessResult.Reject(SessionRejectionReasons.UserLocked);
+
+            using var response = await app.GetMeAsync(app.IssueToken());
+
+            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+            Assert.Equal("1", Rejected(response));
+            Assert.Equal("reason=" + SessionRejectionReasons.UserLocked, await response.Content.ReadAsStringAsync());
         }
 
         [Fact]
