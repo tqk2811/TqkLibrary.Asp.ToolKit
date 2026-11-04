@@ -111,7 +111,8 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
             // RFC 6750: no error parameter when the request carried no token.
             var rejection = Context.Features.Get<SessionRejection>();
             Response.StatusCode = StatusCodes.Status401Unauthorized;
-            Response.Headers[HeaderNames.WWWAuthenticate] = rejection is null ? "Bearer" : "Bearer error=\"invalid_token\"";
+            // Append, not overwrite: in a multi-scheme policy the challenges of the other schemes must stay.
+            Response.Headers.Append(HeaderNames.WWWAuthenticate, rejection is null ? "Bearer" : "Bearer error=\"invalid_token\"");
             if (Options.OnChallenge is { } onChallenge)
             {
                 var challenge = new SessionTokenChallengeContext(Context, rejection, properties);

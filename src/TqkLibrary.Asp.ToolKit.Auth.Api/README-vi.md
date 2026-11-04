@@ -127,6 +127,16 @@ Một challenge luôn trả 401 kèm `WWW-Authenticate: Bearer error="invalid_to
 KHÔNG được xoá header `WWW-Authenticate`: `Auth.Web` chỉ kết thúc phiên của user khi nhận 401 có Bearer challenge này,
 đó là cách nó phân biệt phiên đã chết với một 401 nghiệp vụ của endpoint (ví dụ nhập sai mã 2FA).
 
+Quy tắc cho endpoint của bạn để 401 nghiệp vụ không làm user bị đăng xuất:
+
+- Trả 401 nghiệp vụ bằng `Results.Unauthorized()` / `Unauthorized()` / `Problem(statusCode: 401)` (chỉ status). TUYỆT ĐỐI
+  KHÔNG dùng `Challenge()` / `Results.Challenge()` / `HttpContext.ChallengeAsync()` cho việc này: challenge đi qua
+  handler session-token và thêm `WWW-Authenticate: Bearer`, khiến phiên web của user kết thúc.
+- `DefaultChallengeScheme` của API (hoặc scheme của mọi endpoint mà Web gọi) phải là scheme session-token. Nếu một scheme
+  Bearer khác (ví dụ JwtBearer) cũng challenge cùng request, `WWW-Authenticate: Bearer` của nó cũng kết thúc phiên web.
+- Tóm tắt những gì `Auth.Web` coi là phiên đã kết thúc: với `me` là mọi 401; với các lời gọi khác chỉ 401 có Bearer
+  challenge; 403 không bao giờ.
+
 Đăng nhập và đăng xuất (trong auth service của app):
 
 ```csharp

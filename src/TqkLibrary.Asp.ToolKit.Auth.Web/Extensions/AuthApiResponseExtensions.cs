@@ -4,22 +4,21 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Extensions
     public static class AuthApiResponseExtensions
     {
         /// <summary>
-        /// Throws <see cref="SessionExpiredException"/> when the API rejected the session: HTTP 401 carrying a
-        /// <c>WWW-Authenticate: Bearer</c> challenge (what Auth.Api sends for a dead session). Does nothing for any
-        /// other status, including a 401 without the challenge and a 403 (a proxy/WAF 403 must not sign users out).
+        /// Throws <see cref="SessionExpiredException"/> when the <c>me</c> call answered HTTP 401. <c>me</c> has no
+        /// business 401, so ANY 401 (with or without a <c>WWW-Authenticate</c> header) means the session ended: a proxy
+        /// may strip the header, and without this the user would stay signed in without permissions forever. A 403 and
+        /// every other status do nothing (a proxy/WAF 403 must not sign users out).
         /// Call it on the response of <c>GetCurrentUserAsync</c> before <c>EnsureSuccessStatusCode</c>, so a dead
-        /// session signs the user out while a 5xx stays a transient failure.
+        /// session signs the user out while a 5xx stays a transient failure. Do not use it for other API calls: there
+        /// only a 401 with a Bearer challenge ends the session (see <see cref="SessionBearerHandler"/>).
         /// </summary>
-        /// <param name="response">Response of the API.</param>
+        /// <param name="response">Response of the <c>me</c> call.</param>
         /// <param name="message">Optional exception message; null for the default.</param>
-        /// <param name="treatAnyUnauthorizedAsSessionExpired">True for APIs that send no challenge header: any 401
-        /// counts (mirror of <see cref="WebAuthOptions.TreatAnyUnauthorizedAsSessionExpired"/>).</param>
-        /// <exception cref="SessionExpiredException">The status is 401 with a Bearer challenge.</exception>
-        public static void ThrowIfSessionRejected(this HttpResponseMessage response, string? message = null,
-            bool treatAnyUnauthorizedAsSessionExpired = false)
+        /// <exception cref="SessionExpiredException">The status is 401.</exception>
+        public static void ThrowIfSessionRejected(this HttpResponseMessage response, string? message = null)
         {
             ArgumentNullException.ThrowIfNull(response);
-            if (SessionChallenge.EndsSession(response, treatAnyUnauthorizedAsSessionExpired))
+            if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
             {
                 throw message is null
                     ? new SessionExpiredException()

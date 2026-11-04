@@ -26,10 +26,16 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Models
         /// <summary>Properties of the challenge.</summary>
         public AuthenticationProperties Properties { get; }
 
-        /// <summary>True after <see cref="HandleResponse"/>.</summary>
+        /// <summary>
+        /// True after <see cref="HandleResponse"/>. Kept for source compatibility only: the status (401) and the
+        /// <c>WWW-Authenticate</c> header are always set BEFORE the hook runs, so this no longer skips anything.
+        /// </summary>
         public bool Handled { get; private set; }
 
-        /// <summary>Marks that the hook wrote the response body itself (status and challenge header stay set).</summary>
+        /// <summary>
+        /// Marks that the hook wrote the response body itself. Kept for source compatibility only: it no longer skips
+        /// anything (status 401 and <c>WWW-Authenticate</c> are always set before the hook).
+        /// </summary>
         public void HandleResponse() => Handled = true;
     }
 }
