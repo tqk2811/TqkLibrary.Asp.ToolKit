@@ -29,6 +29,12 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Middleware
         readonly ILogger<ApiExceptionWrapperMiddleware> _logger;
         readonly IOptions<TqkApiEnvelopeOptions> _options;
 
+        static readonly string[] SuccessBodyHeaders =
+        {
+            "Content-Disposition", "Content-Length", "Content-Encoding", "Content-Range", "Content-Language",
+            "ETag", "Last-Modified", "Cache-Control", "Expires", "Location",
+        };
+
         public ApiExceptionWrapperMiddleware(
             RequestDelegate next,
             ILogger<ApiExceptionWrapperMiddleware> logger,
@@ -98,18 +104,19 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Middleware
                     Retryable = mapping.Retryable,
                 });
 
-            // Drop whatever the failed action already set (Content-Disposition, caching, ETag...), they belong to the
-            // success response; keep the request id header RequestIdMiddleware added so the client can still quote it.
-            context.Response.Clear();
-            if (context.Items.ContainsKey(HttpContextRequestIdExtensions.RequestIdItemKey))
-                context.Response.Headers[_options.Value.RequestIdHeader] = requestId;
+            // Drop the headers that describe the success body the failed action was about to send (download name,
+            // caching, validators, length/encoding). Only these: headers set earlier by pipeline middleware (security
+            // headers, Vary, request id...) still apply to the error response.
+            foreach (string name in SuccessBodyHeaders)
+                context.Response.Headers.Remove(name);
             context.Response.StatusCode = mapping.StatusCode;
-            context.Response.ContentType = "application/json; charset=utf-8";
             if (mapping.Headers is not null)
             {
                 foreach (KeyValuePair<string, string> header in mapping.Headers)
                     context.Response.Headers[header.Key] = header.Value;
             }
+            // Set last so a mapping cannot break the JSON body by overriding it.
+            context.Response.ContentType = "application/json; charset=utf-8";
             try
             {
                 await context.Response.WriteAsync(_options.Value.SerializeError(response), context.RequestAborted);

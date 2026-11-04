@@ -41,6 +41,12 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Tests
                     .Configure(app =>
                     {
                         app.UseTqkRequestId();
+                        // Stands for a security-headers middleware set before the wrapper.
+                        app.Use((context, next) =>
+                        {
+                            context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+                            return next(context);
+                        });
                         app.UseTqkApiExceptionWrapper();
                         app.UseRouting();
                         app.UseEndpoints(endpoints => endpoints.MapControllers());

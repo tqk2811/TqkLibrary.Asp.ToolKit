@@ -71,3 +71,10 @@ Việc còn treo và đề xuất của thư viện. Mỗi mục: vấn đề, v
 - **Vấn đề**: muốn có mã lỗi chính xác (vd `FIELD_REQUIRED`) phải bật `UseFieldErrorMessages`, tuỳ chọn này nhét mã vào chuỗi `ErrorMessage` của mọi attribute trong app (ảnh hưởng Razor, validate phía client, bản dịch). Mặc định tắt thì `[Required]` chỉ ra `FIELD_INVALID_VALUE`.
 - **Đề xuất**: khi dựng response 400, lần từ `ModelError` về attribute qua `ModelMetadata.ValidatorMetadata` (hoặc `IModelValidatorProvider` riêng) để lấy mã và tham số, không sửa message.
 - **Ngày ghi**: 2026-11-03.
+
+### [Thấp] ViewModels.AspNetCore: các điểm nhỏ còn lại sau review ApiErrorMapping
+
+- **Vị trí**: `src/TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore/Middleware/ApiExceptionWrapperMiddleware.cs` (`HandleExceptionAsync`, nhánh 499), `Models/ApiErrorMapping.cs`, `TqkApiEnvelopeOptions.TransformError`.
+- **Vấn đề**: (1) log 5xx có hai câu khác nhau tuỳ `LogLevel` null hay không, nên gộp về một lệnh `Log`; (2) chưa có test `IOException` khi client chưa abort phải ra 500; (3) XML doc của `TransformError` chưa nói trả null là giữ mapping gốc; (4) `Headers` là `Dictionary<string,string>` khả biến, không mang được header nhiều giá trị, cân nhắc `IReadOnlyDictionary<string, StringValues>`; (5) cân nhắc chuyển `TransformError` sang interface DI cho đồng bộ với `IApiExceptionMapper`, và cho `IApiExceptionMapper.Map` nhận `HttpContext` để app khỏi cần `IHttpContextAccessor`.
+- **Vì sao**: gói chưa publish (1.0.0), đổi API bây giờ rẻ hơn sau khi phát hành.
+- **Ngày ghi**: 2026-11-04.

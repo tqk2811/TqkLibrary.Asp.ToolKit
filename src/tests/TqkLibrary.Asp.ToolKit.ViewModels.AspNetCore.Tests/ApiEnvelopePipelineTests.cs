@@ -119,6 +119,7 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Tests
             Assert.Null(response.Content.Headers.ContentDisposition);
             Assert.False(response.Headers.Contains("ETag"));
             Assert.Equal("req-clear-1", response.Headers.GetValues("X-Request-Id").Single());
+            Assert.Equal("nosniff", response.Headers.GetValues("X-Content-Type-Options").Single());
             JsonElement json = await TestApp.ReadJsonAsync(response);
             Assert.Equal("req-clear-1", json.GetProperty("requestId").GetString());
         }
