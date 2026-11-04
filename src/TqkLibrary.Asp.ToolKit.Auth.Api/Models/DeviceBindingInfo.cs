@@ -3,8 +3,9 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Models
     /// <summary>
     /// The device binding (DBSC) of the current session, read from the principal by
     /// <see cref="Extensions.DeviceBindingClaimsPrincipalExtensions.GetDeviceBinding"/>. The app's <c>me</c> endpoint returns
-    /// it to the web front end as <c>isDeviceBound</c> (true), <c>deviceKeyJwk</c>, <c>deviceKeyAlgorithm</c> and
-    /// <c>deviceBindingMode</c>.
+    /// it to the web front end as <c>deviceKeyJwk</c> and <c>deviceKeyAlgorithm</c> (what the web uses: the session is
+    /// bound when <c>deviceKeyJwk</c> is not empty) and <c>deviceBindingMode</c>; an <c>isDeviceBound</c> field is
+    /// informational only.
     /// </summary>
     /// <param name="Jwk">The stored device public key (canonical public JWK).</param>
     /// <param name="Algorithm">

@@ -314,7 +314,8 @@ this is the residual gap of the design.
 
 - `me` (`CurrentUserInfo`) must return `deviceKeyJwk` and `deviceKeyAlgorithm` (the stored key, null when not bound)
   and may return `deviceBindingMode` (the user's choice, `ReportOnly`/`Reject`/`SignOut`, case-insensitive; the web
-  whitelists it). `IsDeviceBound` is derived from `deviceKeyJwk`. Auth.Api provides `GetDeviceBinding` for this. A
+  whitelists it). `IsDeviceBound` is derived from `deviceKeyJwk`; an `isDeviceBound` field of `me` is not read, so a
+  `me` that returns it without the key leaves the session unenforced. Auth.Api provides `GetDeviceBinding` for this. A
   missing `deviceKeyAlgorithm` is derived from the JWK key type (`EC` → `ES256`, `RSA` → `RS256`) as a fallback;
   return it anyway.
 - `IDeviceKeyApiClient.RegisterDeviceKeyAsync(jwk, algorithm, ct)` stores the public key (canonical public JWK, ES256
@@ -331,6 +332,9 @@ this is the residual gap of the design.
 - A stolen proof cookie works until it expires (`ProofLifetime` + grace), and only with the session's own main cookie:
   keep the lifetime short.
 - `ExcludedPaths` bypass enforcement completely.
+- A sign-out during a rejected request (the user clicks "log out" while the proof is missing) deletes the cookies
+  but does NOT revoke the API session: the request is a guest and sends no token, so the API session lives until it
+  expires (or is revoked elsewhere).
 - Cold instance + API outage: an instance that never saw the session cannot tell it is bound while `me` fails, and
   treats it as not bound until `me` answers again.
 - Several instances: right after a registration on one instance, another instance that saw the session unbound just

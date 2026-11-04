@@ -305,7 +305,8 @@ TRƯỚC khi `CurrentUserFailureMode.Throw` kịp làm hỏng request: request �
 
 - `me` (`CurrentUserInfo`) phải trả `deviceKeyJwk` và `deviceKeyAlgorithm` (khoá đã lưu, null khi chưa gắn) và có thể
   trả `deviceBindingMode` (lựa chọn của người dùng, `ReportOnly`/`Reject`/`SignOut`, không phân biệt hoa thường; web tự
-  lọc theo danh sách cho phép). `IsDeviceBound` suy ra từ `deviceKeyJwk`. Auth.Api có sẵn `GetDeviceBinding` cho việc
+  lọc theo danh sách cho phép). `IsDeviceBound` suy ra từ `deviceKeyJwk`; field `isDeviceBound` của `me` không được
+  đọc, nên `me` trả nó mà thiếu khoá thì phiên không được kiểm proof. Auth.Api có sẵn `GetDeviceBinding` cho việc
   này. Thiếu `deviceKeyAlgorithm` thì web suy ra từ loại khoá của JWK (`EC` → `ES256`, `RSA` → `RS256`) như một đường
   lùi; vẫn nên trả về.
 - `IDeviceKeyApiClient.RegisterDeviceKeyAsync(jwk, algorithm, ct)` lưu public key (JWK public dạng chuẩn, ES256 hoặc
@@ -322,6 +323,9 @@ TRƯỚC khi `CurrentUserFailureMode.Throw` kịp làm hỏng request: request �
 - Cookie proof bị trộm dùng được tới khi hết hạn (`ProofLifetime` + ân hạn), và chỉ đi cùng đúng cookie chính của phiên
   đó: giữ thời gian sống ngắn.
 - `ExcludedPaths` bỏ qua hoàn toàn việc kiểm proof.
+- Đăng xuất trong một request bị từ chối (người dùng bấm "đăng xuất" lúc thiếu proof) xoá cookie nhưng KHÔNG thu hồi
+  phiên trên API: request đó là khách và không gửi token, nên phiên API sống tới khi hết hạn (hoặc bị thu hồi ở chỗ
+  khác).
 - Instance mới + API sập: instance chưa từng thấy phiên thì không biết phiên đã gắn khoá khi `me` lỗi, và coi là chưa
   gắn khoá tới khi `me` trả lời lại.
 - Nhiều instance: ngay sau lượt đăng ký ở một instance, instance khác vừa thấy phiên chưa gắn khoá sẽ không kiểm proof

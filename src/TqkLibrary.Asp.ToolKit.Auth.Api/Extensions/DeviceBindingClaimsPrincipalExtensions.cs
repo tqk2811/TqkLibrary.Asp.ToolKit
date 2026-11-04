@@ -9,7 +9,8 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Extensions
         /// <summary>
         /// The device binding of the session of <paramref name="user"/> (claims <see cref="ApiAuthOptions.DeviceKeyJwkClaimType"/>,
         /// <see cref="ApiAuthOptions.DeviceKeyAlgorithmClaimType"/>, <see cref="ApiAuthOptions.DeviceBindingModeClaimType"/>);
-        /// null when the session is not bound (no key claim). Use it in the app's <c>me</c> endpoint:
+        /// null when the session is not bound (no key claim). Use it in the app's <c>me</c> endpoint; the web front end
+        /// reads <c>deviceKeyJwk</c> / <c>deviceKeyAlgorithm</c>, <c>isDeviceBound</c> is informational:
         /// <code>
         /// var binding = user.GetDeviceBinding(apiOptions.Value);
         /// return new { /* user fields */, isDeviceBound = binding is not null, deviceKeyJwk = binding?.Jwk,

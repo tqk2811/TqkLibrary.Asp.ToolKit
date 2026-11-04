@@ -277,9 +277,11 @@ Notes:
 - `DeviceBindingMode` is free text and is NOT validated by the API: the Web must whitelist the known modes and fall back
   to its default.
 
-The app's `me` endpoint must return `isDeviceBound`, `deviceKeyJwk`, `deviceKeyAlgorithm` and `deviceBindingMode`, so
-the web front end knows whether the session is bound, with which key it verifies the device proofs, and which mode the
-user chose. `GetDeviceBinding` reads them from the principal:
+The app's `me` endpoint must return `deviceKeyJwk` and `deviceKeyAlgorithm` (null when not bound) and may return
+`deviceBindingMode`: the web front end decides whether the session is bound FROM `deviceKeyJwk` (and verifies the
+device proofs with that key), and reads the mode the user chose. `isDeviceBound` is informational only: the web does
+not read it, so returning `isDeviceBound = true` without the key leaves the session unenforced on the web.
+`GetDeviceBinding` reads them from the principal:
 
 ```csharp
 using TqkLibrary.Asp.ToolKit.Auth.Api.Extensions;
@@ -292,7 +294,7 @@ app.MapGet("/auth/me", (ClaimsPrincipal user, IOptions<ApiAuthOptions> api) =>
         id = user.FindFirstValue(ClaimTypes.NameIdentifier),
         userName = user.Identity!.Name,
         // ... email, roles, permissions
-        isDeviceBound = binding is not null,
+        isDeviceBound = binding is not null,                   // informational; the web reads deviceKeyJwk
         deviceKeyJwk = binding?.Jwk,
         deviceKeyAlgorithm = binding?.Algorithm,
         deviceBindingMode = binding?.Mode,

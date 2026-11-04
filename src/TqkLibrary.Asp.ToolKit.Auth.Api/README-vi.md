@@ -275,8 +275,10 @@ Lưu ý:
 - `DeviceBindingMode` là text tự do và API KHÔNG validate: Web phải whitelist các mode đã biết và quay về mặc định của nó
   nếu giá trị lạ.
 
-Endpoint `me` của app phải trả `isDeviceBound`, `deviceKeyJwk`, `deviceKeyAlgorithm` và `deviceBindingMode`, để Web
-front end biết phiên đã gắn chưa, dùng khoá nào để kiểm bằng chứng của thiết bị, và user đã chọn mode nào.
+Endpoint `me` của app phải trả `deviceKeyJwk` và `deviceKeyAlgorithm` (null khi chưa gắn) và có thể trả
+`deviceBindingMode`: Web front end quyết định phiên đã gắn hay chưa DỰA VÀO `deviceKeyJwk` (và kiểm bằng chứng của
+thiết bị bằng chính khoá đó), rồi đọc mode user đã chọn. `isDeviceBound` chỉ để tham khảo: Web không đọc nó, nên trả
+`isDeviceBound = true` mà thiếu khoá thì Web không kiểm proof cho phiên đó.
 `GetDeviceBinding` đọc chúng từ principal:
 
 ```csharp
@@ -290,7 +292,7 @@ app.MapGet("/auth/me", (ClaimsPrincipal user, IOptions<ApiAuthOptions> api) =>
         id = user.FindFirstValue(ClaimTypes.NameIdentifier),
         userName = user.Identity!.Name,
         // ... email, roles, permissions
-        isDeviceBound = binding is not null,
+        isDeviceBound = binding is not null,                   // chỉ để tham khảo; Web đọc deviceKeyJwk
         deviceKeyJwk = binding?.Jwk,
         deviceKeyAlgorithm = binding?.Algorithm,
         deviceBindingMode = binding?.Mode,
