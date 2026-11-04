@@ -16,13 +16,6 @@ Việc còn treo và đề xuất của thư viện. Mỗi mục: vấn đề, v
 - **Đề xuất**: bọc `await _dispatcher` trong try/finally, luôn huỷ vé còn lại rồi dispose hai đối tượng.
 - **Ngày ghi**: 2026-11-03.
 
-### [Thấp] ViewModels.AspNetCore: mã lỗi field dựa vào ghi đè ErrorMessage toàn app
-
-- **Vị trí**: `src/TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore/Validation/FieldErrorMessageProvider.cs`, `FieldValidationErrors.cs`.
-- **Vấn đề**: muốn có mã lỗi chính xác (vd `FIELD_REQUIRED`) phải bật `UseFieldErrorMessages`, tuỳ chọn này nhét mã vào chuỗi `ErrorMessage` của mọi attribute trong app (ảnh hưởng Razor, validate phía client, bản dịch). Mặc định tắt thì `[Required]` chỉ ra `FIELD_INVALID_VALUE`.
-- **Đề xuất**: khi dựng response 400, lần từ `ModelError` về attribute qua `ModelMetadata.ValidatorMetadata` (hoặc `IModelValidatorProvider` riêng) để lấy mã và tham số, không sửa message.
-- **Ngày ghi**: 2026-11-03.
-
 ### [Thấp] ViewModels.AspNetCore: các điểm nhỏ còn lại sau review ApiErrorMapping
 
 - **Vị trí**: `src/TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore/Middleware/ApiExceptionWrapperMiddleware.cs` (`HandleExceptionAsync`, nhánh 499), `Models/ApiErrorMapping.cs`, `TqkApiEnvelopeOptions.TransformError`.

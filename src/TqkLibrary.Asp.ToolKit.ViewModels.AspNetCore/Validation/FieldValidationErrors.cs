@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
@@ -12,17 +11,16 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Validation
     /// code instead of showing a server sentence.
     /// <para>
     /// MVC keeps only the error MESSAGE in <see cref="ModelStateDictionary"/>, not the attribute that failed. With
-    /// <see cref="TqkApiEnvelopeOptions.UseFieldErrorMessages"/>, every framework validation attribute and every binding
-    /// message gets a marker message (<see cref="Marker"/> + code + params + <see cref="Marker"/> + message) parsed back
-    /// here. Anything without a marker (JSON reader errors, custom attributes) becomes <c>FIELD_INVALID_VALUE</c> with
-    /// its original message.
+    /// <see cref="TqkApiEnvelopeOptions.UseFieldErrorCodes"/>, the validators of the framework validation attributes and
+    /// the model binding messages tag each message string they produce with its code and params, leaving the text as
+    /// is (Razor, client-side validation and resource localization are unaffected). Anything untagged (JSON reader
+    /// errors, custom attributes, messages added by hand) becomes <c>FIELD_INVALID_VALUE</c> with its original message.
+    /// The tag follows the string instance MVC stored: a message rebuilt from its text (trimmed, concatenated,
+    /// re-localized) loses it.
     /// </para>
     /// </summary>
     public static class FieldValidationErrors
     {
-        /// <summary>Unit separator: never typed by a user, never produced by MVC itself.</summary>
-        internal const char Marker = '\u001F';
-
         /// <summary>The <c>InvalidModelStateResponseFactory</c> set by <c>AddTqkApiEnvelope</c>: 400 + <see cref="ApiErrorResponse"/>.</summary>
         public static IActionResult CreateResponse(ActionContext context)
         {
@@ -103,78 +101,52 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Validation
             return builder.ToString();
         }
 
-        /// <summary>Replaces binding messages with markers and adds the attribute-marker provider.</summary>
-        internal static MvcOptions UseFieldErrorMessages(this MvcOptions options)
+        /// <summary>Tags the model binding messages and wraps the DataAnnotations validators with their codes.</summary>
+        internal static MvcOptions UseFieldErrorCodes(this MvcOptions options)
         {
-            string required = Encode(ApiErrorCodes.FieldRequired, "A value is required.");
+            // Idempotent: the provider doubles as the "already applied" flag.
+            if (options.ModelValidatorProviders.OfType<FieldCodeValidatorProvider>().Any()) return options;
 
-            var messages = options.ModelBindingMessageProvider;
-            messages.SetMissingBindRequiredValueAccessor(x => Encode(ApiErrorCodes.FieldRequired, $"A value for the '{x}' parameter or property was not provided."));
-            messages.SetMissingKeyOrValueAccessor(() => required);
-            messages.SetMissingRequestBodyRequiredValueAccessor(() => Encode(ApiErrorCodes.FieldRequired, "A non-empty request body is required."));
-            messages.SetValueMustNotBeNullAccessor(x => Encode(ApiErrorCodes.FieldRequired, $"The value '{x}' is invalid."));
-            messages.SetAttemptedValueIsInvalidAccessor((v, f) => Encode(ApiErrorCodes.FieldInvalidValue, $"The value '{v}' is not valid for {f}."));
-            messages.SetNonPropertyAttemptedValueIsInvalidAccessor(v => Encode(ApiErrorCodes.FieldInvalidValue, $"The value '{v}' is not valid."));
-            messages.SetUnknownValueIsInvalidAccessor(f => Encode(ApiErrorCodes.FieldInvalidValue, $"The supplied value is invalid for {f}."));
-            messages.SetNonPropertyUnknownValueIsInvalidAccessor(() => Encode(ApiErrorCodes.FieldInvalidValue, "The supplied value is invalid."));
-            messages.SetValueIsInvalidAccessor(v => Encode(ApiErrorCodes.FieldInvalidValue, $"The value '{v}' is invalid."));
-            messages.SetValueMustBeANumberAccessor(f => Encode(ApiErrorCodes.FieldInvalidValue, $"The field {f} must be a number."));
-            messages.SetNonPropertyValueMustBeANumberAccessor(() => Encode(ApiErrorCodes.FieldInvalidValue, "The field must be a number."));
+            // Wrap the accessors already set (MVC defaults or the app's own localized ones): the text stays theirs.
+            var m = options.ModelBindingMessageProvider;
+            var missingBindRequired = m.MissingBindRequiredValueAccessor;
+            var missingKeyOrValue = m.MissingKeyOrValueAccessor;
+            var missingBody = m.MissingRequestBodyRequiredValueAccessor;
+            var mustNotBeNull = m.ValueMustNotBeNullAccessor;
+            var attemptedInvalid = m.AttemptedValueIsInvalidAccessor;
+            var nonPropertyAttemptedInvalid = m.NonPropertyAttemptedValueIsInvalidAccessor;
+            var unknownInvalid = m.UnknownValueIsInvalidAccessor;
+            var nonPropertyUnknownInvalid = m.NonPropertyUnknownValueIsInvalidAccessor;
+            var valueInvalid = m.ValueIsInvalidAccessor;
+            var mustBeNumber = m.ValueMustBeANumberAccessor;
+            var nonPropertyMustBeNumber = m.NonPropertyValueMustBeANumberAccessor;
 
-            // Must run AFTER DataAnnotationsMetadataProvider (which adds the implicit [Required] for
-            // non-nullable properties): appending to the list is enough.
-            options.ModelMetadataDetailsProviders.Add(new FieldErrorMessageProvider());
+            const string required = ApiErrorCodes.FieldRequired;
+            const string invalid = ApiErrorCodes.FieldInvalidValue;
+            m.SetMissingBindRequiredValueAccessor(x => FieldErrorTags.Attach(missingBindRequired(x), required));
+            m.SetMissingKeyOrValueAccessor(() => FieldErrorTags.Attach(missingKeyOrValue(), required));
+            m.SetMissingRequestBodyRequiredValueAccessor(() => FieldErrorTags.Attach(missingBody(), required));
+            m.SetValueMustNotBeNullAccessor(x => FieldErrorTags.Attach(mustNotBeNull(x), required));
+            m.SetAttemptedValueIsInvalidAccessor((v, f) => FieldErrorTags.Attach(attemptedInvalid(v, f), invalid));
+            m.SetNonPropertyAttemptedValueIsInvalidAccessor(v => FieldErrorTags.Attach(nonPropertyAttemptedInvalid(v), invalid));
+            m.SetUnknownValueIsInvalidAccessor(f => FieldErrorTags.Attach(unknownInvalid(f), invalid));
+            m.SetNonPropertyUnknownValueIsInvalidAccessor(() => FieldErrorTags.Attach(nonPropertyUnknownInvalid(), invalid));
+            m.SetValueIsInvalidAccessor(v => FieldErrorTags.Attach(valueInvalid(v), invalid));
+            m.SetValueMustBeANumberAccessor(f => FieldErrorTags.Attach(mustBeNumber(f), invalid));
+            m.SetNonPropertyValueMustBeANumberAccessor(() => FieldErrorTags.Attach(nonPropertyMustBeNumber(), invalid));
+
+            // Must run AFTER the DataAnnotations validator provider (it builds the validators this one wraps):
+            // called from PostConfigure, so appending is enough.
+            options.ModelValidatorProviders.Add(new FieldCodeValidatorProvider());
             return options;
-        }
-
-        /// <summary>
-        /// <paramref name="message"/> is appended after a second <see cref="Marker"/>. For attribute markers it still
-        /// contains <c>{0}</c>, which the attribute's own <c>string.Format</c> replaces with the display name.
-        /// </summary>
-        internal static string Encode(string code, string? message, params (string Key, object? Value)[] parameters)
-        {
-            StringBuilder builder = new StringBuilder().Append(Marker).Append(code);
-            foreach (var (k, v) in parameters)
-            {
-                if (v is null) continue;
-                // Braces would break the string.Format that ValidationAttribute runs on ErrorMessage.
-                string text = Convert.ToString(v, CultureInfo.InvariantCulture)!.Replace("{", "").Replace("}", "");
-                builder.Append('|').Append(k).Append('=').Append(text.Replace("|", "").Replace(Marker.ToString(), ""));
-            }
-            if (!string.IsNullOrEmpty(message))
-                builder.Append(Marker).Append(message.Replace(Marker.ToString(), ""));
-            return builder.ToString();
         }
 
         internal static (string Code, Dictionary<string, object>? Params, string? Message) Decode(string? errorMessage)
         {
-            if (string.IsNullOrEmpty(errorMessage))
-                return (ApiErrorCodes.FieldInvalidValue, null, null);
-            if (errorMessage[0] != Marker)
-                return (ApiErrorCodes.FieldInvalidValue, null, errorMessage);
-
-            string body = errorMessage[1..];
-            string? message = null;
-            int split = body.IndexOf(Marker);
-            if (split >= 0)
-            {
-                message = body[(split + 1)..];
-                body = body[..split];
-            }
-
-            string[] parts = body.Split('|');
-            Dictionary<string, object>? parameters = null;
-            foreach (string part in parts.Skip(1))
-            {
-                int eq = part.IndexOf('=');
-                if (eq <= 0) continue;
-                string value = part[(eq + 1)..];
-                parameters ??= new();
-                parameters[part[..eq]] = long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out long l) ? l
-                    : double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out double d) ? d
-                    : value;
-            }
-            return (parts[0], parameters, string.IsNullOrEmpty(message) ? null : message);
+            string? message = string.IsNullOrEmpty(errorMessage) ? null : errorMessage;
+            return FieldErrorTags.TryGet(errorMessage, out FieldErrorTags.Tag? tag)
+                ? (tag!.Code, tag.Params is null ? null : new(tag.Params), message)
+                : (ApiErrorCodes.FieldInvalidValue, null, message);
         }
     }
 }

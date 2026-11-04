@@ -23,7 +23,7 @@ builder.Services.AddControllers()
         // all optional, defaults shown
         options.RequestIdHeader = "X-Request-Id";
         options.RequestIdPrefix = "req_";
-        options.UseFieldErrorMessages = false; // true only in API-only apps, see below
+        options.UseFieldErrorCodes = true; // default; false = every field error is FIELD_INVALID_VALUE
         options.EnableValidationResponse = true;
         // options.SerializeError = x => JsonConvert.SerializeObject(x, mySettings); // when the app uses Newtonsoft
     });
@@ -69,13 +69,16 @@ public sealed class ProductsController(IProductService service) : ControllerBase
   Apps whose MVC output uses Newtonsoft must set `SerializeError` to their own serializer so these bodies match the
   MVC responses (`o.SerializeError = v => JsonConvert.SerializeObject(v, settings)`); null properties (`meta`,
   `fields`, `details`...) are omitted only if that serializer ignores nulls.
-- Validation: `UseFieldErrorMessages` (default `false`, enable only in API-only apps) replaces the framework
-  DataAnnotations attributes and the model binding messages globally so each `FieldError` gets a code
-  (`FIELD_REQUIRED`, `FIELD_TOO_LONG` with `params.max`...) and the formatted `message` ("The DisplayName field is
-  required."). It also affects Razor views / client-side validation, captures messages once per type in the culture
-  of the first request touching it, and drops resource-based localization. Field paths follow `[JsonPropertyName]`
-  (and Newtonsoft `[JsonProperty]`, read by reflection) and are camelCased otherwise. Off (default), every field
-  error is `FIELD_INVALID_VALUE` with the normal MVC message.
+- Validation: `UseFieldErrorCodes` (default `true`) gives each `FieldError` a code (`FIELD_REQUIRED`,
+  `FIELD_TOO_LONG` with `params.max`...) for the framework DataAnnotations attributes and the model binding errors,
+  plus the `message` MVC produced ("The DisplayName field is required."). Messages are not rewritten: the code is
+  attached to the message string by wrapping the validators and the binding message accessors, so Razor views,
+  client-side validation and resource localization are unaffected. App-set binding messages (global
+  `ModelBindingMessageProvider`) are wrapped too; per-type overrides from an `IBindingMetadataProvider` are not. The
+  code follows the message string MVC stored, so a message rebuilt from its text loses it. `[StringLength]` with a
+  minimum reports `FIELD_OUT_OF_RANGE` (`params.min`, `params.max`). Field paths follow `[JsonPropertyName]` (and Newtonsoft `[JsonProperty]`,
+  read by reflection) and are camelCased otherwise. Off, or for custom attributes and JSON reader errors, the field
+  error is `FIELD_INVALID_VALUE` with its message.
 - `ModelState.ToFieldErrors()` / `ModelState.ToApiErrorResponse(requestId)` for manual checks.
 
 ## Dependencies

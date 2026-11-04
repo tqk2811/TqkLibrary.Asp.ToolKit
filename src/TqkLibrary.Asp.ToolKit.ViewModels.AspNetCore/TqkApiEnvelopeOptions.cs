@@ -31,18 +31,15 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore
         public Func<object, string> SerializeError { get; set; } = x => JsonSerializer.Serialize(x, x.GetType(), _defaultJsonOptions);
 
         /// <summary>
-        /// Replaces the DataAnnotations / model binding messages globally so each <see cref="FieldError"/> gets a precise
-        /// code (<c>FIELD_REQUIRED</c>, <c>FIELD_TOO_LONG</c>...) and params. Off (default): every field error is
-        /// <c>FIELD_INVALID_VALUE</c> with the normal MVC message (the 400 <c>VALIDATION_FAILED</c> response and field
-        /// paths still work).
+        /// Gives each <see cref="FieldError"/> a precise code (<c>FIELD_REQUIRED</c>, <c>FIELD_TOO_LONG</c>...) and params
+        /// for the framework DataAnnotations attributes and the model binding errors. Default true.
         /// <para>
-        /// Enable it only in API-only apps: it rewrites <c>ErrorMessage</c> of every DataAnnotations attribute app-wide,
-        /// so Razor views and client-side validation would show marker strings. Messages are captured once per type,
-        /// when MVC first builds the model metadata for it (the first request touching the type), in that request's
-        /// culture; resource-based localization (<c>ErrorMessageResourceType</c>) is dropped.
+        /// Messages are not changed: the validators and binding message accessors (MVC's or the app's own, set before
+        /// <c>AddTqkApiEnvelope</c>) keep their text, so Razor views, client-side validation and resource localization
+        /// work as usual. Off: every field error is <c>FIELD_INVALID_VALUE</c> with its message.
         /// </para>
         /// </summary>
-        public bool UseFieldErrorMessages { get; set; } = false;
+        public bool UseFieldErrorCodes { get; set; } = true;
 
         /// <summary>
         /// Optional last step of the exception wrapper middleware: receives every mapping (from

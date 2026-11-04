@@ -23,7 +23,7 @@ builder.Services.AddControllers()
         // đều tuỳ chọn, đây là giá trị mặc định
         options.RequestIdHeader = "X-Request-Id";
         options.RequestIdPrefix = "req_";
-        options.UseFieldErrorMessages = false; // true chỉ cho app thuần API, xem bên dưới
+        options.UseFieldErrorCodes = true; // mặc định; false = mọi lỗi ô là FIELD_INVALID_VALUE
         options.EnableValidationResponse = true;
         // options.SerializeError = x => JsonConvert.SerializeObject(x, mySettings); // khi app dùng Newtonsoft
     });
@@ -69,13 +69,16 @@ public sealed class ProductsController(IProductService service) : ControllerBase
   App có MVC output dùng Newtonsoft phải đặt `SerializeError` bằng serializer của app để thân lỗi khớp phản hồi MVC
   (`o.SerializeError = v => JsonConvert.SerializeObject(v, settings)`); các thuộc tính null (`meta`, `fields`,
   `details`...) chỉ bị bỏ khi serializer đó bỏ qua null.
-- Validation: `UseFieldErrorMessages` (mặc định `false`, chỉ bật ở app thuần API) thay message của các attribute
-  DataAnnotations có sẵn và của model binding trên toàn cục, để mỗi `FieldError` có code (`FIELD_REQUIRED`,
-  `FIELD_TOO_LONG` kèm `params.max`...) và `message` đã format ("The DisplayName field is required."). Nó cũng ảnh
-  hưởng Razor view / validation phía client, chỉ lấy message một lần cho mỗi type theo culture của request đầu tiên
-  chạm tới type, và bỏ localization dựa trên resource. Đường dẫn ô theo `[JsonPropertyName]` (và `[JsonProperty]` của
-  Newtonsoft, đọc bằng reflection), còn lại đổi sang camelCase. Tắt (mặc định) thì mọi lỗi ô là
-  `FIELD_INVALID_VALUE` kèm message MVC thường.
+- Validation: `UseFieldErrorCodes` (mặc định `true`) cho mỗi `FieldError` một code (`FIELD_REQUIRED`,
+  `FIELD_TOO_LONG` kèm `params.max`...) với các attribute DataAnnotations có sẵn và lỗi model binding, kèm `message`
+  do MVC sinh ("The DisplayName field is required."). Message không bị sửa: code được gắn vào chính chuỗi message
+  bằng cách bọc validator và các accessor message của model binding, nên Razor view, validation phía client và
+  localization dựa trên resource không bị ảnh hưởng. Message binding app tự đặt (`ModelBindingMessageProvider` toàn
+  cục) cũng được bọc; message đặt riêng theo type qua `IBindingMetadataProvider` thì không. Code đi theo chính chuỗi
+  message MVC lưu, nên message dựng lại từ nội dung chữ sẽ mất code. `[StringLength]` có độ dài tối thiểu báo
+  `FIELD_OUT_OF_RANGE` (`params.min`, `params.max`). Đường dẫn ô theo `[JsonPropertyName]` (và `[JsonProperty]` của Newtonsoft, đọc bằng
+  reflection), còn lại đổi sang camelCase. Tắt, hoặc với attribute tự viết và lỗi đọc JSON, thì lỗi ô là
+  `FIELD_INVALID_VALUE` kèm message của nó.
 - `ModelState.ToFieldErrors()` / `ModelState.ToApiErrorResponse(requestId)` cho các chỗ kiểm tay.
 
 ## Phụ thuộc

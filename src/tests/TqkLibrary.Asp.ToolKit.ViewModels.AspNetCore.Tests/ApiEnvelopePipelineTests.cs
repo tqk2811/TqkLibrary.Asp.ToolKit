@@ -1,7 +1,10 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.ComponentModel.DataAnnotations;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -282,8 +285,8 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Tests
         [Fact]
         public async Task Validation_ReturnsFieldErrors_WithClientPathsAndMessages()
         {
-            await using TestApp app = await TestApp.StartAsync(configure: x => x.UseFieldErrorMessages = true);
-            const string body = """{"code":"toolong","unit_price":50,"items":[{"itemName":null}]}""";
+            await using TestApp app = await TestApp.StartAsync();
+            const string body = """{"code":"toolong","unit_price":50,"items":[{"itemName":null}],"tags":["a","b","c"]}""";
             using HttpResponseMessage response = await app.Client.PostAsync("/t/validate", new StringContent(body, Encoding.UTF8, "application/json"));
 
             Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
@@ -304,12 +307,77 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Tests
             Assert.Equal(10, fields["unit_price"].GetProperty("params").GetProperty("max").GetInt32());
 
             Assert.Equal(ApiErrorCodes.FieldRequired, fields["items[0].itemName"].GetProperty("code").GetString());
+
+            // The attribute's own ErrorMessage is kept and still formatted, the code comes from the attribute type.
+            Assert.Equal(ApiErrorCodes.FieldTooLong, fields["tags"].GetProperty("code").GetString());
+            Assert.Equal(2, fields["tags"].GetProperty("params").GetProperty("max").GetInt32());
+            Assert.Equal("Too many tags for Tags.", fields["tags"].GetProperty("message").GetString());
         }
 
         [Fact]
-        public async Task Validation_DefaultOptions_KeepsOriginalMessage()
+        public async Task Validation_FieldCodes_DoNotRewriteAttributeMessages()
         {
             await using TestApp app = await TestApp.StartAsync();
+            using HttpResponseMessage response = await app.Client.PostAsync("/t/validate", new StringContent("{}", Encoding.UTF8, "application/json"));
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+            // The cached metadata MVC validates with (and Razor / client-side validation read) keeps the original messages.
+            IModelMetadataProvider provider = app.Services.GetRequiredService<IModelMetadataProvider>();
+            ModelMetadata property = provider.GetMetadataForProperty(typeof(CreateProductModel), nameof(CreateProductModel.DisplayName));
+            RequiredAttribute required = property.ValidatorMetadata.OfType<RequiredAttribute>().Single();
+            Assert.Null(required.ErrorMessage);
+            Assert.Equal("The DisplayName field is required.", required.FormatErrorMessage("DisplayName"));
+
+            ModelMetadata tags = provider.GetMetadataForProperty(typeof(CreateProductModel), nameof(CreateProductModel.Tags));
+            Assert.Equal("Too many tags for {0}.", tags.ValidatorMetadata.OfType<MaxLengthAttribute>().Single().ErrorMessage);
+        }
+
+        [Fact]
+        public async Task Validation_BindingError_KeepsMvcMessageWithCode()
+        {
+            await using TestApp app = await TestApp.StartAsync();
+            using HttpResponseMessage response = await app.Client.GetAsync("/t/number");
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            JsonElement json = await TestApp.ReadJsonAsync(response);
+            JsonElement field = json.GetProperty("error").GetProperty("fields").EnumerateArray().Single();
+            Assert.Equal("value", field.GetProperty("field").GetString());
+            Assert.Equal(ApiErrorCodes.FieldRequired, field.GetProperty("code").GetString());
+            Assert.Equal("A value for the 'value' parameter or property was not provided.", field.GetProperty("message").GetString());
+        }
+
+        [Fact]
+        public async Task Validation_AppBindingMessageSetAfterEnvelope_KeepsTextAndCode()
+        {
+            await using TestApp app = await TestApp.StartAsync(services => services.Configure<MvcOptions>(
+                o => o.ModelBindingMessageProvider.SetMissingBindRequiredValueAccessor(x => $"Thiếu {x}.")));
+            using HttpResponseMessage response = await app.Client.GetAsync("/t/number");
+
+            JsonElement json = await TestApp.ReadJsonAsync(response);
+            JsonElement field = json.GetProperty("error").GetProperty("fields").EnumerateArray().Single();
+            Assert.Equal(ApiErrorCodes.FieldRequired, field.GetProperty("code").GetString());
+            Assert.Equal("Thiếu value.", field.GetProperty("message").GetString());
+        }
+
+        [Fact]
+        public async Task Validation_StringLengthWithMinimum_IsOutOfRange()
+        {
+            await using TestApp app = await TestApp.StartAsync();
+            const string body = """{"displayName":"x","slug":"a"}""";
+            using HttpResponseMessage response = await app.Client.PostAsync("/t/validate", new StringContent(body, Encoding.UTF8, "application/json"));
+
+            JsonElement json = await TestApp.ReadJsonAsync(response);
+            JsonElement field = json.GetProperty("error").GetProperty("fields").EnumerateArray()
+                .Single(x => x.GetProperty("field").GetString() == "slug");
+            Assert.Equal(ApiErrorCodes.FieldOutOfRange, field.GetProperty("code").GetString());
+            Assert.Equal(3, field.GetProperty("params").GetProperty("min").GetInt32());
+            Assert.Equal(8, field.GetProperty("params").GetProperty("max").GetInt32());
+        }
+
+        [Fact]
+        public async Task Validation_FieldCodesOff_KeepsOriginalMessage()
+        {
+            await using TestApp app = await TestApp.StartAsync(configure: x => x.UseFieldErrorCodes = false);
             using HttpResponseMessage response = await app.Client.PostAsync("/t/validate", new StringContent("{}", Encoding.UTF8, "application/json"));
 
             Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);

@@ -26,6 +26,8 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Tests
 
         public HttpClient Client { get; }
 
+        public IServiceProvider Services => _host.Services;
+
         public static async Task<TestApp> StartAsync(Action<IServiceCollection>? configureServices = null, Action<TqkApiEnvelopeOptions>? configure = null)
         {
             IHost host = new HostBuilder()
@@ -88,6 +90,12 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Tests
         public int UnitPrice { get; set; } = 1;
 
         public List<CreateProductItem>? Items { get; set; }
+
+        [StringLength(8, MinimumLength = 3)]
+        public string? Slug { get; set; }
+
+        [MaxLength(2, ErrorMessage = "Too many tags for {0}.")]
+        public List<string>? Tags { get; set; }
     }
 
     public sealed class CreateProductItem
@@ -166,5 +174,8 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Tests
 
         [HttpPost("validate")]
         public ProductDto Validate(CreateProductModel model) => new() { Name = model.DisplayName ?? string.Empty };
+
+        [HttpGet("number")]
+        public ProductDto Number([FromQuery, Microsoft.AspNetCore.Mvc.ModelBinding.BindRequired] int value) => new() { Name = value.ToString() };
     }
 }
