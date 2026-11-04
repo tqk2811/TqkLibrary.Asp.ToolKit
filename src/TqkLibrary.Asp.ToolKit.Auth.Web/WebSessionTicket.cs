@@ -109,6 +109,9 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
             }
         }
 
+        /// <summary>True after <see cref="MarkSessionExpired"/> until the drop ran (tests).</summary>
+        internal bool DropPending => _dropPending;
+
         /// <summary>
         /// The session was reported dead (a <see cref="SessionExpiredException"/> is being thrown). Registers once a
         /// <c>Response.OnStarting</c> callback that drops the web session (<see cref="WebSessionManager.DropAsync"/>)

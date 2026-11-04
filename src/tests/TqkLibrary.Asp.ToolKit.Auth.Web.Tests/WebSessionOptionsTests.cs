@@ -199,7 +199,11 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
         private sealed class AlwaysUnauthorized : HttpMessageHandler
         {
             protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-                => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized));
+            {
+                var response = new HttpResponseMessage(HttpStatusCode.Unauthorized);
+                response.Headers.TryAddWithoutValidation("WWW-Authenticate", "Bearer error=\"invalid_token\"");
+                return Task.FromResult(response);
+            }
         }
 
         private static Task<WebAuthTestApp> StartWithCatchingEndpointAsync()

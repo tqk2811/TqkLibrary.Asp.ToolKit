@@ -206,6 +206,46 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
         }
 
         [Fact]
+        public async Task Challenge_NoToken_HasPlainBearerHeader()
+        {
+            await using var app = await App.StartAsync();
+
+            using var response = await app.GetAsync(null);
+
+            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+            Assert.Equal("Bearer", response.Headers.WwwAuthenticate.ToString());
+        }
+
+        [Fact]
+        public async Task Challenge_BadToken_HasInvalidTokenHeader_WithoutOnChallenge()
+        {
+            await using var app = await App.StartAsync();
+            var token = app.SignIn();
+
+            using var response = await app.GetAsync(WrongSecret(token));
+
+            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+            Assert.Contains("error=\"invalid_token\"", response.Headers.WwwAuthenticate.ToString());
+            Assert.Contains(response.Headers.WwwAuthenticate, h => h.Scheme == "Bearer");
+        }
+
+        /// <summary>
+        /// Regression: the header used to be set only on the default path, so an OnChallenge that wrote its own body and
+        /// handled the response left the Web unable to tell a dead session from a business 401.
+        /// </summary>
+        [Fact]
+        public async Task Challenge_HeaderPresent_WhenOnChallengeWritesBodyAndHandles()
+        {
+            await using var app = await App.StartAsync(o => o.OnChallenge = WriteReason);
+            var token = app.SignIn();
+
+            using var response = await app.GetAsync(WrongSecret(token));
+
+            Assert.Equal("reason=" + SessionRejectionReasons.InvalidToken, await response.Content.ReadAsStringAsync());
+            Assert.Contains("error=\"invalid_token\"", response.Headers.WwwAuthenticate.ToString());
+        }
+
+        [Fact]
         public async Task WrongSecret_OnRevokedSession_StillReportsInvalidToken()
         {
             await using var app = await App.StartAsync(o => o.OnChallenge = WriteReason);
@@ -415,9 +455,10 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
 
             using var response = await app.GetAsync("nodot");
 
-            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            // Status and header are set before the hook, so a hook that starts the response still sends a 401 challenge.
+            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
             Assert.Equal("custom", await response.Content.ReadAsStringAsync());
-            Assert.Empty(response.Headers.WwwAuthenticate);
+            Assert.Contains("error=\"invalid_token\"", response.Headers.WwwAuthenticate.ToString());
         }
 
         [Fact]

@@ -91,12 +91,12 @@ builder.Services.AddTqkApiAuth(o =>
 builder.Services.AddScoped<ISessionAccessSource, SessionAccessSource>();
 builder.Services.AddAuthentication(SessionTokenDefaults.AuthenticationScheme).AddTqkSessionToken(o =>
 {
-    // Tuỳ chọn: body 401 riêng kèm lý do từ chối.
+    // Tuỳ chọn: body 401 riêng kèm lý do từ chối. Status 401 và WWW-Authenticate đã được đặt sẵn;
+    // giữ nguyên header này (package Web dựa vào nó).
     o.OnChallenge = async context =>
     {
-        if (context.Rejection is not { } rejection) return;     // không có token: giữ 401 mặc định
+        if (context.Rejection is not { } rejection) return;     // không có token: giữ 401 trơn mặc định
         context.HandleResponse();
-        context.HttpContext.Response.StatusCode = StatusCodes.Status401Unauthorized;
         await context.HttpContext.Response.WriteAsJsonAsync(new { code = "session_rejected", reason = rejection.Reason });
     };
 });
@@ -121,6 +121,11 @@ builder.Services.AddAuthentication(SessionTokenDefaults.AuthenticationScheme).Ad
 Request không có header bearer thì không có kết quả (endpoint ẩn danh vẫn chạy, `[Authorize]` trả 401). Lý do từ chối
 (`SessionRejection(Reason, Message)`) đọc được trong `OnChallenge` và qua `HttpContext.GetSessionRejection()`. Token
 không bao giờ bị ghi log.
+
+Một challenge luôn trả 401 kèm `WWW-Authenticate: Bearer error="invalid_token"` (request không gửi token thì chỉ có
+`Bearer`, theo RFC 6750). Cả hai được đặt TRƯỚC khi `OnChallenge` chạy, nên hook được phép ghi body riêng nhưng
+KHÔNG được xoá header `WWW-Authenticate`: `Auth.Web` chỉ kết thúc phiên của user khi nhận 401 có Bearer challenge này,
+đó là cách nó phân biệt phiên đã chết với một 401 nghiệp vụ của endpoint (ví dụ nhập sai mã 2FA).
 
 Đăng nhập và đăng xuất (trong auth service của app):
 
