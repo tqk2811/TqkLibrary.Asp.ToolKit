@@ -2,7 +2,7 @@
 
 [English](https://github.com/tqk2811/TqkLibrary.Asp.ToolKit/blob/master/src/TqkLibrary.Asp.ToolKit.Auth.Api/README.md) · **Tiếng Việt**
 
-Xác thực API ASP.NET Core bằng session token mờ (opaque), không xoay vòng (`{sessionId}.{secret}`, chỉ lưu SHA-256 của secret): một authentication handler kiểm phiên ở mọi request qua cache ngắn trong bộ nhớ, và hạn trượt (sliding) có giới hạn tần suất ghi cùng trần tuyệt đối.
+Xác thực API ASP.NET Core bằng session token mờ (opaque), không xoay vòng (`{sessionId}.{secret}`, chỉ lưu SHA-256 có tách miền của secret): một authentication handler kiểm phiên ở mọi request qua cache ngắn trong bộ nhớ, và hạn trượt (sliding) có giới hạn tần suất ghi cùng trần tuyệt đối.
 
 ## Cài đặt
 
@@ -33,6 +33,11 @@ dotnet add package TqkLibrary.Asp.ToolKit.Auth.Api
   `UserMismatch` được thay bằng `InvalidToken`; không còn kiểu kết quả grant/reject.
 - Token phải có session id tối đa 128 ký tự `A-Z a-z 0-9 - _` và secret base64url đúng 43 ký tự (đúng thứ
   `SessionTokenCodec.Create` cấp); `Create` ném exception với session id khác.
+- Đổi định dạng hash: `SessionTokenCodec.Hash` giờ là `SHA-256(ASCII("tqk-session:v1:" + secret))` (prefix công khai
+  qua `SessionTokenCodec.HashPrefix`) thay cho `SHA-256(secret)`, để hash phiên không bao giờ trùng hash của refresh
+  token cũ hay token khác cùng dạng. Mọi hash lưu theo kiểu cũ không còn khớp: toàn bộ phiên đang có thành không hợp
+  lệ (`invalid_token`), user phải đăng nhập lại. Thu hồi hoặc xoá các dòng cũ trong migration lên 2.0.0; dữ liệu test
+  hoặc seed phải tạo hash bằng `SessionTokenCodec.Hash`, không dùng SHA-256 trần.
 - Bỏ endpoint refresh của API; endpoint login trả session token (xem dưới).
 
 ## Cách dùng

@@ -116,5 +116,17 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
             Assert.False(SessionTokenCodec.HashEquals(hash, null));
             Assert.False(SessionTokenCodec.HashEquals(null, null));
         }
+
+        [Fact]
+        public void Hash_IsDomainSeparatedSha256_NotPlainSha256OfSecret()
+        {
+            // SHA-256(ASCII("tqk-session:v1:secret")), fixed vector: a hash format change must be deliberate.
+            const string expected = "9B9F14E8A677513476F4FC7F70EADA1200A329A54BC0E32B464F686380A96594";
+            // SHA-256("secret"): the pre-2.0.0 format (also how old refresh tokens were hashed) must no longer match.
+            const string plainSha256 = "2BB80D537B1DA3E38BD30361AA855686BDE0EACD7162FEF6A25FE97BF527A25B";
+
+            Assert.Equal(expected, SessionTokenCodec.Hash("secret"));
+            Assert.False(SessionTokenCodec.Verify("secret", plainSha256));
+        }
     }
 }
