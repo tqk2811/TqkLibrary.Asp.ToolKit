@@ -9,13 +9,6 @@ Việc còn treo và đề xuất của thư viện. Mỗi mục: vấn đề, v
 - **Đề xuất**: đọc `CurrentValue` một lần mỗi lô; kiểm lại URL mỗi lô (sai thì LogError, bỏ lô, không retry). Hoặc ghi rõ trong README chỉ Debounce/Timeout/RetryDelays/Key được reload.
 - **Ngày ghi**: 2026-10-28.
 
-### [Thấp] README chưa cảnh báo ForwardingHeaders = [] tắt bước chặn request qua proxy
-
-- **Vị trí**: `src/TqkLibrary.Asp.ToolKit.Caching/Remote/CacheInvalidationEndpointOptions.cs:30`, `README-vi.md:360`.
-- **Vấn đề**: đặt `ForwardingHeaders = []` bằng code thì endpoint chỉ còn kiểm loopback, mà sau reverse proxy cùng máy thì loopback luôn đúng → ai gọi qua proxy cũng xoá được cache.
-- **Đề xuất**: thêm cảnh báo vào README (cả `README.md`), hoặc log warning lúc khởi động khi mảng rỗng.
-- **Ngày ghi**: 2026-10-28.
-
 ### [Thấp] Auth/Caching chưa có test
 
 - **Vấn đề**: repo mới có project test cho Queue; chưa có test cho các hành vi đã sửa: config danh sách thay thế mặc định (bind từ JSON), `SessionExpiredMiddleware` giữ header xoá cookie, `SessionAccessCache` vô hiệu theo thế hệ.
