@@ -2,40 +2,52 @@
 
 [English](https://github.com/tqk2811/TqkLibrary.Asp.ToolKit/blob/master/src/TqkLibrary.Asp.ToolKit.Auth.Web/README.md) · **Tiếng Việt**
 
+Xác thực Web (BFF) ASP.NET Core qua một API riêng dùng session token mờ (opaque): session token của API (không xoay vòng) chỉ nằm trong auth cookie đã mã hoá, một DelegatingHandler gắn nó làm bearer, một middleware dựng user hiện tại từ API, và xử lý phiên hết hạn.
+
 ## Cài đặt
 
 ```
 dotnet add package TqkLibrary.Asp.ToolKit.Auth.Web
 ```
 
+## Thay đổi breaking ở 2.0.0
+
+2.0.0 bỏ cặp access/refresh token. Web giữ session token của API `{sessionId}.{secret}` (phát một lần lúc đăng nhập,
+không xoay vòng) và gửi nó làm bearer; không còn refresh nào cả.
+
+- `WebSessionManager.SignInAsync(context, AuthSession, persistent)`: `AuthSession` = `SessionToken`, `UserId`,
+  `ExpiresAt` (hạn cookie), thay cho `AuthTokenPair`.
+- Bỏ: `AuthTokenPair`, `WebSessionTokens`, `IAuthApiClient.RefreshAsync`,
+  `SessionBearerHandler.DefaultIsTransientRefreshFailure`, `SessionBearerHandler.ReplayBufferLimitOption`, và các option
+  `AccessTokenName`, `AccessTokenExpiresName`, `RefreshTokenName`, `RefreshTokenExpiresName`, `RefreshSkew`,
+  `RefreshFallbackMargin`, `RefreshTimeout`, `IsTransientRefreshFailure`.
+- `WebSessionTicket` chỉ còn `GetSessionTokenAsync`. `WebSessionPrincipalFactory.CreateSessionOnly` nhận thêm user id.
+- Cookie do bản 1.x cấp không có session token: user đó bị coi như đã đăng xuất (`SessionExpiredException` ở lời gọi
+  API đầu tiên) và phải đăng nhập lại.
+
 ## Cách dùng
 
-Web front end (MVC/Razor) đăng nhập qua một JWT API riêng. Access token và refresh token của API chỉ nằm trong
-auth cookie đã mã hóa, HttpOnly; principal của cookie chỉ mang session id của API. Một `DelegatingHandler`
-gắn bearer, refresh trước khi hết hạn hoặc một lần sau khi gặp 401, và ghi lại cookie. Thông tin user hiện tại
-(tên, role, permission) được hỏi từ API ở mỗi request (có cache ngắn hạn).
+Web front end (MVC/Razor) đăng nhập qua một API riêng (phía API là `Auth.Api`). Auth cookie (mã hoá, HttpOnly) CHỈ chứa
+dữ liệu bất biến: session token của API, session id và user id. Tên, email, role, permission không bao giờ nằm trong
+cookie: Web lấy từ endpoint `me` của API ở mỗi request (`CurrentUserMiddleware`, cache theo phiên trong
+`CurrentUserCacheLifetime`, mặc định 10 giây), còn API tự nạp chúng mỗi request (cache riêng 30 giây). Vì vậy đổi tên
+hay đổi role của user chỉ hiện ra sau các khoảng cache đó, trừ khi app invalidate `CurrentUserCache` (Web) và
+`SessionAccessCache` (API).
 
-API KHÔNG được xoay vòng refresh token kiểu dùng một lần (xem `Auth.Api`).
+API là bên quyết định về phiên: API trượt hạn, thu hồi, và trả 401 khi phiên đã chết. Web không refresh gì cả; cookie
+được ghi một lần lúc đăng nhập và bị xoá khi API báo phiên đã chết.
 
-Cài đặt `IAuthApiClient` trên nền API client của bạn:
+Cài `IAuthApiClient` trên API client của app:
 
 ```csharp
 public sealed class MyAuthApiClient(IMyApi api) : IAuthApiClient
 {
-    // refresh / me bị API từ chối (401/403) PHẢI ném SessionExpiredException; mọi exception khác đều
-    // được coi là lỗi tạm thời và user KHÔNG bị đăng xuất.
-    public async Task<AuthTokenPair> RefreshAsync(string refreshToken, CancellationToken ct)
-    {
-        using var response = await api.RefreshAsync(refreshToken, ct);   // trả về HttpResponseMessage
-        response.ThrowIfSessionRejected();                               // 401/403 -> SessionExpiredException
-        response.EnsureSuccessStatusCode();
-        return await ReadTokensAsync(response, ct);
-    }
-
+    // API từ chối me (401/403) thì PHẢI ném SessionExpiredException; mọi exception khác coi là lỗi tạm và user
+    // KHÔNG bị đăng xuất.
     public async Task<CurrentUserInfo> GetCurrentUserAsync(CancellationToken ct)
     {
         using var response = await api.GetMeAsync(ct);
-        response.ThrowIfSessionRejected();
+        response.ThrowIfSessionRejected();     // 401/403 -> SessionExpiredException
         response.EnsureSuccessStatusCode();
         return await ReadUserAsync(response, ct);
     }
@@ -47,7 +59,7 @@ public sealed class MyAuthApiClient(IMyApi api) : IAuthApiClient
 Đăng ký:
 
 ```csharp
-builder.Services.AddDataProtection()                                 // giữ session qua các lần restart
+builder.Services.AddDataProtection()                                 // giữ phiên qua lần restart
     .SetApplicationName("my-web").PersistKeysToFileSystem(new DirectoryInfo(keysPath));
 builder.Services.AddTqkWebAuth(
     cookie => { cookie.Cookie.Name = "app_auth"; cookie.LoginPath = "/account/login"; },
@@ -59,57 +71,71 @@ app.UseAuthentication();
 app.UseTqkWebSession();   // SessionExpiredMiddleware + CurrentUserMiddleware
 app.UseAuthorization();
 
-// Action đăng nhập: token do endpoint login của API trả về
-await sessionManager.SignInAsync(HttpContext, tokens, persistent: model.RememberMe);   // WebSessionManager
+// Action đăng nhập: giá trị do endpoint login của API trả về
+await sessionManager.SignInAsync(HttpContext, new AuthSession
+{
+    SessionToken = login.SessionToken,     // {sessionId}.{secret}
+    UserId = login.UserId,
+    ExpiresAt = login.ExpiresAt,           // trần tuyệt đối của phiên (UTC); null = now + ExpireTimeSpan của cookie
+}, persistent: model.RememberMe);
 // Action đăng xuất
 await sessionManager.SignOutAsync(HttpContext);
 ```
 
-Muốn gọi API ẩn danh qua cùng client (không gắn bearer của người xem, không refresh) thì bọc lời gọi trong
-`AnonymousApiScope.RunAsync(() => api.GetNewsAsync(ct))`. Trường hợp hay gặp: hàm tải của cache dùng chung cho mọi
-người xem, nếu không thì token của người kích hoạt đầu tiên quyết định dữ liệu cho tất cả. Bọc BÊN TRONG hàm tải. Cờ
-riêng cho từng luồng async (request khác không thấy). Endpoint luôn ẩn danh thì khai trong `AnonymousPathSuffixes`.
-Thư viện cũng dùng scope này cho `RefreshAsync` để handler không tự gọi vòng vào chính nó khi refresh.
+Hạn cookie: ticket hết hạn tại `AuthSession.ExpiresAt` và không bao giờ được cấp lại (`SlidingExpiration = false`).
+Truyền vào đó trần TUYỆT ĐỐI của phiên (`SlidingSessionPolicy.GetAbsoluteExpiry` ở API), không phải hạn trượt: API tự
+trượt phiên và trả 401 khi phiên đã chết, nên cookie chỉ cần sống lâu hơn phiên. Với `persistent: false` cookie là
+cookie phiên của trình duyệt.
 
-Tùy chọn (`AddTqkWebAuth(cookie => ..., options => ...)`), đều không bắt buộc:
+`SessionBearerHandler` thêm `Authorization: Bearer {sessionId}.{secret}` vào mọi lời gọi của client được gắn nó, và gửi
+đúng một lần. API trả 401 thì ném `SessionExpiredException` (`SessionExpiredMiddleware` xoá cookie và chuyển về trang
+đăng nhập, AJAX nhận body JSON 401); mọi status khác và lỗi mạng được trả nguyên. Upload không bao giờ bị buffer (không
+có gì được gửi lại). Khách, lời gọi trong `AnonymousApiScope`, lời gọi tự đặt `Authorization`, và đường dẫn trong
+`AnonymousPathSuffixes` đi qua nguyên trạng.
 
-| Tùy chọn | Mặc định | Tác dụng |
+Gọi API ẩn danh qua cùng client: bọc lời gọi trong `AnonymousApiScope.RunAsync(() => api.GetNewsAsync(ct))`. Ca điển
+hình: hàm tải của cache dùng chung cho mọi người, nếu không token của người đầu tiên sẽ quyết định dữ liệu cho tất cả.
+Bọc BÊN TRONG hàm tải. Cờ đi theo từng luồng async (request khác không thấy). Endpoint luôn ẩn danh thì khai ở
+`AnonymousPathSuffixes`.
+
+Options (`AddTqkWebAuth(cookie => ..., options => ...)`), đều tuỳ chọn:
+
+| Option | Mặc định | Ý nghĩa |
 |---|---|---|
-| `CurrentUserFailureMode` | `SessionOnly` | `me` lỗi (mạng/5xx/timeout): chạy tiếp với principal chỉ có session (không permission), hoặc `Throw` `CurrentUserUnavailableException`. |
-| `CurrentUserFailureCacheFor` | `null` | Nhớ lượt `me` lỗi theo từng session trong khoảng này, để lúc API sập không phải request nào cũng chờ hết `CurrentUserTimeout`. Chỉ nhớ lỗi tạm thời (lỗi mạng không có status, 5xx, 429, timeout); exception khác vẫn theo `CurrentUserFailureMode` nhưng request sau hỏi lại. |
-| `SkipCurrentUser` | `null` | `Func<HttpContext, bool>`: request khớp thì không gọi `me` (user đã cache vẫn được dùng). KHÔNG dùng cho endpoint cần role hoặc policy: principal của request khi đó chỉ có session (không role, không permission) trừ khi user đã nằm trong cache. |
-| `IsAjaxRequest` | `X-Requested-With` / `Accept: application/json` | `Func<HttpRequest, bool>` dùng trong `SessionExpiredMiddleware`. |
+| `CurrentUserTimeout` | 15 giây | Hạn chờ `me`; phải đủ cho API khởi động nguội. |
+| `CurrentUserCacheLifetime` | 10 giây | Cache `me` theo phiên. |
+| `CurrentUserFailureMode` | `SessionOnly` | `me` lỗi (mạng/5xx/timeout): chạy tiếp với principal chỉ có phiên (session id + user id, không permission), hoặc `Throw` `CurrentUserUnavailableException`. |
+| `CurrentUserFailureCacheFor` | `null` | Nhớ lần `me` lỗi theo phiên trong khoảng này, để API sập không làm mọi request chờ `CurrentUserTimeout`. Chỉ nhớ lỗi tạm (lỗi mạng không status, 5xx, 429, timeout); exception khác vẫn theo `CurrentUserFailureMode` nhưng request sau hỏi lại. |
+| `SkipCurrentUser` | `null` | `Func<HttpContext, bool>`: không gọi `me` cho request khớp (user đã cache vẫn được dùng). KHÔNG dùng cho endpoint cần role/policy: principal khi đó chỉ có phiên nếu chưa có user trong cache. |
+| `IsAjaxRequest` | `X-Requested-With` / `Accept: application/json` | `Func<HttpRequest, bool>` dùng bởi `SessionExpiredMiddleware`. |
 | `WriteSessionExpiredAjaxResponse` | 401 `{ success, message, redirect }` | `Func<HttpContext, SessionExpiredException, string redirect, Task>`. |
-| `StableIdentityClaimType` | `"sub"` | Claim mang session id trên mọi principal; xem phần antiforgery bên dưới. |
+| `AnonymousPathSuffixes` | rỗng | Đuôi đường dẫn API không bao giờ nhận token (login, quên mật khẩu...). |
+| `StableIdentityClaimType` | `"sub"` | Claim mang session id trên mọi principal; xem antiforgery bên dưới. |
 
 `CurrentUserInfo.ExtraClaims` (danh sách `CurrentUserClaim(Type, Value)`) được thêm vào principal của request và cache
-trong memory cùng phần còn lại, không bao giờ ghi vào cookie. Các loại claim do thư viện sở hữu bị bỏ qua: session id
+cùng phần còn lại trong bộ nhớ, không bao giờ ghi vào cookie. Các loại claim do thư viện quản lý bị bỏ qua: session id
 và `StableIdentityClaimType`, `ClaimTypes.Role`, `PermissionClaimType`, `ClaimTypes.NameIdentifier`, `ClaimTypes.Name`
 và `ClaimTypes.Email`.
 
-Body upload (`StreamContent`/`MultipartContent`) mặc định không được buffer nên không gửi lại sau 401 + refresh (401 với
-upload nghĩa là session hết hạn). Bật theo từng request bằng
-`request.Options.Set(SessionBearerHandler.ReplayBufferLimitOption, bytes)`: body biết trước độ dài và không quá số byte
-này (tối đa `int.MaxValue`) được buffer và gửi lại. Giới hạn được kiểm khi đọc, nên body dài hơn `Content-Length` khai
-báo sẽ làm lượt gửi lỗi `HttpRequestException` trước khi gửi bất cứ gì.
+Khi `SessionBearerHandler` ném `SessionExpiredException`, nó còn đăng ký một callback `Response.OnStarting` xoá phiên
+Web (xoá cookie) nếu chưa ai làm, nên cookie vẫn bị xoá kể cả khi exception filter của MVC hoặc `try/catch` trong
+action xử lý exception thay cho `SessionExpiredMiddleware`. Response đã bắt đầu gửi thì không làm gì (không ghi header
+được nữa; request sau sẽ xoá cookie). Đăng nhập lại trong cùng request huỷ lệnh xoá đang chờ, và lỗi khi xoá chỉ được
+log, không ném ra.
 
-Khi `SessionBearerHandler` ném `SessionExpiredException`, nó đăng ký thêm một callback `Response.OnStarting` để drop
-web session (xoá cookie) nếu chưa ai làm, nên cookie vẫn bị xoá kể cả khi exception filter của MVC hay `try/catch`
-trong action bắt exception thay cho `SessionExpiredMiddleware`. Response đã bắt đầu gửi thì không làm gì cả (không ghi
-được header nữa; request sau sẽ xoá cookie). Đăng nhập lại trong cùng request huỷ việc drop đang chờ, và lỗi khi drop
-chỉ được log, không ném ra.
+Antiforgery: ASP.NET Core gắn token của nó với claim `sub` (rồi `NameIdentifier`, rồi `upn`). Mọi principal của Web
+(cookie, chỉ có phiên khi API không gọi được, đầy đủ sau `me`) đều mang `sub` = session id của API, nên form mở ở trạng
+thái này vẫn post được ở trạng thái kia. Token vì thế gắn với phiên: đăng nhập lại thì form cần token mới. User id nằm
+ở `ClaimTypes.NameIdentifier`.
 
-Antiforgery: ASP.NET Core gắn token với claim `sub` (rồi tới `NameIdentifier`, `upn`). Mọi principal của web (cookie,
-principal chỉ có session khi API không gọi được, principal đầy đủ sau `me`) đều mang `sub` = session id của API, nên form
-cấp ở trạng thái này vẫn post được ở trạng thái kia. Vì vậy token gắn với session: đăng nhập lại thì form cần token mới.
-User id vẫn nằm ở `ClaimTypes.NameIdentifier`.
+### Phía API
 
-Hệ quả của `sub` = session id: form mở trước khi deploy phiên bản này, và form mở trước lần đăng nhập lại, sẽ lỗi
-antiforgery một lần (phải tải lại trang). Code đang đọc claim `sub` như user id phải đọc `ClaimTypes.NameIdentifier`.
+API phát session token (xem `Auth.Api`) nên chạy một job nền xoá theo lô các dòng phiên đã hết hạn hoặc đã thu hồi sau
+một khoảng lưu giữ; Web không lưu gì phía server.
 
 ## Phụ thuộc
 
-Target net10.0 và dùng ASP.NET Core shared framework. Không phụ thuộc NuGet vào các package khác của toolkit này; API mà nó đăng nhập vào được kỳ vọng dùng cơ chế do [TqkLibrary.Asp.ToolKit.Auth.Api](https://www.nuget.org/packages/TqkLibrary.Asp.ToolKit.Auth.Api) cài đặt (refresh token không xoay vòng).
+Target net10.0 và dùng ASP.NET Core shared framework. Không phụ thuộc NuGet vào các package khác của toolkit này; API mà nó đăng nhập vào được kỳ vọng dùng cơ chế do [TqkLibrary.Asp.ToolKit.Auth.Api](https://www.nuget.org/packages/TqkLibrary.Asp.ToolKit.Auth.Api) cài đặt (session token mờ, không xoay vòng).
 
 ## Liên kết
 

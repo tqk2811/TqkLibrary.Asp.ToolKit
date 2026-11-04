@@ -2,95 +2,155 @@
 
 [English](https://github.com/tqk2811/TqkLibrary.Asp.ToolKit/blob/master/src/TqkLibrary.Asp.ToolKit.Auth.Api/README.md) · **Tiếng Việt**
 
+Xác thực API ASP.NET Core bằng session token mờ (opaque), không xoay vòng (`{sessionId}.{secret}`, chỉ lưu SHA-256 của secret): một authentication handler kiểm phiên ở mọi request qua cache ngắn trong bộ nhớ, và hạn trượt (sliding) có giới hạn tần suất ghi cùng trần tuyệt đối.
+
 ## Cài đặt
 
 ```
 dotnet add package TqkLibrary.Asp.ToolKit.Auth.Api
 ```
 
+## Thay đổi breaking ở 2.0.0
+
+2.0.0 bỏ JWT. Không còn access token lẫn refresh token: session token `{sessionId}.{secret}` được phát một lần lúc
+đăng nhập và gửi dạng `Authorization: Bearer {sessionId}.{secret}` ở mọi lời gọi.
+
+- Bỏ: `AccessTokenFactory`, `IssuedAccessToken`, `SessionTokenValidator`, `AddTqkJwtBearer`,
+  `UseTqkSessionValidation`, các option `Issuer`, `Audience`, `SigningKey`, `AccessTokenLifetime`, `ClockSkew`,
+  `EffectiveAudience`, `CreateSigningKey`, `CreateTokenValidationParameters`, và phụ thuộc
+  `Microsoft.AspNetCore.Authentication.JwtBearer`.
+- Đổi tên: `RefreshTokenCodec` → `SessionTokenCodec`, `IssuedRefreshToken` → `IssuedSessionToken`.
+- `ISessionAccessSource.GetAsync(sessionId, ct)` (không còn user id) trả về dòng phiên: user id, hash secret,
+  `CreatedAt`, `LastAccessAt`, `ExpiresAt`, `IsPersistent`, `IsRevoked`, cùng tên/email/role/permission. Thư viện tự
+  kiểm secret, thu hồi và hạn. Thêm `TouchAsync` để lưu hạn trượt.
+- Scheme xác thực: `AddAuthentication(SessionTokenDefaults.AuthenticationScheme).AddTqkSessionToken(...)`; body 401
+  riêng chuyển sang `SessionTokenAuthenticationOptions.OnChallenge`, còn `GetSessionRejection` / `IsSessionRejected`
+  thành extension của `HttpContext`.
+- `SessionAccessCache.GetAsync` bỏ tham số user id. `SessionRejectionReasons.NoSession` / `UserMismatch` được thay bằng
+  `InvalidToken`.
+- Bỏ endpoint refresh của API; endpoint login trả session token (xem dưới).
+
 ## Cách dùng
 
-Phía JWT API của cùng một cơ chế: access token gọn (`sub`, `sid`, `jti`, thời hạn), kiểm tra session ở mọi request
-với cache ngắn hạn, claim được thay bằng dữ liệu hiện tại, refresh token không xoay vòng dạng `<sessionId>.<secret>`.
+API sở hữu phiên. App giữ bảng phiên (trong database của app; thư viện không có entity) với tối thiểu: id, user id,
+hash secret, thời điểm tạo, lần truy cập cuối, hạn, cờ persistent, cờ thu hồi. Dữ liệu thêm theo phiên về sau (vd
+public key gắn thiết bị) do app tự thêm: định dạng token không đổi.
 
-Cài đặt `ISessionAccessSource`:
+Cài `ISessionAccessSource`:
 
 ```csharp
 public sealed class SessionAccessSource(AppDbContext db) : ISessionAccessSource
 {
-    public async Task<SessionAccessResult> GetAsync(string sessionId, string userId, CancellationToken ct)
+    public async Task<SessionAccessResult> GetAsync(string sessionId, CancellationToken ct)
     {
-        // Reject (có thể kèm lý do) khi session đã bị thu hồi/hết hạn, thuộc user khác, hoặc tài khoản không dùng
-        // được. Kết quả reject không bao giờ được cache.
-        if (session is null || session.RevokedAt is not null) return SessionAccessResult.Reject(SessionRejectionReasons.Revoked);
-        if (user.IsLocked) return SessionAccessResult.Reject(SessionRejectionReasons.UserLocked);
-        ...
-        // SessionAccessRecord tự chuyển ngầm thành SessionAccessResult.Grant(...).
-        return new SessionAccessRecord { UserId = userId, UserName = name, Roles = roles, Permissions = permissions };
+        var row = await db.Sessions.Where(s => s.Id == sessionId)
+            .Select(s => new { Session = s, s.User })
+            .SingleOrDefaultAsync(ct);
+        if (row is null) return SessionAccessResult.Reject();                                   // phiên không tồn tại
+        if (row.User.IsLocked) return SessionAccessResult.Reject(SessionRejectionReasons.UserLocked);
+        // Trả cả phiên đã thu hồi/hết hạn: thư viện tự kiểm secret, thu hồi và hạn.
+        return new SessionAccessRecord
+        {
+            UserId = row.User.Id, SecretHash = row.Session.SecretHash,
+            CreatedAt = row.Session.CreatedAt, LastAccessAt = row.Session.LastAccessAt, ExpiresAt = row.Session.ExpiresAt,
+            IsPersistent = row.Session.IsPersistent, IsRevoked = row.Session.RevokedAt != null,
+            UserName = row.User.UserName, Email = row.User.Email, Roles = roles, Permissions = permissions,
+        };
     }
+
+    // Gọi tối đa một lần mỗi SessionTouchInterval cho mỗi phiên trong một process; lỗi chỉ được log, request không hỏng.
+    public Task TouchAsync(string sessionId, DateTime lastAccessAt, DateTime expiresAt, CancellationToken ct)
+        => db.Sessions.Where(s => s.Id == sessionId && s.RevokedAt == null)
+            .ExecuteUpdateAsync(u => u.SetProperty(s => s.LastAccessAt, lastAccessAt).SetProperty(s => s.ExpiresAt, expiresAt), ct);
 }
 ```
 
-Nếu `ISessionAccessSource.GetAsync` ném exception thì không có rejection nào được ghi (`SessionTokenValidator.GetSessionRejection`
-trả null) và request lỗi bằng chính exception đó chứ không trả 401.
+`GetAsync` ném exception thì không có rejection nào được ghi, request hỏng với exception đó thay vì 401.
 
 Đăng ký:
 
 ```csharp
 builder.Services.AddTqkApiAuth(o =>
 {
-    o.Issuer = "my-api";
-    o.SigningKey = builder.Configuration["Tokens:Key"]!;    // >= 32 byte
-    // Session thường 7 ngày, session "ghi nhớ đăng nhập" 30 ngày (Persistent null = bằng Normal). Mặc định: 30 ngày.
+    // Phiên thường 7 ngày, phiên "ghi nhớ đăng nhập" 30 ngày (Persistent null = như Normal). Mặc định: 30 ngày.
     o.SessionLifetimes = new SessionLifetimes(TimeSpan.FromDays(7), Persistent: TimeSpan.FromDays(30));
-    o.MaxSessionLifetime = TimeSpan.FromDays(90);          // tùy chọn, giới hạn tuyệt đối cho cả hai loại; mặc định: không giới hạn
+    o.MaxSessionLifetime = TimeSpan.FromDays(90);        // trần tuyệt đối, tuỳ chọn; mặc định không có
+    o.SessionTouchInterval = TimeSpan.FromHours(1);      // mặc định; bao lâu ghi hạn trượt một lần
 });
 builder.Services.AddScoped<ISessionAccessSource, SessionAccessSource>();
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddTqkJwtBearer(jwt =>
+builder.Services.AddAuthentication(SessionTokenDefaults.AuthenticationScheme).AddTqkSessionToken(o =>
 {
-    // Tùy chọn: tự viết body 401 kèm lý do reject do ISessionAccessSource trả về.
-    jwt.Events.OnChallenge = async context =>
+    // Tuỳ chọn: body 401 riêng kèm lý do từ chối.
+    o.OnChallenge = async context =>
     {
-        if (SessionTokenValidator.GetSessionRejection(context.HttpContext) is not { } rejection) return;
+        if (context.Rejection is not { } rejection) return;     // không có token: giữ 401 mặc định
         context.HandleResponse();
-        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-        await context.Response.WriteAsJsonAsync(new { code = "session_rejected", reason = rejection.Reason });
+        context.HttpContext.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        await context.HttpContext.Response.WriteAsJsonAsync(new { code = "session_rejected", reason = rejection.Reason });
     };
 });
 ```
 
-`SessionTokenValidator.GetSessionRejection(HttpContext)` trả về `SessionRejection(Reason, Message)` (lưu dạng một
-feature trong `HttpContext.Features`) hoặc null; `IsSessionRejected` vẫn giữ làm lối tắt. Thư viện tự gán lý do
-`no_session` (token không có session/user id) và `user_mismatch` (record của user khác).
+Ở mỗi request có `Authorization: Bearer {sessionId}.{secret}`, handler:
 
-Cấp token và refresh (bên trong auth service của ứng dụng):
+1. tách token (sai dạng → 401 `invalid_token`, không gọi source);
+2. lấy phiên qua `SessionAccessCache` (mặc định 30 giây) → `ISessionAccessSource.GetAsync`;
+3. so hash secret trong thời gian cố định (`invalid_token`), rồi kiểm `IsRevoked` (`revoked`), `ExpiresAt` và trần
+   tuyệt đối `CreatedAt + MaxSessionLifetime` (`expired`);
+4. lần ghi trước đã cũ hơn `SessionTouchInterval` thì gọi `TouchAsync(sessionId, now, newExpiry)` với
+   `newExpiry = min(now + lifetime, CreatedAt + MaxSessionLifetime)` (mỗi phiên chỉ một lượt ghi cùng lúc trong một
+   process; lỗi được log và thử lại sau tối đa một phút) rồi cập nhật bản ghi trong cache;
+5. dựng principal: `ClaimTypes.NameIdentifier` và `UserIdClaimType` (`sub`) = user id, `SessionIdClaimType` (`sid`),
+   `ClaimTypes.Name`, `ClaimTypes.Email`, `ClaimTypes.Role`, `PermissionClaimType` (`permission`).
+
+Request không có header bearer thì không có kết quả (endpoint ẩn danh vẫn chạy, `[Authorize]` trả 401). Lý do từ chối
+(`SessionRejection(Reason, Message)`) đọc được trong `OnChallenge` và qua `HttpContext.GetSessionRejection()`. Token
+không bao giờ bị ghi log.
+
+Đăng nhập và đăng xuất (trong auth service của app):
 
 ```csharp
 // Đăng nhập
-var refresh = RefreshTokenCodec.Create(sessionId);            // lưu refresh.SecretHash cùng với session
-var expires = slidingPolicy.GetInitialExpiry(now, persistent: model.RememberMe);   // lưu cờ "persistent" cùng session
-var access = accessTokenFactory.Create(userId, sessionId, now);
+var issued = SessionTokenCodec.Create(sessionId);       // lưu issued.SecretHash cùng phiên, không bao giờ lưu token
+var expires = slidingPolicy.GetInitialExpiry(now, persistent: model.RememberMe);
+// ... thêm dòng phiên (CreatedAt = now, ExpiresAt = expires, IsPersistent = RememberMe)
+return new { sessionToken = issued.Token, userId, expiresAt = slidingPolicy.GetAbsoluteExpiry(now) };   // hạn cookie cho Web
 
-// Refresh: trả lại chính refresh token cũ, chỉ có hạn của session được trượt (sliding)
-if (!RefreshTokenCodec.TryParse(token, out var sid, out var secret) || !RefreshTokenCodec.Verify(secret, session.SecretHash)) return Unauthorized();
-var next = slidingPolicy.GetNextExpiry(session.CreatedAt, now, session.IsPersistent);   // null = đã chạm giới hạn tuyệt đối
+// Đăng xuất (endpoint có xác thực): đánh dấu phiên đã thu hồi, rồi
+sessionAccessCache.InvalidateSession(sessionId);
 ```
 
-`SlidingSessionPolicy` không `sealed`, hai hàm đều `virtual`. `AddTqkApiAuth` đăng ký nó bằng `TryAddSingleton`, nên
-lớp con đăng ký TRƯỚC sẽ được dùng:
+`SlidingSessionPolicy` không `sealed` và các method đều `virtual`. `AddTqkApiAuth` đăng ký nó bằng `TryAddSingleton`,
+nên subclass đăng ký TRƯỚC sẽ được dùng:
 
 ```csharp
 builder.Services.AddSingleton<SlidingSessionPolicy, MySlidingSessionPolicy>();
 builder.Services.AddTqkApiAuth(o => { ... });
 ```
 
-Sau khi ghi dữ liệu, hãy invalidate `SessionAccessCache`: `InvalidateSession` (đăng xuất; chỉ session đó), `InvalidateUser`
-(đổi mật khẩu/role, khóa tài khoản; chỉ các session của user đó), `InvalidateAll` (permission của role thay đổi). Lượt tra
-cứu đang chạy dở lúc invalidate sẽ không bao giờ được dùng lại sau đó.
+### Cache và dữ liệu cũ
+
+`SessionAccessCache` giữ bản ghi của mỗi phiên trong `SessionAccessCacheLifetime` (mặc định 30 giây) theo process. Vì
+vậy đổi tên, email, role, permission của user, hoặc thu hồi phiên, chỉ có hiệu lực sau khoảng đó TRỪ KHI app gọi
+invalidate ngay sau khi ghi thành công:
+
+- `InvalidateSession(sessionId)`: đăng xuất / thu hồi một phiên;
+- `InvalidateUser(userId)`: đổi mật khẩu, khoá/xoá tài khoản, đổi role hoặc tên/email;
+- `InvalidateAll()`: permission của role đổi, role bị đổi tên/xoá.
+
+Lượt tra cứu đang chạy dở lúc invalidate không được dùng lại. Nhiều instance API thì invalidate chỉ tới instance xử
+lý lần ghi; các instance khác trễ tối đa thời gian cache.
+
+### Job dọn dẹp
+
+Phiên đã thu hồi và đã hết hạn nằm lại trong bảng tới khi app xoá. Chạy một job nền (vd mỗi ngày một lần) xoá các
+dòng có `RevokedAt` hoặc `ExpiresAt` cũ hơn một khoảng lưu giữ (vd 30 ngày, để còn dấu vết kiểm tra), xoá theo lô
+(`DELETE TOP (1000) ... WHERE ...` trong vòng lặp, hoặc `ExecuteDeleteAsync` trên truy vấn `Take(1000)`) để không
+khoá bảng lâu.
 
 ## Phụ thuộc
 
-Target net10.0, dùng ASP.NET Core shared framework và phụ thuộc `Microsoft.AspNetCore.Authentication.JwtBearer`. Phía web front end tương ứng là [TqkLibrary.Asp.ToolKit.Auth.Web](https://www.nuget.org/packages/TqkLibrary.Asp.ToolKit.Auth.Web).
+Target net10.0 và dùng ASP.NET Core shared framework; không phụ thuộc NuGet nào khác. Phía Web front end tương ứng là [TqkLibrary.Asp.ToolKit.Auth.Web](https://www.nuget.org/packages/TqkLibrary.Asp.ToolKit.Auth.Web).
 
 ## Liên kết
 

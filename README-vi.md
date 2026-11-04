@@ -8,7 +8,7 @@ Bản tiếng Anh ngắn gọn: [README.md](README.md). Tài liệu này giải 
 - [Cài đặt và chọn package](#cài-đặt-và-chọn-package)
 - [Cơ chế tổng quan của Auth](#cơ-chế-tổng-quan-của-auth)
 - [Auth.Web — host Web (MVC/Razor)](#authweb--host-web-mvcrazor)
-- [Auth.Api — host API (JWT)](#authapi--host-api-jwt)
+- [Auth.Api — host API (session token)](#authapi--host-api-session-token)
 - [Điều kiện bắt buộc phía API](#điều-kiện-bắt-buộc-phía-api)
 - [Caching](#caching)
 - [Queue](#queue)
@@ -25,8 +25,8 @@ dotnet add package TqkLibrary.Asp.ToolKit.Queue
 
 | Package | Cài vào host nào | Dùng để làm gì |
 |---|---|---|
-| `TqkLibrary.Asp.ToolKit.Auth.Web` | Web front end (MVC/Razor) đăng nhập qua một API riêng | Giữ access/refresh token của API trong cookie đã mã hoá, tự gắn bearer, tự refresh, dựng lại user hiện tại cho UI |
-| `TqkLibrary.Asp.ToolKit.Auth.Api` | API phát hành JWT | Phát access token gọn, refresh token không xoay vòng, kiểm phiên mỗi request (có cache ngắn) |
+| `TqkLibrary.Asp.ToolKit.Auth.Web` | Web front end (MVC/Razor) đăng nhập qua một API riêng | Giữ session token của API trong cookie đã mã hoá, tự gắn bearer, dựng lại user hiện tại cho UI |
+| `TqkLibrary.Asp.ToolKit.Auth.Api` | API sở hữu phiên đăng nhập | Session token mờ không xoay vòng, kiểm phiên mỗi request (có cache ngắn), hạn trượt ghi có giới hạn tần suất |
 | `TqkLibrary.Asp.ToolKit.Caching` | Web hoặc API (hoặc cả hai) | Cache `stale-while-refresh` theo nhóm (group), vô hiệu hoá theo group, kênh vô hiệu hoá giữa hai process qua HTTP |
 | `TqkLibrary.Asp.ToolKit.Queue` | Bất kỳ host nào cần xếp hàng việc nền | Hàng đợi điều phối trong process: chính sách cho chạy (trần song song), chia lượt công bằng theo khoá, vé await kết quả |
 
@@ -34,19 +34,23 @@ Web và API là hai app tách biệt: Web cài `Auth.Web`, API cài `Auth.Api`. 
 
 ## Cơ chế tổng quan của Auth
 
-- **Web** không có database người dùng. Sau khi đăng nhập qua API, access token + refresh token (và hạn của chúng) được
-  nhét vào ticket của auth cookie. Ticket được Data Protection mã hoá, cookie là `HttpOnly`, nên trình duyệt không đọc được token.
-  Server không lưu gì theo từng phiên.
-- `HttpContext.User` ở Web chỉ mang **một claim duy nhất: mã phiên của API** (`sid`). Tên, role, permission được lấy
-  từ API `me` mỗi request (có cache ngắn, mặc định 10 giây) rồi **thay** `HttpContext.User`, nên đổi quyền ở API có hiệu lực
-  trên UI sau tối đa chừng đó giây.
-- `SessionBearerHandler` (một `DelegatingHandler`) gắn bearer vào mọi lời gọi API: token sắp hết hạn thì refresh trước khi gửi,
-  API trả 401 thì refresh đúng một lần rồi gửi lại, vẫn 401 thì coi như phiên chết và ném `SessionExpiredException`.
-  `SessionExpiredMiddleware` bắt exception đó, xoá cookie và chuyển về trang đăng nhập (AJAX nhận 401 JSON).
-- **API không xoay vòng (rotate) refresh token**: cùng một refresh token dùng lại được nhiều lần, mỗi lần refresh chỉ
-  làm trượt (sliding) hạn của phiên. Nhờ vậy nhiều request/nhiều instance Web refresh song song mà không giẫm chân nhau.
-- API kiểm phiên **ở mỗi request**: `SessionTokenValidator` gọi `ISessionAccessSource` (qua `SessionAccessCache`, mặc định 30 giây),
-  rồi thay claim trong token bằng dữ liệu hiện tại (tên, email, role, permission). Phiên bị thu hồi thì request nhận 401.
+- **Không có JWT, không có refresh.** Lúc đăng nhập API tạo một dòng phiên và phát **session token mờ (opaque)**
+  `{sessionId}.{secret}` (`secret` là 256 bit ngẫu nhiên). API chỉ lưu SHA-256 của `secret`; token không bao giờ xoay
+  vòng, nên request song song hay nhiều instance Web không phải phối hợp gì.
+- **Web** không có database người dùng. Ticket của auth cookie (Data Protection mã hoá, `HttpOnly`) chỉ chứa dữ liệu bất
+  biến: session token, session id và user id. Tên, email, role, permission KHÔNG nằm trong cookie: Web lấy từ API `me`
+  mỗi request (cache ngắn, mặc định 10 giây) rồi **thay** `HttpContext.User`. Server Web không lưu gì theo phiên.
+- `SessionBearerHandler` (một `DelegatingHandler`) gắn `Authorization: Bearer {sessionId}.{secret}` vào mọi lời gọi API và
+  gửi đúng một lần. API trả 401 thì ném `SessionExpiredException`; `SessionExpiredMiddleware` bắt nó, xoá cookie và chuyển
+  về trang đăng nhập (AJAX nhận 401 JSON).
+- **API là bên quyết định về phiên.** `SessionTokenAuthenticationHandler` kiểm token ở **mỗi request**: lấy dòng phiên qua
+  `SessionAccessCache` (mặc định 30 giây) → `ISessionAccessSource`, so hash secret trong thời gian cố định, kiểm thu hồi,
+  hạn và trần tuyệt đối, rồi dựng principal từ dữ liệu hiện tại. Hạn phiên trượt (sliding) do API ghi, tối đa một lần mỗi
+  `SessionTouchInterval` (mặc định 1 giờ) cho mỗi phiên.
+- Cookie hết hạn ở **trần tuyệt đối** của phiên (giá trị API trả lúc đăng nhập) và không bao giờ được cấp lại; trước mốc
+  đó, phiên sống hay chết là do API trả lời.
+- Đổi tên/email/role/permission của user chỉ có hiệu lực sau thời gian cache (API 30 giây, Web 10 giây), trừ khi app gọi
+  invalidate (`SessionAccessCache` ở API, `CurrentUserCache` ở Web).
 
 ## Auth.Web — host Web (MVC/Razor)
 
@@ -54,8 +58,8 @@ Web và API là hai app tách biệt: Web cài `Auth.Web`, API cài `Auth.Api`. 
 
 | Interface | Ai gọi | Việc phải làm |
 |---|---|---|
-| `IAuthApiClient` (`Auth.Web`) | Thư viện, khi refresh token và khi dựng user hiện tại | Gọi API `refresh`, `me`, `logout`. API từ chối `refresh`/`me` bằng 401/403 thì **phải** ném `SessionExpiredException`; mọi exception khác coi là lỗi tạm và **không** đăng xuất |
-| `ISessionAccessSource` (`Auth.Api`) | Thư viện, ở host API | Xem [Auth.Api](#authapi--host-api-jwt) |
+| `IAuthApiClient` (`Auth.Web`) | Thư viện, khi dựng user hiện tại và khi đăng xuất | Gọi API `me`, `logout`. API từ chối `me` bằng 401/403 thì **phải** ném `SessionExpiredException`; mọi exception khác coi là lỗi tạm và **không** đăng xuất |
+| `ISessionAccessSource` (`Auth.Api`) | Thư viện, ở host API | Xem [Auth.Api](#authapi--host-api-session-token) |
 
 Ví dụ cài `IAuthApiClient` tối thiểu bằng `HttpClient`, dùng helper `ThrowIfSessionRejected`
 (401/403 thì ném `SessionExpiredException`, status khác không làm gì):
@@ -68,27 +72,11 @@ using TqkLibrary.Asp.ToolKit.Auth.Web.Models;
 
 public sealed class MyAuthApiClient(HttpClient http) : IAuthApiClient
 {
-    public async Task<AuthTokenPair> RefreshAsync(string refreshToken, CancellationToken ct)
-    {
-        using var response = await http.PostAsJsonAsync("auth/refresh", new { refreshToken }, ct);
-        response.ThrowIfSessionRejected();       // 401/403 -> SessionExpiredException -> đăng xuất
-        response.EnsureSuccessStatusCode();      // 5xx, ... -> lỗi tạm, giữ cookie
-        var dto = await response.Content.ReadFromJsonAsync<MyTokenDto>(ct);
-        return new AuthTokenPair
-        {
-            SessionId = dto!.SessionId,
-            AccessToken = dto.AccessToken,
-            AccessTokenExpiresAt = dto.AccessTokenExpiresAt,     // UTC
-            RefreshToken = dto.RefreshToken,
-            RefreshTokenExpiresAt = dto.RefreshTokenExpiresAt,   // UTC
-        };
-    }
-
     public async Task<CurrentUserInfo> GetCurrentUserAsync(CancellationToken ct)
     {
         using var response = await http.GetAsync("auth/me", ct);
-        response.ThrowIfSessionRejected();
-        response.EnsureSuccessStatusCode();
+        response.ThrowIfSessionRejected();       // 401/403 -> SessionExpiredException -> đăng xuất
+        response.EnsureSuccessStatusCode();      // 5xx, ... -> lỗi tạm, giữ cookie
         var dto = await response.Content.ReadFromJsonAsync<MyMeDto>(ct);
         return new CurrentUserInfo { Id = dto!.Id, UserName = dto.UserName, Roles = dto.Roles, Permissions = dto.Permissions };
     }
@@ -103,9 +91,8 @@ public sealed class MyAuthApiClient(HttpClient http) : IAuthApiClient
 
 Lưu ý:
 
-- `RefreshAsync` được thư viện chạy trong `AnonymousApiScope`, nên `HttpClient` có gắn `SessionBearerHandler` cũng không bị đệ quy.
-- Ngược lại, **đừng** biến lỗi tạm (5xx, timeout, mất mạng) thành `SessionExpiredException` — người dùng sẽ bị đăng xuất oan.
-- `SessionBearerHandler` cũng tự ném `SessionExpiredException` khi API trả 401 sau khi đã refresh.
+- **Đừng** biến lỗi tạm (5xx, timeout, mất mạng) thành `SessionExpiredException` — người dùng sẽ bị đăng xuất oan.
+- `SessionBearerHandler` tự ném `SessionExpiredException` khi API trả 401 cho bất kỳ lời gọi nào có gắn token.
 
 ### Đăng ký trong `Program.cs` (Web)
 
@@ -118,17 +105,12 @@ builder.Services.AddTqkWebAuth(
     {
         cookie.Cookie.Name = "app_auth";
         cookie.LoginPath = "/account/login";
-        cookie.ExpireTimeSpan = TimeSpan.FromDays(30);
     },
-    options =>
-    {
-        options.AnonymousPathSuffixes.Add("/auth/login");      // endpoint API ẩn danh: không gắn bearer
-        options.AnonymousPathSuffixes.Add("/auth/refresh");
-    });
+    options => options.AnonymousPathSuffixes.Add("/auth/login"));   // endpoint API ẩn danh: không gắn token
 
 builder.Services
     .AddHttpClient<IAuthApiClient, MyAuthApiClient>(c => c.BaseAddress = new Uri(apiUrl))
-    .AddTqkSessionBearer();         // gắn bearer + refresh
+    .AddTqkSessionBearer();         // gắn session token làm bearer
 
 var app = builder.Build();
 app.UseAuthentication();
@@ -136,29 +118,27 @@ app.UseTqkWebSession();             // SessionExpiredMiddleware + CurrentUserMid
 app.UseAuthorization();
 ```
 
-Đăng nhập / đăng xuất (token lấy từ API login):
+Đăng nhập / đăng xuất (giá trị lấy từ API login):
 
 ```csharp
-await sessionManager.SignInAsync(HttpContext, tokens, persistent: model.RememberMe);   // WebSessionManager
-await sessionManager.SignOutAsync(HttpContext);                                        // gọi API logout rồi xoá cookie
+await sessionManager.SignInAsync(HttpContext, new AuthSession                     // WebSessionManager
+{
+    SessionToken = login.SessionToken,     // {sessionId}.{secret}
+    UserId = login.UserId,
+    ExpiresAt = login.ExpiresAt,           // trần tuyệt đối của phiên (UTC); null = now + ExpireTimeSpan của cookie
+}, persistent: model.RememberMe);
+await sessionManager.SignOutAsync(HttpContext);                                  // gọi API logout rồi xoá cookie
 ```
 
 #### Gọi API ẩn danh: `AnonymousApiScope`
 
-Mọi request đi qua client có `AddTqkSessionBearer()` đều được `SessionBearerHandler` gắn token của người đang xem
-(và refresh nếu token sắp hết hạn). `AnonymousApiScope.RunAsync(...)` tắt việc đó cho các lời gọi nằm bên trong: request
-đi ra nguyên trạng, không bearer, không refresh, không thử lại khi 401.
+Mọi request đi qua client có `AddTqkSessionBearer()` đều được `SessionBearerHandler` gắn token của người đang xem.
+`AnonymousApiScope.RunAsync(...)` tắt việc đó cho các lời gọi nằm bên trong: request đi ra nguyên trạng, không bearer,
+401 được trả nguyên thay vì thành `SessionExpiredException`.
 
-Vì sao cần:
-
-1. **Refresh token không được đi qua handler.** Thư viện gọi `IAuthApiClient.RefreshAsync` trong lúc đang giữ khoá
-   của ticket. App thường viết hàm đó bằng chính client có `SessionBearerHandler`; nếu handler xử lý lời gọi này, nó sẽ
-   chờ đúng cái khoá đang bị giữ (treo tới `RefreshTimeout`), gắn access token cũ và đòi refresh lồng nhau. Thư viện tự
-   bọc lời gọi refresh trong scope, nên app viết `RefreshAsync` kiểu gì cũng an toàn.
-2. **Dữ liệu dùng chung cho mọi người.** Hàm tải của cache dùng chung chạy với token của request nào kích hoạt nó
-   trước. Nếu đó là admin, dữ liệu riêng của admin bị cache và hiện cho khách; nếu session của người đó vừa hết hạn,
-   lỗi `SessionExpiredException` bị trao cho mọi request đang chờ cùng cache. Bọc lời gọi trong scope thì ai kích hoạt
-   cũng ra cùng một lời gọi ẩn danh.
+Vì sao cần: hàm tải của cache dùng chung chạy với token của request nào kích hoạt nó trước. Nếu đó là admin, dữ liệu
+riêng của admin bị cache và hiện cho khách; nếu session của người đó vừa hết hạn, lỗi `SessionExpiredException` bị trao
+cho mọi request đang chờ cùng cache. Bọc lời gọi trong scope thì ai kích hoạt cũng ra cùng một lời gọi ẩn danh.
 
 ```csharp
 public Task<IReadOnlyList<NewsItem>> GetLatestAsync(CancellationToken ct)
@@ -170,8 +150,7 @@ public Task<IReadOnlyList<NewsItem>> GetLatestAsync(CancellationToken ct)
 ```
 
 So với `AnonymousPathSuffixes`: endpoint **luôn** ẩn danh (login, quên mật khẩu) thì khai một lần ở đó; scope dành cho
-endpoint lúc cần token, lúc không (cùng `GetLatestNewsAsync` vừa được gọi riêng cho người đăng nhập, vừa được tải ẩn
-danh cho cache chung).
+endpoint lúc cần token, lúc không.
 
 Cách hoạt động và nhiều người dùng cùng lúc:
 
@@ -183,8 +162,9 @@ Cách hoạt động và nhiều người dùng cùng lúc:
 
 Về cookie:
 
-- Thư viện đặt sẵn `HttpOnly`, `SameSite=Lax` và **`SlidingExpiration = false`**: ticket đã tự trượt theo hạn refresh token mỗi khi
-  làm mới token (không bao giờ vượt hạn refresh token); sliding của cookie handler có thể kéo hạn vượt hạn refresh. Vẫn ghi đè được trong delegate `cookie => ...`.
+- Thư viện đặt sẵn `HttpOnly`, `SameSite=Lax` và **`SlidingExpiration = false`**: ticket hết hạn ở `AuthSession.ExpiresAt`
+  (trần tuyệt đối của phiên) và không bao giờ được cấp lại, vì API tự trượt phiên. `ExpireTimeSpan` chỉ dùng khi
+  `ExpiresAt` là null. Vẫn ghi đè được trong delegate `cookie => ...`.
 - Ngoài môi trường Development, cookie chỉ đi qua HTTPS (`SecurePolicy = Always`).
 - `WebAuthOptions.Scheme` **chỉ** đặt được qua tham số `configure` của `AddTqkWebAuth` (cần biết lúc đăng ký). Delegate `configure` được gọi **hai lần**
   (một lần trên bản snapshot lúc đăng ký, một lần qua options), nên không được có side-effect ngoài đối tượng options.
@@ -194,119 +174,113 @@ Về cookie:
 | Option | Mặc định | Ý nghĩa |
 |---|---|---|
 | `Scheme` | `Cookies` | Tên scheme cookie |
-| `SessionIdClaimType` | `tqk_sid` | Claim duy nhất trong cookie: mã phiên API |
+| `SessionIdClaimType` | `tqk_sid` | Claim session id trong cookie (cookie còn có user id ở `ClaimTypes.NameIdentifier`) |
 | `PermissionClaimType` | `permission` | Claim permission trên principal dựng từ `me` |
-| `AccessTokenName` / `AccessTokenExpiresName` / `RefreshTokenName` / `RefreshTokenExpiresName` | `api_access_token` / `api_access_expires` / `api_refresh_token` / `api_refresh_expires` | Tên các mục token trong ticket |
-| `RefreshSkew` | 30 giây | Token hết hạn trong khoảng này thì refresh trước khi gửi |
-| `RefreshTimeout` | 30 giây | Timeout riêng của một lần refresh (không dùng token huỷ của request) |
-| `RefreshFallbackMargin` | 5 giây | Refresh chủ động lỗi tạm thì chỉ dùng tiếp token cũ nếu nó còn hạn ít nhất chừng này (tính sau lượt refresh) |
-| `IsTransientRefreshFailure` | `null` (dùng `SessionBearerHandler.DefaultIsTransientRefreshFailure`) | Phân loại lỗi refresh chủ động là tạm hay không. Mặc định chỉ biết `HttpRequestException` (không status hoặc không phải 4xx), timeout và `TimeoutException`; exception khác (vd `ApiException` riêng của app) bị coi là KHÔNG tạm, nên app bọc lỗi HTTP bằng kiểu riêng phải tự đặt hàm này. Chỉ đặt được bằng code, không bind từ cấu hình |
-| `CurrentUserTimeout` | 15 giây | Hạn chờ lấy user hiện tại (`me`); phải đủ cho refresh + API khởi động nguội |
+| `CurrentUserTimeout` | 15 giây | Hạn chờ lấy user hiện tại (`me`); phải đủ cho API khởi động nguội |
 | `CurrentUserCacheLifetime` | 10 giây | Cache `me` theo phiên |
-| `AnonymousPathSuffixes` | rỗng | Đuôi đường dẫn API ẩn danh (login, refresh, reset mật khẩu...) |
+| `AnonymousPathSuffixes` | rỗng | Đuôi đường dẫn API ẩn danh (login, reset mật khẩu...) |
 | `SessionExpiredMessage` | "Your session has expired. Please sign in again." | Thông báo trả cho AJAX / trong exception |
 
 ### Hành vi cần biết
 
-- Refresh **chủ động** (token sắp hết hạn) gặp lỗi tạm (5xx, mạng) mà access token hiện tại **còn hạn** thì ghi warning và gửi tiếp bằng token cũ,
-  không ném lỗi. Refresh **sau 401** hoặc khi token đã hết hạn thì lỗi tạm vẫn được ném ra, cookie vẫn giữ.
-- `me` lỗi tạm (mạng, 5xx, quá `CurrentUserTimeout`) → người dùng vẫn đăng nhập (chỉ có mã phiên) nhưng **không có permission nào**: trang admin trả "forbidden"
+- Mỗi lời gọi API là **đúng một lần gửi**: không refresh, không gửi lại. API chậm chỉ làm chậm đúng lời gọi đó.
+- `me` lỗi tạm (mạng, 5xx, quá `CurrentUserTimeout`) → người dùng vẫn đăng nhập (chỉ có session id và user id) nhưng **không có permission nào**: trang admin trả "forbidden"
   thay vì mở ra bằng dữ liệu cũ.
-- Body upload (multipart/stream) không được buffer nên không gửi lại được: 401 với body kiểu này coi như phiên hết hạn.
-- Một khi response đã bắt đầu gửi thì không ghi được header nữa: không xoá được cookie, cookie mới cũng không ghi được. Lần refresh ở request sau sẽ sửa lại.
+- Cookie do bản 1.x cấp không có session token: user bị coi như đã đăng xuất ở lời gọi API đầu tiên và phải đăng nhập lại.
+- Một khi response đã bắt đầu gửi thì không ghi được header nữa: không xoá được cookie; request sau nhận 401 từ API và sẽ xoá.
 
-## Auth.Api — host API (JWT)
+## Auth.Api — host API (session token)
 
 ### Interface app phải cài: `ISessionAccessSource`
 
-Chạy (qua `SessionAccessCache`) cho **mỗi request có xác thực**. Trả `SessionAccessResult.Reject(reason)` (lý do tùy chọn, đọc được trong `OnChallenge` qua `SessionTokenValidator.GetSessionRejection`) khi phiên bị thu hồi, hết hạn, thuộc user khác hoặc tài khoản không dùng được:
+`GetAsync(sessionId, ct)` chạy (qua `SessionAccessCache`) cho **mỗi request có token**. Trả về dòng phiên kèm dữ liệu
+hiện tại của user, **kể cả khi phiên đã thu hồi/hết hạn** (thư viện tự kiểm); chỉ trả `SessionAccessResult.Reject(reason)`
+khi phiên không tồn tại hoặc tài khoản không dùng được. `TouchAsync` lưu hạn trượt.
 
 ```csharp
 public sealed class SessionAccessSource(AppDbContext db) : ISessionAccessSource
 {
-    public async Task<SessionAccessResult> GetAsync(string sessionId, string userId, CancellationToken ct)
+    public async Task<SessionAccessResult> GetAsync(string sessionId, CancellationToken ct)
     {
-        // SessionAccessResult.Reject(SessionRejectionReasons.Revoked / Expired / UserLocked ...) khi phiên đã bị thu hồi /
-        // hết hạn / không thuộc userId / tài khoản bị khoá; SessionAccessRecord tự chuyển ngầm thành Grant
-        ...
-        return new SessionAccessRecord { UserId = userId, UserName = name, Roles = roles, Permissions = permissions };
+        // ... đọc dòng phiên + user; không có -> SessionAccessResult.Reject(); khoá -> Reject(SessionRejectionReasons.UserLocked)
+        return new SessionAccessRecord
+        {
+            UserId = user.Id, SecretHash = session.SecretHash,
+            CreatedAt = session.CreatedAt, LastAccessAt = session.LastAccessAt, ExpiresAt = session.ExpiresAt,
+            IsPersistent = session.IsPersistent, IsRevoked = session.RevokedAt != null,
+            UserName = user.UserName, Email = user.Email, Roles = roles, Permissions = permissions,
+        };
     }
+
+    public Task TouchAsync(string sessionId, DateTime lastAccessAt, DateTime expiresAt, CancellationToken ct)
+        => db.Sessions.Where(s => s.Id == sessionId && s.RevokedAt == null)
+            .ExecuteUpdateAsync(u => u.SetProperty(s => s.LastAccessAt, lastAccessAt).SetProperty(s => s.ExpiresAt, expiresAt), ct);
 }
 ```
 
-`SessionAccessRecord` được cache và dùng chung giữa các request: không sửa nó.
+`SessionAccessRecord` được cache và dùng chung giữa các request: không sửa nó. Bảng phiên và entity nằm ở app, không ở
+thư viện. Muốn về sau gắn thêm dữ liệu theo phiên (vd public key của thiết bị) thì thêm cột ở app; định dạng token không đổi.
 
 ### Đăng ký trong `Program.cs` (API)
 
 ```csharp
 builder.Services.AddTqkApiAuth(o =>
 {
-    o.Issuer = "my-api";
-    o.SigningKey = builder.Configuration["Tokens:Key"]!;       // tối thiểu 32 byte (UTF-8)
+    o.SessionLifetimes = new SessionLifetimes(TimeSpan.FromDays(7), Persistent: TimeSpan.FromDays(30));
     o.MaxSessionLifetime = TimeSpan.FromDays(90);              // tuỳ chọn; mặc định không giới hạn
 });
 builder.Services.AddScoped<ISessionAccessSource, SessionAccessSource>();
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddTqkJwtBearer();
+builder.Services.AddAuthentication(SessionTokenDefaults.AuthenticationScheme).AddTqkSessionToken(o =>
+{
+    // Tuỳ chọn: body 401 riêng kèm lý do (context.Rejection?.Reason), rồi context.HandleResponse().
+    o.OnChallenge = context => Task.CompletedTask;
+});
 ```
 
-Phát hành và refresh (trong auth service của app):
+Đăng nhập (trong auth service của app):
 
 ```csharp
-// Đăng nhập
-var refresh = RefreshTokenCodec.Create(sessionId);              // lưu refresh.SecretHash cùng phiên
-var expires = slidingPolicy.GetInitialExpiry(now);              // hạn phiên
-var access = accessTokenFactory.Create(userId, sessionId, now);
-
-// Refresh: trả lại CÙNG refresh token, chỉ trượt hạn phiên
-if (!RefreshTokenCodec.TryParse(token, out var sid, out var secret)
-    || !RefreshTokenCodec.Verify(secret, session.SecretHash)) return Unauthorized();
-var next = slidingPolicy.GetNextExpiry(session.CreatedAt, now);  // null = đã chạm trần MaxSessionLifetime
+var issued = SessionTokenCodec.Create(sessionId);               // lưu issued.SecretHash cùng phiên, KHÔNG lưu token
+var expires = slidingPolicy.GetInitialExpiry(now, persistent: model.RememberMe);
+// ... thêm dòng phiên (CreatedAt = now, ExpiresAt = expires, IsPersistent = RememberMe)
+return new { sessionToken = issued.Token, userId, expiresAt = slidingPolicy.GetAbsoluteExpiry(now) };   // hạn cookie cho Web
 ```
 
-Refresh token có dạng `<sessionId>.<secret>`; chỉ lưu hash của `secret`. Trả 401 cho cả refresh sai lẫn phiên đã chết,
-để phía Web đăng xuất đúng (xem `ThrowIfSessionRejected`).
+Không còn endpoint refresh. Đăng xuất: đánh dấu phiên đã thu hồi rồi `SessionAccessCache.InvalidateSession(sessionId)`.
+
+Lý do từ chối (`invalid_token` cho token sai dạng hoặc sai secret, `revoked`, `expired`, hoặc lý do app trả) đọc được
+trong `OnChallenge` qua `context.Rejection` và qua `HttpContext.GetSessionRejection()`. Token không bao giờ bị ghi log.
 
 ### Options của API (`ApiAuthOptions`)
 
 | Option | Mặc định | Ý nghĩa |
 |---|---|---|
-| `Issuer` | bắt buộc | Issuer của token |
-| `Audience` | `Issuer` | Audience (rỗng = như issuer) |
-| `SigningKey` | bắt buộc | Khoá HMAC-SHA256, tối thiểu 32 byte |
-| `UserIdClaimType` / `SessionIdClaimType` / `PermissionClaimType` | `sub` / `sid` / `permission` | Loại claim |
-| `AccessTokenLifetime` | 15 phút | Hạn access token |
-| `SessionLifetimes` | `new(30 ngày)` | Hạn trượt của phiên / refresh token: `Normal` và `Persistent` ("ghi nhớ đăng nhập", null = như `Normal`), chọn theo tham số `persistent` của `SlidingSessionPolicy` |
+| `UserIdClaimType` / `SessionIdClaimType` / `PermissionClaimType` | `sub` / `sid` / `permission` | Loại claim trên principal |
+| `SessionLifetimes` | `new(30 ngày)` | Hạn trượt của phiên: `Normal` và `Persistent` ("ghi nhớ đăng nhập", null = như `Normal`), chọn theo cờ `IsPersistent` của phiên |
 | `MaxSessionLifetime` | không | Trần tuyệt đối tính từ lúc đăng nhập |
-| `ClockSkew` | 0 | Độ lệch đồng hồ cho phép |
+| `SessionTouchInterval` | 1 giờ | Khoảng tối thiểu giữa hai lần ghi hạn trượt của một phiên (mỗi process); phải ngắn hơn mọi lifetime. 0 = mỗi request |
 | `SessionAccessCacheLifetime` | 30 giây | Cache kết quả `ISessionAccessSource` theo phiên |
 
 Options được kiểm khi khởi động (`ValidateOnStart`).
-
-### Lưu ý khi cấu hình JwtBearer
-
-- `AddTqkJwtBearer(configure)` chạy `configure` **sau** khi thư viện đã đặt `TokenValidationParameters`. App gán lại
-  `TokenValidationParameters = new(...)` sẽ **ghi đè** cấu hình thư viện (khoá ký, issuer, audience...). Hãy chỉnh trên instance có sẵn.
-- **Không dùng `JwtBearerOptions.EventsType`.** Khi có `EventsType`, handler lấy events từ container và bỏ qua `JwtBearerOptions.Events` — nơi thư viện gắn bước kiểm phiên,
-  nên phiên bị thu hồi vẫn được chấp nhận. Thư viện chặn tình huống này: options ném `InvalidOperationException` ở lần dùng đầu tiên.
-  Cần events riêng thì gọi `SessionTokenValidator.ValidateAsync(context)` từ `OnTokenValidated` của events type đó (sau các kiểm tra của app).
 
 ## Điều kiện bắt buộc phía API
 
 Web và API chỉ chạy đúng khi API tuân thủ các điều kiện sau:
 
-1. **Refresh token không dùng một lần.** Không xoay vòng, không vô hiệu hoá refresh token cũ khi refresh. Nhiều request/instance Web có thể refresh
-   cùng lúc bằng cùng một refresh token; xoay vòng sẽ làm các request thua cuộc bị đăng xuất.
-2. **Refresh chỉ trượt hạn phiên** (`SlidingSessionPolicy.GetNextExpiry`), trả lại cùng refresh token, và trả access token mới.
-3. **Endpoint refresh và `me` trả 401/403 khi phiên đã chết** (hết hạn, thu hồi, tài khoản bị khoá). Lỗi 5xx chỉ dùng cho lỗi tạm.
-4. **Thu hồi / đổi quyền phải gọi invalidate `SessionAccessCache` ngay sau khi ghi thành công:**
+1. **Session token không xoay vòng.** Phát một lần lúc đăng nhập, dùng tới khi phiên chết.
+2. **Mọi endpoint có xác thực (kể cả `me`) trả 401 khi phiên đã chết** (hết hạn, thu hồi, tài khoản bị khoá) — handler
+   của thư viện làm việc này. Lỗi 5xx chỉ dùng cho lỗi tạm.
+3. **Thu hồi / đổi quyền phải gọi invalidate `SessionAccessCache` ngay sau khi ghi thành công:**
    - `InvalidateSession(sessionId)` khi đăng xuất / thu hồi một phiên;
    - `InvalidateUser(userId)` khi đổi mật khẩu, khoá/xoá tài khoản, đổi role hoặc tên/email;
    - `InvalidateAll()` khi permission của role đổi, role bị đổi tên/xoá.
 
    `InvalidateSession` / `InvalidateUser` chỉ bỏ entry của đúng phiên / user đó; lượt tra cứu đang chạy dở lúc invalidate không được dùng lại.
-   Không gọi invalidate thì phiên bị thu hồi vẫn hợp lệ tới hết `SessionAccessCacheLifetime`.
-5. **Nhiều instance API:** cache là theo process, invalidate chỉ tới instance xử lý lần ghi; các instance khác trễ tối đa `SessionAccessCacheLifetime`
+   Không gọi invalidate thì thay đổi chỉ có hiệu lực sau `SessionAccessCacheLifetime`.
+4. **Nhiều instance API:** cache là theo process, invalidate chỉ tới instance xử lý lần ghi; các instance khác trễ tối đa `SessionAccessCacheLifetime`
    (hoặc dùng thêm kênh chung như Redis pub/sub, hoặc kênh HTTP của `Caching` nếu phù hợp).
+5. **Job dọn bảng phiên:** chạy nền định kỳ, xoá theo lô (vd 1000 dòng một lượt) các phiên đã hết hạn hoặc đã thu hồi
+   lâu hơn một khoảng lưu giữ (vd 30 ngày), để bảng không phình mãi.
 
 ## Caching
 
@@ -452,15 +426,14 @@ var result = await ticket.Completion;      // ticket.QueuePosition cho biết v�
 
 | Bẫy | Hậu quả | Cách xử lý |
 |---|---|---|
-| Hạn chờ `me` (`CurrentUserTimeout`) quá ngắn | Request ngẫu nhiên chạy không có permission khi API khởi động nguội hoặc đang refresh token | Giữ >= 15 giây; phải đủ cho một lần refresh + cold start |
+| Hạn chờ `me` (`CurrentUserTimeout`) quá ngắn | Request ngẫu nhiên chạy không có permission khi API khởi động nguội | Giữ >= 15 giây; phải đủ cho cold start |
 | IIS cho app "ngủ" (idle timeout, recycle) | Cache và hàng đợi gửi vô hiệu hoá mất; lô đang chờ bị bỏ; lần đầu sau khi ngủ rất chậm | Đặt Start Mode `AlwaysRunning`, tắt idle timeout / bật preload cho app pool của cả Web lẫn API |
-| Dùng `JwtBearerOptions.EventsType` | Bước kiểm phiên bị bỏ qua | Thư viện ném `InvalidOperationException`; gọi `SessionTokenValidator.ValidateAsync` từ events type của app |
-| App gán lại `TokenValidationParameters` | Mất khoá ký/issuer/audience của thư viện | Chỉnh instance có sẵn, đừng `new` |
-| Token (hoặc ticket) to | Cookie bị chia chunk, có thể vượt giới hạn header của proxy/IIS/nginx (lỗi 400/431) | Giữ access token gọn (chỉ `sub`, `sid`, `jti`), không nhét claim/permission vào token; nới giới hạn header của proxy nếu cần |
+| Nhét thêm dữ liệu vào ticket cookie | Cookie bị chia chunk, có thể vượt giới hạn header của proxy/IIS/nginx (lỗi 400/431) | Ticket chỉ giữ session token, session id, user id; dữ liệu khác lấy từ `me` |
 | Nhiều instance Web | Cookie giải mã được ở instance này mà không giải mã được ở instance kia | Dùng chung key ring Data Protection và cùng `ApplicationName` (`AddDataProtection().SetApplicationName(...).PersistKeysToFileSystem(...)`); mất key ring = mọi người phải đăng nhập lại |
 | Nhiều instance API | Invalidate `SessionAccessCache` chỉ tới instance xử lý lần ghi | Chấp nhận trễ tới `SessionAccessCacheLifetime`, hoặc thêm kênh chung |
 | Nhiều instance Web + cache | Một instance bị invalidate, instance khác thì không | Gửi tín hiệu tới từng instance qua kênh HTTP (mỗi instance có endpoint riêng) hoặc chấp nhận chờ TTL |
-| Refresh token bị API xoay vòng một lần dùng | Request song song bị đăng xuất | Xem [Điều kiện bắt buộc phía API](#điều-kiện-bắt-buộc-phía-api) |
+| Ghi log header `Authorization` hoặc session token | Lộ token dùng được tới khi phiên hết hạn | Không log token; thư viện chỉ log session id |
+| Không có job dọn bảng phiên | Bảng phiên phình mãi | Xem [Điều kiện bắt buộc phía API](#điều-kiện-bắt-buộc-phía-api) |
 | `IAuthApiClient` biến lỗi tạm thành `SessionExpiredException` (hoặc nuốt 401/403) | Đăng xuất oan, hoặc phiên chết mà không đăng xuất | Chỉ 401/403 -> `SessionExpiredException` (dùng `ThrowIfSessionRejected`), lỗi khác để nguyên |
 | Hàm `load` của cache không có timeout | Lần nạp đầu treo sẽ chặn mọi caller chưa có giá trị cũ | Tự đặt timeout (ví dụ `CancellationTokenSource.CancelAfter`) trong `load` |
 | `load` capture giá trị đã tính | `Invalidate` không an toàn, dữ liệu cũ được ghi lại | Đọc dữ liệu bên trong lambda |
