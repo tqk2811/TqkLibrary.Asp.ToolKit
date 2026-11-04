@@ -104,6 +104,12 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
             if (!check.Applicable || check.Failure is not { } reason)
                 return DeviceProofResult.Proceed;
             var outcome = await DecideAsync(context, sessionId, reason, user).ConfigureAwait(false);
+            if (outcome == DeviceProofOutcome.SignOut && context.Response.HasStarted)
+            {
+                // The handler already wrote the response: the cookies can no longer be deleted (read-only headers).
+                _logger.LogDebug("DBSC: the proof failure handler returned SignOut for session {SessionId} after starting the response; treated as Handled.", sessionId);
+                outcome = DeviceProofOutcome.Handled;
+            }
             _metrics.ProofFailure(DeviceBoundMetrics.ReasonTag(reason), outcome);
             // Debug, not Warning: a browser that lost its DBSC session fails on EVERY request until the next sign-in;
             // the counter tqk.auth.dbsc.proof_failures is the signal to watch.
@@ -120,7 +126,11 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
                 case DeviceProofOutcome.Handled:
                     RejectRequest(context);
                     if (!context.Response.HasStarted)
-                        _logger.LogDebug("DBSC: the proof failure handler returned Handled for session {SessionId} without starting the response.", sessionId);
+                    {
+                        // Nothing written: answer 403 (no body) rather than an empty 200.
+                        _logger.LogDebug("DBSC: the proof failure handler returned Handled for session {SessionId} without starting the response; answering 403.", sessionId);
+                        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                    }
                     return DeviceProofResult.Handled;
                 default:
                     RejectRequest(context);
@@ -146,7 +156,14 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
                     User = user,
                 }).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException || !context.RequestAborted.IsCancellationRequested)
+            catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+            {
+                // The request was aborted: it must not keep the session token for whatever still runs (Response.OnCompleted,
+                // an exception handler) while the cancellation propagates.
+                RejectRequest(context);
+                throw;
+            }
+            catch (Exception ex)
             {
                 _logger.LogError(ex, "DBSC: the proof failure handler threw; using the default outcome {Outcome}.", fallback);
                 return fallback;

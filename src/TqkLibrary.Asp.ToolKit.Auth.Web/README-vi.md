@@ -248,7 +248,8 @@ của phiên khác (`WrongSession`), hoặc proof không hợp lệ hay làm cho
 - `SignOut`: thu hồi phiên trên API (`IAuthApiClient.LogoutAsync`, cố gắng), xoá cookie chính và cookie proof, request
   chạy như khách.
 - `Handled` (chỉ handler tự viết): handler đã tự ghi response; pipeline dừng ngay tại đó, không gửi token, không cache
-  user, hai cookie để nguyên.
+  user, hai cookie để nguyên. Handler trả `Handled` mà chưa bắt đầu response thì nhận 403 không có body; handler trả
+  `SignOut` sau khi đã bắt đầu response thì được coi là `Handled` (không xoá được cookie nữa, phiên không bị thu hồi).
 
 Handler mặc định trả `context.DefaultMode` dưới dạng outcome: `FailureMode` cố định, hoặc lựa chọn hợp lệ của người
 dùng (xem dưới). Muốn tuỳ biến thì kế thừa nó và đăng ký lớp con (trước hay sau `AddTqkWebAuth` đều được); service

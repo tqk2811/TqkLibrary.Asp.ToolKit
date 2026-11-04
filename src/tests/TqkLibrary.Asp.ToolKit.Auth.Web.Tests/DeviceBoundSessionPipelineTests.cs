@@ -94,7 +94,8 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
 
         private static async Task<Harness> StartAsync(Action<DeviceBoundSessionOptions>? configure = null, bool https = true,
             bool enabled = true, Action<Microsoft.AspNetCore.Routing.IEndpointRouteBuilder>? mapEndpoints = null,
-            Action<WebAuthOptions>? configureWeb = null, Action<IApplicationBuilder>? beforeRouting = null)
+            Action<WebAuthOptions>? configureWeb = null, Action<IApplicationBuilder>? beforeRouting = null,
+            Action<IServiceCollection>? configureServices = null)
         {
             var keyApi = new FakeDeviceKeyApi();
             var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
@@ -110,6 +111,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
                 services.AddSingleton<IDeviceKeyApiClient>(keyApi);
                 services.Replace(ServiceDescriptor.Singleton<TimeProvider>(clock));
                 services.AddSingleton<DeviceProofFailureHandler>(handler);
+                configureServices?.Invoke(services);
             }, endpoints =>
             {
                 endpoints.MapGet("/sign-out", async (HttpContext context, WebSessionManager sessions) =>
@@ -539,6 +541,20 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
 
             Assert.Equal(HttpStatusCode.ServiceUnavailable, refresh.StatusCode);
             Assert.True(h.App.Cookies.ContainsKey(MainCookie));
+        }
+
+        [Fact]
+        public async Task Refresh_MatchingSession_MeReportsNoKey_ContinueFalse_LoggedAsError()
+        {
+            var logs = new ListLoggerProvider();
+            await using var h = await StartAsync(configureServices: s => s.AddSingleton<Microsoft.Extensions.Logging.ILoggerProvider>(logs));
+            await h.App.SignInAsync(Sid); // the app's `me` returns no key (contract bug)
+
+            using var refresh = await PostAsync(h.App, "/dbsc/refresh", sessionId: DeviceBoundSessionMiddleware.SessionIdentifier(Sid));
+
+            Assert.False(Continues(await refresh.Content.ReadAsStringAsync()));
+            Assert.Contains(logs.Entries, e => e.Level == Microsoft.Extensions.Logging.LogLevel.Error
+                && e.Category == typeof(DeviceBoundSessionMiddleware).FullName && e.Message.Contains("deviceKeyJwk", StringComparison.Ordinal));
         }
 
         // ---------- enforcement ----------
@@ -1019,6 +1035,68 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             Assert.Empty(WebAuthTestApp.SetCookies(response));
             Assert.Equal("garbage", h.App.Cookies[ProofCookie]);
             Assert.True(h.App.Cookies.ContainsKey(MainCookie));
+        }
+
+        [Fact]
+        public async Task Handler_HandledWithoutResponse_Answers403WithoutBody()
+        {
+            await using var h = await StartAsync();
+            h.Handler.Outcome = _ => ValueTask.FromResult(DeviceProofOutcome.Handled);
+            await SignInAndBindAsync(h);
+            h.App.RemoveCookie(ProofCookie);
+
+            using var response = await h.App.SendAsync(HttpMethod.Get, "/call");
+
+            Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+            Assert.Equal(string.Empty, await response.Content.ReadAsStringAsync());
+            Assert.Empty(h.CallAuthorizations);
+        }
+
+        [Fact]
+        public async Task Handler_SignOutAfterStartingTheResponse_TreatedAsHandled()
+        {
+            await using var h = await StartAsync();
+            h.Handler.Outcome = async context =>
+            {
+                await context.HttpContext.Response.WriteAsync("custom");
+                return DeviceProofOutcome.SignOut;
+            };
+            await SignInAndBindAsync(h);
+            h.App.RemoveCookie(ProofCookie);
+
+            using var response = await h.App.SendAsync(HttpMethod.Get, "/call");
+
+            // No exception from deleting cookies on read-only headers: the handler's response stands, nothing else runs.
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal("custom", await response.Content.ReadAsStringAsync());
+            Assert.Empty(h.CallAuthorizations);
+            Assert.Equal(0, h.App.Api.LogoutCalls);
+            Assert.True(h.App.Cookies.ContainsKey(MainCookie));
+        }
+
+        [Fact]
+        public async Task Handler_CancelledByAbortedRequest_RequestIsRejectedBeforeRethrow()
+        {
+            await using var h = await StartAsync();
+            WebSessionTicket? ticket = null;
+            h.Handler.Outcome = context =>
+            {
+                ticket = WebSessionTicket.For(context.HttpContext);
+                context.HttpContext.Abort();
+                context.HttpContext.RequestAborted.ThrowIfCancellationRequested();
+                return ValueTask.FromResult(DeviceProofOutcome.Continue);
+            };
+            await SignInAndBindAsync(h);
+            h.App.RemoveCookie(ProofCookie);
+
+            await Assert.ThrowsAnyAsync<Exception>(async () =>
+            {
+                using var _ = await h.App.SendAsync(HttpMethod.Get, "/call");
+            });
+
+            Assert.NotNull(ticket);
+            Assert.True(ticket!.Rejected);
+            Assert.Empty(h.CallAuthorizations);
         }
 
         [Fact]

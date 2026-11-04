@@ -257,6 +257,11 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
             services.GetRequiredService<CurrentUserCache>().Set(sessionId, user);
             if (!user.IsDeviceBound)
             {
+                // Only reached when Sec-Secure-Session-Id matches this session: the browser holds a DBSC session made by
+                // this web for it, so the API must know the key. Most likely the app's `me` does not return
+                // deviceKeyJwk / deviceKeyAlgorithm: a contract bug, not a silent downgrade.
+                _logger.LogError("DBSC: refresh for session {SessionId} whose DBSC session id matches, but me reports no device key; "
+                    + "the me endpoint most likely does not return deviceKeyJwk/deviceKeyAlgorithm. The browser's DBSC session is ended.", sessionId);
                 services.GetRequiredService<DeviceBindingCache>().MarkUnbound(sessionId, options.DeviceBound.UnboundRecheckInterval);
                 return (KeyLookupStatus.NotBound, null);
             }

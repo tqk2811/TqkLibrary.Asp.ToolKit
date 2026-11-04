@@ -254,7 +254,9 @@ session (`WrongSession`), or an invalid one or one made for another key (`Invali
 - `SignOut`: the session is revoked on the API (`IAuthApiClient.LogoutAsync`, best effort), the main and proof cookies
   are deleted, the request runs as a guest.
 - `Handled` (custom handlers only): the handler wrote the response itself; the pipeline stops right there, no token is
-  sent, the user is not cached and both cookies stay as they are.
+  sent, the user is not cached and both cookies stay as they are. A handler that returns `Handled` without starting
+  the response gets a 403 without body; one that returns `SignOut` after starting the response is treated as
+  `Handled` (the cookies can no longer be deleted, the session is not revoked).
 
 The default handler returns `context.DefaultMode` as an outcome: the fixed `FailureMode`, or the user's allowed choice
 (see below). To customise, subclass it and register the subclass (before or after `AddTqkWebAuth`); scoped services

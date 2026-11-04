@@ -20,7 +20,9 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
 
         /// <summary>
         /// The handler wrote the response itself: the library stops the pipeline right there (the rest of the app does not
-        /// run), sends no session token, does not cache the user and leaves both cookies as they are.
+        /// run), sends no session token, does not cache the user and leaves both cookies as they are. Returned without
+        /// starting the response: the library answers 403 without body. (A <see cref="SignOut"/> returned after the
+        /// handler started the response is treated as this outcome.)
         /// </summary>
         Handled,
     }
