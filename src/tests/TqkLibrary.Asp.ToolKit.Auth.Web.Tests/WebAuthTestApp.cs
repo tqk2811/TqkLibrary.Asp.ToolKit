@@ -48,7 +48,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
         public static async Task<WebAuthTestApp> StartAsync(Action<WebAuthOptions>? configure = null,
             Action<IServiceCollection>? configureServices = null, Action<IEndpointRouteBuilder>? mapEndpoints = null,
             Action<IApplicationBuilder>? beforeWebSession = null, Action<Microsoft.AspNetCore.Authentication.Cookies.CookieAuthenticationOptions>? configureCookie = null,
-            bool https = false)
+            bool https = false, Action<IApplicationBuilder>? beforeRouting = null)
         {
             var api = new FakeAuthApi();
             var host = new HostBuilder()
@@ -68,6 +68,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
                     })
                     .Configure(app =>
                     {
+                        beforeRouting?.Invoke(app);
                         app.UseRouting();
                         app.UseAuthentication();
                         beforeWebSession?.Invoke(app);
@@ -107,6 +108,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
                     }))
                 .Build();
             await host.StartAsync();
+            api.Services = host.Services;
             return new WebAuthTestApp(host, api, https);
         }
 
@@ -189,10 +191,16 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
     {
         public string? LastAuthorization { get; private set; }
 
+        /// <summary>Status answered (default 200); a 401 comes with <c>WWW-Authenticate: Bearer</c> like Auth.Api.</summary>
+        public System.Net.HttpStatusCode Status { get; init; } = System.Net.HttpStatusCode.OK;
+
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             LastAuthorization = request.Headers.Authorization?.ToString();
-            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK));
+            var response = new HttpResponseMessage(Status);
+            if (Status == System.Net.HttpStatusCode.Unauthorized)
+                response.Headers.WwwAuthenticate.ParseAdd("Bearer");
+            return Task.FromResult(response);
         }
     }
 
@@ -203,10 +211,31 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
         public int MeCalls => _meCalls;
         public Func<CurrentUserInfo> Me { get; set; } = () => new CurrentUserInfo { Id = "u-1", UserName = "editor" };
 
-        public Task<CurrentUserInfo> GetCurrentUserAsync(CancellationToken cancellationToken)
+        /// <summary>Host services, set once started (used by <see cref="RecordMeAuthorization"/>).</summary>
+        public IServiceProvider? Services { get; set; }
+
+        /// <summary>
+        /// When set, every <c>me</c> call first sends a request through the real <see cref="SessionBearerHandler"/> and records
+        /// the Authorization header it attached in <see cref="MeAuthorizations"/> (null = no token).
+        /// </summary>
+        public bool RecordMeAuthorization { get; set; }
+
+        public List<string?> MeAuthorizations { get; } = [];
+
+        public async Task<CurrentUserInfo> GetCurrentUserAsync(CancellationToken cancellationToken)
         {
             Interlocked.Increment(ref _meCalls);
-            return Task.FromResult(Me());
+            if (RecordMeAuthorization && Services is { } services)
+            {
+                var handler = services.GetRequiredService<SessionBearerHandler>();
+                var echo = new BearerEcho();
+                handler.InnerHandler = echo;
+                using var client = new HttpClient(handler);
+                using var _ = await client.GetAsync("http://api/me", cancellationToken);
+                lock (MeAuthorizations)
+                    MeAuthorizations.Add(echo.LastAuthorization);
+            }
+            return Me();
         }
 
         private int _logoutCalls;

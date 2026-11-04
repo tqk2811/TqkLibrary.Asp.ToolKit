@@ -16,12 +16,6 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         /// <summary>Name of the session token inside the ticket's authentication properties.</summary>
         internal const string SessionTokenName = "tqk_session_token";
 
-        /// <summary>DBSC: canonical public JWK of the device key, in the ticket's authentication properties.</summary>
-        internal const string DeviceJwkName = "tqk_device_jwk";
-
-        /// <summary>DBSC: algorithm (<c>ES256</c>/<c>RS256</c>) of <see cref="DeviceJwkName"/>.</summary>
-        internal const string DeviceAlgorithmName = "tqk_device_alg";
-
         private static readonly object ItemKey = new();
 
         private readonly HttpContext _context;
@@ -34,6 +28,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         private volatile bool _loaded;
         private volatile string? _sessionToken;
         private volatile bool _dropPending;
+        private volatile bool _rejected;
         private int _dropHooked;
 
         private WebSessionTicket(HttpContext context)
@@ -93,9 +88,37 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
             lock (_commit)
             {
                 _dropPending = false;
+                _rejected = false;
                 _sessionToken = sessionToken;
                 _loaded = true;
             }
+        }
+
+        /// <summary>
+        /// DBSC: the device proof of this request failed and the request was made a guest. From now on, for the rest of
+        /// the request (re-executions included), <see cref="SessionBearerHandler"/> sends NO session token and never treats
+        /// a 401 as an ended session, even when an endpoint re-authenticates the cookie scheme. Reset by a sign-in in the
+        /// same request (<see cref="Replace"/>).
+        /// </summary>
+        internal void Reject()
+        {
+            lock (_commit)
+            {
+                _rejected = true;
+                _dropPending = false;
+                _sessionToken = null;
+                _loaded = true;
+            }
+        }
+
+        /// <summary>True after <see cref="Reject"/> (and no sign-in since).</summary>
+        internal bool Rejected => _rejected;
+
+        /// <summary>Whether the request's ticket was rejected (<see cref="Reject"/>); does not create a ticket.</summary>
+        internal static bool IsRejected(HttpContext context)
+        {
+            lock (context)
+                return context.Items.TryGetValue(ItemKey, out var existing) && existing is WebSessionTicket { Rejected: true };
         }
 
         /// <summary>Forgets the request token (session just dropped).</summary>

@@ -18,12 +18,15 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
     /// <list type="bullet">
     ///   <item><see cref="DeviceBoundSessionOptions.RegistrationPath"/>: verifies the registration proof (challenge
     ///   issued at sign-in, signed by the key it carries), stores the key on the API
-    ///   (<see cref="IDeviceKeyApiClient"/>), reissues the main cookie with the key, sets the proof cookie and returns
-    ///   the session config. 400 on a bad request or proof, 403 when already bound or the API refuses, 503 when the API
+    ///   (<see cref="IDeviceKeyApiClient"/>; the API is the single source of truth, nothing is written to the main
+    ///   cookie), records the binding in <see cref="DeviceBindingCache"/>, sets the proof cookie and returns the session
+    ///   config. 400 on a bad request or proof, when the session is already bound or the API refuses; 503 when the API
     ///   fails.</item>
-    ///   <item><see cref="DeviceBoundSessionOptions.RefreshPath"/>: unknown/unbound session → 200
-    ///   <c>{"continue":false}</c>; no proof, expired or used challenge → 403 + <c>Secure-Session-Challenge</c>; bad
-    ///   proof → 401 (the browser ends its DBSC session); valid → new proof cookie + 200 session config.</item>
+    ///   <item><see cref="DeviceBoundSessionOptions.RefreshPath"/> (HTTPS only): the stored key comes from
+    ///   <see cref="DeviceBindingCache"/>, else from <c>me</c>. No session, HTTP, or unbound session → 200
+    ///   <c>{"continue":false}</c>; <c>me</c> unavailable → 503 (the browser skips the refresh); no proof, expired or used
+    ///   challenge → 403 + <c>Secure-Session-Challenge</c>; bad proof → 401 (the browser ends its DBSC session); valid →
+    ///   new proof cookie + 200 session config.</item>
     /// </list>
     /// Enforcement of the proof on ordinary requests is done by <see cref="CurrentUserMiddleware"/>.
     /// </summary>
@@ -89,9 +92,10 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
                 await FailAsync(context, StatusCodes.Status400BadRequest, "no session").ConfigureAwait(false);
                 return;
             }
-            if (!string.IsNullOrEmpty(ticket.Properties.GetTokenValue(WebSessionTicket.DeviceJwkName)))
+            var bindings = services.GetRequiredService<DeviceBindingCache>();
+            if (bindings.Get(sessionId) is not null)
             {
-                await FailAsync(context, StatusCodes.Status403Forbidden, "session already bound").ConfigureAwait(false);
+                await FailAsync(context, StatusCodes.Status400BadRequest, "session already bound").ConfigureAwait(false);
                 return;
             }
 
@@ -128,14 +132,16 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
             }
             if (!stored)
             {
-                await FailAsync(context, StatusCodes.Status403Forbidden, "API refused the key").ConfigureAwait(false);
+                await FailAsync(context, StatusCodes.Status400BadRequest, "API refused the key").ConfigureAwait(false);
                 return;
             }
 
-            await services.GetRequiredService<WebSessionManager>().BindDeviceKeyAsync(context, ticket, sessionId, proof.Key)
-                .ConfigureAwait(false);
-            services.GetRequiredService<DeviceProofCookie>().Append(context, sessionId);
-            _logger.LogInformation("DBSC: session {SessionId} bound to a device key ({Algorithm}).", sessionId, proof.Key.Algorithm);
+            // The API now holds the key (single source of truth); nothing is written to the main cookie. This instance
+            // remembers the binding right away, and the next `me` reports it (cache dropped).
+            var key = bindings.Set(sessionId, proof.Key, ticket.Properties!.ExpiresUtc);
+            services.GetRequiredService<CurrentUserCache>().Remove(sessionId);
+            services.GetRequiredService<DeviceProofCookie>().Append(context, sessionId, key.Thumbprint);
+            _logger.LogInformation("DBSC: session {SessionId} bound to a device key ({Algorithm}).", sessionId, key.Algorithm);
             await WriteConfigAsync(context, options, sessionId).ConfigureAwait(false);
         }
 
@@ -146,18 +152,19 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
             if (!string.IsNullOrEmpty(skipped))
                 _logger.LogInformation("DBSC: browser reported a skipped refresh: {Skipped}.", DeviceProofEnforcer.Sanitize(skipped));
 
-            var ticket = await context.AuthenticateAsync(options.Scheme).ConfigureAwait(false);
-            var sessionId = ticket.Succeeded ? ticket.Principal?.FindFirst(options.SessionIdClaimType)?.Value : null;
-            var key = string.IsNullOrEmpty(sessionId) ? null : DeviceKey.TryParse(
-                ticket.Properties?.GetTokenValue(WebSessionTicket.DeviceJwkName),
-                ticket.Properties?.GetTokenValue(WebSessionTicket.DeviceAlgorithmName),
-                options.DeviceBound.MinRsaKeySize);
             var browserSessionId = Unquote(GetSingleHeader(context, SessionIdHeader));
-            if (key is null || string.IsNullOrEmpty(sessionId))
+            string? sessionId = null;
+            AuthenticateResult? ticket = null;
+            // Like the registration, refresh only works over HTTPS (the proof cookie is Secure); over HTTP: "no session".
+            if (context.Request.IsHttps)
             {
-                // Signed out, expired, or never bound: end the browser's DBSC session.
-                services.GetRequiredService<DeviceProofCookie>().Delete(context);
-                await WriteEndAsync(context, browserSessionId).ConfigureAwait(false);
+                ticket = await context.AuthenticateAsync(options.Scheme).ConfigureAwait(false);
+                sessionId = ticket.Succeeded ? ticket.Principal?.FindFirst(options.SessionIdClaimType)?.Value : null;
+            }
+            if (string.IsNullOrEmpty(sessionId))
+            {
+                // Signed out or expired: end the browser's DBSC session.
+                await EndAsync(context, browserSessionId).ConfigureAwait(false);
                 return;
             }
             var identifier = SessionIdentifier(sessionId);
@@ -166,6 +173,26 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
                 // A DBSC session of an older web session: end it, leave the current proof cookie alone.
                 await WriteEndAsync(context, browserSessionId).ConfigureAwait(false);
                 return;
+            }
+
+            var key = services.GetRequiredService<DeviceBindingCache>().Get(sessionId);
+            if (key is null)
+            {
+                // Not known on this instance (restart, other instance, lost registration response): ask the API.
+                var lookup = await LoadKeyAsync(context, options, sessionId, ticket!.Properties?.ExpiresUtc).ConfigureAwait(false);
+                if (lookup.Status == KeyLookupStatus.Unavailable)
+                {
+                    // Transient: the browser skips this refresh and keeps its DBSC session.
+                    context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+                    return;
+                }
+                if (lookup.Key is null)
+                {
+                    // Session ended, never bound, or a stored key that cannot be used.
+                    await EndAsync(context, browserSessionId).ConfigureAwait(false);
+                    return;
+                }
+                key = lookup.Key;
             }
 
             var challenges = services.GetRequiredService<DeviceChallengeService>();
@@ -189,8 +216,62 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
                 WriteChallenge(context, challenges, sessionId, identifier);
                 return;
             }
-            services.GetRequiredService<DeviceProofCookie>().Append(context, sessionId);
+            services.GetRequiredService<DeviceProofCookie>().Append(context, sessionId, key.Thumbprint);
             await WriteConfigAsync(context, options, sessionId).ConfigureAwait(false);
+        }
+
+        private enum KeyLookupStatus
+        {
+            Found,
+            NotBound,
+            Unavailable,
+        }
+
+        /// <summary>
+        /// The stored device key of <paramref name="sessionId"/> from the API (<c>me</c>, with the session token), recorded
+        /// in <see cref="DeviceBindingCache"/> and the user in <see cref="CurrentUserCache"/>. A dead session is dropped.
+        /// </summary>
+        private async Task<(KeyLookupStatus Status, DeviceKey? Key)> LoadKeyAsync(HttpContext context, WebAuthOptions options,
+            string sessionId, DateTimeOffset? sessionExpiresUtc)
+        {
+            var services = context.RequestServices;
+            Models.CurrentUserInfo user;
+            using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted))
+            {
+                timeout.CancelAfter(options.CurrentUserTimeout);
+                try
+                {
+                    user = await services.GetRequiredService<IAuthApiClient>().GetCurrentUserAsync(timeout.Token).ConfigureAwait(false);
+                }
+                catch (SessionExpiredException)
+                {
+                    await services.GetRequiredService<WebSessionManager>().DropAsync(context).ConfigureAwait(false);
+                    return (KeyLookupStatus.NotBound, null);
+                }
+                catch (Exception ex) when (!context.RequestAborted.IsCancellationRequested)
+                {
+                    _logger.LogWarning(ex, "DBSC: could not load the device key of session {SessionId} from the API.", sessionId);
+                    return (KeyLookupStatus.Unavailable, null);
+                }
+            }
+            services.GetRequiredService<CurrentUserCache>().Set(sessionId, user);
+            if (!user.IsDeviceBound)
+                return (KeyLookupStatus.NotBound, null);
+            var key = DeviceKey.TryParse(user.DeviceKeyJwk, user.DeviceKeyAlgorithm, DeviceKey.StoredKeyMinRsaKeySize);
+            if (key is null)
+            {
+                _logger.LogError("DBSC: the API reports session {SessionId} as bound but its device key cannot be used.", sessionId);
+                return (KeyLookupStatus.NotBound, null);
+            }
+            return (KeyLookupStatus.Found, services.GetRequiredService<DeviceBindingCache>().Set(sessionId, key, sessionExpiresUtc));
+        }
+
+        /// <summary>Deletes the proof cookie (when the response can still carry it) and ends the browser's DBSC session.</summary>
+        private static Task EndAsync(HttpContext context, string? browserSessionId)
+        {
+            if (!context.Response.HasStarted)
+                context.RequestServices.GetRequiredService<DeviceProofCookie>().Delete(context);
+            return WriteEndAsync(context, browserSessionId);
         }
 
         private Task FailAsync(HttpContext context, int status, string reason)

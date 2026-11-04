@@ -2,7 +2,7 @@ using Microsoft.AspNetCore.Http;
 
 namespace TqkLibrary.Asp.ToolKit.Auth.Web.Models
 {
-    /// <summary>Argument of <see cref="DeviceBoundSessionOptions.OnProofFailure"/>.</summary>
+    /// <summary>Argument of <see cref="DeviceProofFailureHandler.HandleAsync"/>.</summary>
     public sealed class DeviceProofFailureContext
     {
         /// <summary>The request whose proof failed.</summary>
@@ -15,15 +15,16 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Models
         public required DeviceProofFailureReason Reason { get; init; }
 
         /// <summary>
-        /// Mode decided so far: <see cref="DeviceBoundSessionOptions.FailureMode"/>, replaced by the user's choice when
-        /// <see cref="DeviceBoundSessionOptions.AllowUserChoice"/> is on and the choice is allowed.
+        /// The mode of the default handling: <see cref="DeviceBoundSessionOptions.FailureMode"/>, replaced by the user's
+        /// choice when <see cref="DeviceBoundSessionOptions.AllowUserChoice"/> is on and the choice is allowed. The base
+        /// <see cref="DeviceProofFailureHandler.HandleAsync"/> returns it as an outcome.
         /// </summary>
-        public required DeviceProofFailureMode Mode { get; init; }
+        public required DeviceProofFailureMode DefaultMode { get; init; }
 
         /// <summary>
-        /// The user as reported by <c>me</c> (cached or just loaded) when it is known; null when the policy is fixed
-        /// (<see cref="DeviceBoundSessionOptions.AllowUserChoice"/> = false: the decision is taken before <c>me</c>),
-        /// when <see cref="WebAuthOptions.SkipCurrentUser"/> skipped it, or when <c>me</c> failed.
+        /// The user as reported by <c>me</c> (cached or just loaded) when it is known; null when the decision is taken
+        /// before <c>me</c> (fixed policy and a session already known to be bound), when
+        /// <see cref="WebAuthOptions.SkipCurrentUser"/> skipped it, or when <c>me</c> failed.
         /// </summary>
         public CurrentUserInfo? User { get; init; }
     }

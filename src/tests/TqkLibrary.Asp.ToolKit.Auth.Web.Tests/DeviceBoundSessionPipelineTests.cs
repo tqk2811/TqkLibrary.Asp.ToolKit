@@ -1,11 +1,14 @@
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
 using System.Diagnostics.Metrics;
 using System.Net;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using TqkLibrary.Asp.ToolKit.Auth.Web.Interfaces;
 using TqkLibrary.Asp.ToolKit.Auth.Web.Models;
@@ -13,23 +16,49 @@ using Xunit;
 
 namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
 {
-    /// <summary>DBSC end to end through the real cookie pipeline (registration, refresh, enforcement, failure modes).</summary>
+    /// <summary>DBSC end to end through the real cookie pipeline (registration, refresh, enforcement, failure handling).</summary>
     public class DeviceBoundSessionPipelineTests
     {
         private const string Sid = "s-1";
         private const string MainCookie = ".AspNetCore.Cookies";
         private const string ProofCookie = MainCookie + ".proof";
 
+        /// <summary>The app's API for the key: stores it like the real API (so <c>me</c> reports it afterwards).</summary>
         private sealed class FakeDeviceKeyApi : IDeviceKeyApiClient
         {
             public bool Result { get; set; } = true;
+            /// <summary>Stores the key, then fails: the registration response is lost although the API holds the key.</summary>
+            public bool ThrowAfterStore { get; set; }
             public List<(string Jwk, string Algorithm)> Calls { get; } = [];
+            public string? StoredJwk { get; set; }
+            public string? StoredAlgorithm { get; set; }
 
             public Task<bool> RegisterDeviceKeyAsync(string jwk, string algorithm, CancellationToken cancellationToken)
             {
                 lock (Calls)
                     Calls.Add((jwk, algorithm));
+                if (Result && StoredJwk is null)
+                {
+                    StoredJwk = jwk;
+                    StoredAlgorithm = algorithm;
+                }
+                if (ThrowAfterStore)
+                    throw new HttpRequestException("connection reset after the API stored the key");
                 return Task.FromResult(Result);
+            }
+        }
+
+        /// <summary>Records every call and answers <see cref="Outcome"/> (or calls base when null).</summary>
+        private sealed class RecordingHandler : DeviceProofFailureHandler
+        {
+            public Func<DeviceProofFailureContext, ValueTask<DeviceProofOutcome>>? Outcome { get; set; }
+            public List<DeviceProofFailureContext> Calls { get; } = [];
+
+            public override ValueTask<DeviceProofOutcome> HandleAsync(DeviceProofFailureContext context)
+            {
+                lock (Calls)
+                    Calls.Add(context);
+                return Outcome is { } outcome ? outcome(context) : base.HandleAsync(context);
             }
         }
 
@@ -38,7 +67,23 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             public required WebAuthTestApp App { get; init; }
             public required FakeDeviceKeyApi KeyApi { get; init; }
             public required FakeTimeProvider Clock { get; init; }
+            public required RecordingHandler Handler { get; init; }
             public DbscTestDevice Device { get; } = DbscTestDevice.Es256();
+
+            /// <summary>Authorization headers seen by <c>/call</c>, <c>/explicit-scheme</c>, <c>/error</c> (one per call, null = none).</summary>
+            public required List<string?> CallAuthorizations { get; init; }
+
+            /// <summary>The user as the API reports it: bound when the key API stored a key.</summary>
+            public CurrentUserInfo User(string? mode = null) => new()
+            {
+                Id = "u-1",
+                UserName = "editor",
+                DeviceKeyJwk = KeyApi.StoredJwk,
+                DeviceKeyAlgorithm = KeyApi.StoredAlgorithm,
+                DeviceBindingMode = mode,
+            };
+
+            public DeviceProofCookie ProofCookies => App.Services.GetRequiredService<DeviceProofCookie>();
 
             public async ValueTask DisposeAsync()
             {
@@ -48,18 +93,23 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
         }
 
         private static async Task<Harness> StartAsync(Action<DeviceBoundSessionOptions>? configure = null, bool https = true,
-            bool enabled = true, Action<Microsoft.AspNetCore.Routing.IEndpointRouteBuilder>? mapEndpoints = null)
+            bool enabled = true, Action<Microsoft.AspNetCore.Routing.IEndpointRouteBuilder>? mapEndpoints = null,
+            Action<WebAuthOptions>? configureWeb = null, Action<IApplicationBuilder>? beforeRouting = null)
         {
             var keyApi = new FakeDeviceKeyApi();
             var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+            var handler = new RecordingHandler();
+            var callAuthorizations = new List<string?>();
             var app = await WebAuthTestApp.StartAsync(o =>
             {
                 o.DeviceBound.Enabled = enabled;
                 configure?.Invoke(o.DeviceBound);
+                configureWeb?.Invoke(o);
             }, services =>
             {
                 services.AddSingleton<IDeviceKeyApiClient>(keyApi);
                 services.Replace(ServiceDescriptor.Singleton<TimeProvider>(clock));
+                services.AddSingleton<DeviceProofFailureHandler>(handler);
             }, endpoints =>
             {
                 endpoints.MapGet("/sign-out", async (HttpContext context, WebSessionManager sessions) =>
@@ -69,15 +119,45 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
                 });
                 endpoints.MapGet("/public/whoami", (HttpContext context) => Results.Text(
                     "auth=" + (context.User.Identity?.IsAuthenticated == true).ToString().ToLowerInvariant()));
+                // One API call through the real bearer handler (the extra parameter keeps the lambda off the RequestDelegate overload); the API answers 401 + Bearer challenge (session ended).
+                endpoints.MapGet("/call", async (HttpContext context, CancellationToken _) => Results.Text(await CallApiAsync(context, callAuthorizations)));
+                // Like an endpoint with explicit AuthenticationSchemes: PolicyEvaluator re-authenticates the cookie scheme
+                // and puts its principal back on context.User before the endpoint runs.
+                endpoints.MapGet("/explicit-scheme", async (HttpContext context, IOptions<WebAuthOptions> options) =>
+                {
+                    var result = await context.AuthenticateAsync(options.Value.Scheme);
+                    if (result.Succeeded)
+                        context.User = result.Principal!;
+                    return Results.Text(await CallApiAsync(context, callAuthorizations));
+                });
+                endpoints.MapGet("/boom", (HttpContext context) => { throw new InvalidOperationException("boom"); });
+                endpoints.Map("/error", async (HttpContext context, CancellationToken _) => Results.Text("error:" + await CallApiAsync(context, callAuthorizations)));
                 mapEndpoints?.Invoke(endpoints);
-            }, https: https);
-            return new Harness { App = app, KeyApi = keyApi, Clock = clock };
+            }, https: https, beforeRouting: beforeRouting);
+            var h = new Harness { App = app, KeyApi = keyApi, Clock = clock, Handler = handler, CallAuthorizations = callAuthorizations };
+            app.Api.Me = () => h.User();
+            return h;
+        }
+
+        private static async Task<string> CallApiAsync(HttpContext context, List<string?> seen)
+        {
+            var handler = context.RequestServices.GetRequiredService<SessionBearerHandler>();
+            var echo = new BearerEcho { Status = HttpStatusCode.Unauthorized };
+            handler.InnerHandler = echo;
+            using var client = new HttpClient(handler);
+            using var response = await client.GetAsync("http://api/items");
+            lock (seen)
+                seen.Add(echo.LastAuthorization);
+            return echo.LastAuthorization ?? "none";
         }
 
         private static string? RegistrationHeader(HttpResponseMessage response)
             => response.Headers.TryGetValues("Secure-Session-Registration", out var values) ? values.Single() : null;
 
         private static string ChallengeFrom(string header) => Regex.Match(header, "challenge=\"([^\"]*)\"").Groups[1].Value;
+
+        private static string RefreshChallenge(HttpResponseMessage response)
+            => Regex.Match(response.Headers.GetValues("Secure-Session-Challenge").Single(), "^\"([^\"]+)\"").Groups[1].Value;
 
         private static Task<HttpResponseMessage> PostAsync(WebAuthTestApp app, string path, string? proof = null, string? sessionId = null)
             => app.SendAsync(HttpMethod.Post, path, r =>
@@ -105,6 +185,8 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             return (await response.Content.ReadAsStringAsync()).StartsWith("auth=true", StringComparison.Ordinal);
         }
 
+        private static bool Continues(string json) => JsonDocument.Parse(json).RootElement.TryGetProperty("continue", out var c) && c.GetBoolean();
+
         // ---------- registration ----------
 
         [Fact]
@@ -131,11 +213,11 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
         }
 
         [Fact]
-        public async Task Start_ValidProof_StoresKey_ReissuesCookie_SetsProof_ReturnsConfig()
+        public async Task Start_ValidProof_StoresKey_DoesNotTouchMainCookie_SetsProof_ReturnsConfig()
         {
             await using var h = await StartAsync();
             using var signIn = await h.App.SignInAsync(Sid, persistent: true);
-            var mainExpires = Regex.Match(WebAuthTestApp.SetCookies(signIn).Single(c => c.StartsWith(MainCookie + "=")), "expires=([^;]+)").Groups[1].Value;
+            var mainCookie = h.App.Cookies[MainCookie];
             var challenge = ChallengeFrom(RegistrationHeader(signIn)!);
 
             using var start = await PostAsync(h.App, "/dbsc/start", h.Device.RegistrationJwt(challenge));
@@ -146,9 +228,9 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             Assert.Equal(h.Device.Jwk()["x"]!.GetValue<string>(), JsonDocument.Parse(call.Jwk).RootElement.GetProperty("x").GetString());
 
             var setCookies = WebAuthTestApp.SetCookies(start);
-            var main = Assert.Single(setCookies, c => c.StartsWith(MainCookie + "="));
-            // Reissued once, same absolute expiry and persistence as at sign-in.
-            Assert.Equal(mainExpires, Regex.Match(main, "expires=([^;]+)").Groups[1].Value);
+            // The API is the single source of truth: the main cookie is NOT reissued.
+            Assert.DoesNotContain(setCookies, c => c.StartsWith(MainCookie + "=", StringComparison.Ordinal));
+            Assert.Equal(mainCookie, h.App.Cookies[MainCookie]);
             var proof = Assert.Single(setCookies, c => c.StartsWith(ProofCookie + "="));
 
             using var json = JsonDocument.Parse(await start.Content.ReadAsStringAsync());
@@ -176,19 +258,19 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
                 .ToArray();
 
         [Fact]
-        public async Task Start_SecondTime_403()
+        public async Task Start_SecondTime_400()
         {
             await using var h = await StartAsync();
             await SignInAndBindAsync(h);
 
             using var again = await PostAsync(h.App, "/dbsc/start", h.Device.RegistrationJwt("whatever"));
 
-            Assert.Equal(HttpStatusCode.Forbidden, again.StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest, again.StatusCode);
             Assert.Single(h.KeyApi.Calls);
         }
 
         [Fact]
-        public async Task Start_ApiRefuses_403_NoProof_SessionStaysUnbound()
+        public async Task Start_ApiRefuses_400_NoProof_SessionStaysUnbound()
         {
             await using var h = await StartAsync();
             h.KeyApi.Result = false;
@@ -196,13 +278,13 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
 
             using var start = await PostAsync(h.App, "/dbsc/start", h.Device.RegistrationJwt(ChallengeFrom(RegistrationHeader(signIn)!)));
 
-            Assert.Equal(HttpStatusCode.Forbidden, start.StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest, start.StatusCode);
             Assert.Empty(WebAuthTestApp.SetCookies(start));
             Assert.False(h.App.Cookies.ContainsKey(ProofCookie));
             // Unbound: no proof needed, and refresh ends the browser session.
             Assert.True(await IsAuthenticatedAsync(h.App));
             using var refresh = await PostAsync(h.App, "/dbsc/refresh", sessionId: DeviceBoundSessionMiddleware.SessionIdentifier(Sid));
-            Assert.False(JsonDocument.Parse(await refresh.Content.ReadAsStringAsync()).RootElement.GetProperty("continue").GetBoolean());
+            Assert.False(Continues(await refresh.Content.ReadAsStringAsync()));
         }
 
         [Fact]
@@ -217,7 +299,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             using var replay = await PostAsync(h.App, "/dbsc/start", h.Device.RegistrationJwt(challenge));
             using var garbage = await PostAsync(h.App, "/dbsc/start", h.Device.RegistrationJwt("not-a-challenge"));
 
-            Assert.Equal(HttpStatusCode.Forbidden, first.StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest, first.StatusCode);
             Assert.Equal(HttpStatusCode.BadRequest, replay.StatusCode);
             Assert.Equal(HttpStatusCode.BadRequest, garbage.StatusCode);
             Assert.Single(h.KeyApi.Calls);
@@ -266,6 +348,62 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             Assert.Empty(h.KeyApi.Calls);
         }
 
+        [Fact]
+        public async Task Start_ApiFails_503()
+        {
+            await using var h = await StartAsync();
+            h.KeyApi.ThrowAfterStore = true;
+            using var signIn = await h.App.SignInAsync(Sid);
+
+            using var start = await PostAsync(h.App, "/dbsc/start", h.Device.RegistrationJwt(ChallengeFrom(RegistrationHeader(signIn)!)));
+
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, start.StatusCode);
+            Assert.False(h.App.Cookies.ContainsKey(ProofCookie));
+        }
+
+        // ---------- lost registration response ----------
+
+        [Fact]
+        public async Task LostRegistrationResponse_KeyStoredAtApi_RefreshGetsKeyFromMe_OldCookieWorksWithProof()
+        {
+            await using var h = await StartAsync();
+            h.KeyApi.ThrowAfterStore = true;
+            using var signIn = await h.App.SignInAsync(Sid);
+            var mainCookie = h.App.Cookies[MainCookie];
+            using var start = await PostAsync(h.App, "/dbsc/start", h.Device.RegistrationJwt(ChallengeFrom(RegistrationHeader(signIn)!)));
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, start.StatusCode);
+            Assert.NotNull(h.KeyApi.StoredJwk);
+            var identifier = DeviceBoundSessionMiddleware.SessionIdentifier(Sid);
+            var meCalls = h.App.Api.MeCalls;
+
+            // The browser refreshes: the web does not know the key yet and asks the API.
+            using var first = await PostAsync(h.App, "/dbsc/refresh", sessionId: identifier);
+            Assert.Equal(HttpStatusCode.Forbidden, first.StatusCode);
+            Assert.Equal(meCalls + 1, h.App.Api.MeCalls);
+            using var second = await PostAsync(h.App, "/dbsc/refresh", h.Device.RefreshJwt(RefreshChallenge(first)), identifier);
+
+            Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+            Assert.True(h.App.Cookies.ContainsKey(ProofCookie));
+            // Same main cookie as at sign-in, never reissued, and it works with the proof.
+            Assert.Equal(mainCookie, h.App.Cookies[MainCookie]);
+            Assert.True(await IsAuthenticatedAsync(h.App));
+        }
+
+        [Fact]
+        public async Task LostRegistrationResponse_RequestWithoutProof_IsAProofFailure_NotALockout()
+        {
+            await using var h = await StartAsync();
+            h.KeyApi.ThrowAfterStore = true;
+            using var signIn = await h.App.SignInAsync(Sid);
+            using var start = await PostAsync(h.App, "/dbsc/start", h.Device.RegistrationJwt(ChallengeFrom(RegistrationHeader(signIn)!)));
+
+            Assert.False(await IsAuthenticatedAsync(h.App));
+
+            var failure = Assert.Single(h.Handler.Calls);
+            Assert.Equal(DeviceProofFailureReason.Missing, failure.Reason);
+            Assert.True(h.App.Cookies.ContainsKey(MainCookie));
+        }
+
         // ---------- refresh ----------
 
         [Fact]
@@ -303,29 +441,33 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             await using var h = await StartAsync();
             var identifier = (await SignInAndBindAsync(h)).GetProperty("session_identifier").GetString()!;
             using var first = await PostAsync(h.App, "/dbsc/refresh", sessionId: identifier);
-            var challenge = Regex.Match(first.Headers.GetValues("Secure-Session-Challenge").Single(), "^\"([^\"]+)\"").Groups[1].Value;
+            var challenge = RefreshChallenge(first);
             h.Clock.Advance(TimeSpan.FromMinutes(2));
 
             using var late = await PostAsync(h.App, "/dbsc/refresh", h.Device.RefreshJwt(challenge), identifier);
 
             Assert.Equal(HttpStatusCode.Forbidden, late.StatusCode);
-            Assert.NotEqual(challenge, Regex.Match(late.Headers.GetValues("Secure-Session-Challenge").Single(), "^\"([^\"]+)\"").Groups[1].Value);
+            Assert.NotEqual(challenge, RefreshChallenge(late));
         }
 
         [Fact]
-        public async Task Refresh_BadSignatureOrJwkPresent_401()
+        public async Task Refresh_BadSignatureOrKeyPresent_401()
         {
             await using var h = await StartAsync();
             var identifier = (await SignInAndBindAsync(h)).GetProperty("session_identifier").GetString()!;
             using var first = await PostAsync(h.App, "/dbsc/refresh", sessionId: identifier);
-            var challenge = Regex.Match(first.Headers.GetValues("Secure-Session-Challenge").Single(), "^\"([^\"]+)\"").Groups[1].Value;
+            var challenge = RefreshChallenge(first);
             using var thief = DbscTestDevice.Es256();
+            var keyInPayload = DbscTestDevice.Payload(challenge);
+            keyInPayload["key"] = h.Device.Jwk();
 
             using var foreignKey = await PostAsync(h.App, "/dbsc/refresh", thief.RefreshJwt(challenge), identifier);
             using var withJwk = await PostAsync(h.App, "/dbsc/refresh", h.Device.RegistrationJwt(challenge), identifier);
+            using var withKey = await PostAsync(h.App, "/dbsc/refresh", h.Device.Jwt(h.Device.Header(withJwk: false), keyInPayload), identifier);
 
             Assert.Equal(HttpStatusCode.Unauthorized, foreignKey.StatusCode);
             Assert.Equal(HttpStatusCode.Unauthorized, withJwk.StatusCode);
+            Assert.Equal(HttpStatusCode.Unauthorized, withKey.StatusCode);
         }
 
         [Fact]
@@ -344,10 +486,41 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             Assert.False(h.App.Cookies.ContainsKey(ProofCookie));
             using var afterLogout = await PostAsync(h.App, "/dbsc/refresh", sessionId: DeviceBoundSessionMiddleware.SessionIdentifier(Sid));
             Assert.Equal(HttpStatusCode.OK, afterLogout.StatusCode);
-            Assert.False(JsonDocument.Parse(await afterLogout.Content.ReadAsStringAsync()).RootElement.GetProperty("continue").GetBoolean());
+            Assert.False(Continues(await afterLogout.Content.ReadAsStringAsync()));
         }
 
-        // ---------- enforcement & failure modes ----------
+        [Fact]
+        public async Task Refresh_OverHttp_AnsweredAsNoSession()
+        {
+            await using var h = await StartAsync();
+            await SignInAndBindAsync(h);
+            var meCalls = h.App.Api.MeCalls;
+
+            using var refresh = await h.App.SendAsync(HttpMethod.Post, "http://localhost/dbsc/refresh",
+                r => r.Headers.TryAddWithoutValidation("Sec-Secure-Session-Id", "\"" + DeviceBoundSessionMiddleware.SessionIdentifier(Sid) + "\""));
+
+            Assert.Equal(HttpStatusCode.OK, refresh.StatusCode);
+            Assert.False(Continues(await refresh.Content.ReadAsStringAsync()));
+            Assert.False(refresh.Headers.Contains("Secure-Session-Challenge"));
+            Assert.Equal(meCalls, h.App.Api.MeCalls);
+        }
+
+        [Fact]
+        public async Task Refresh_KeyUnknown_MeFails_503_NotUnauthorized()
+        {
+            await using var h = await StartAsync();
+            h.KeyApi.ThrowAfterStore = true;
+            using var signIn = await h.App.SignInAsync(Sid);
+            using var start = await PostAsync(h.App, "/dbsc/start", h.Device.RegistrationJwt(ChallengeFrom(RegistrationHeader(signIn)!)));
+            h.App.Api.Me = () => throw new HttpRequestException("API down", null, HttpStatusCode.BadGateway);
+
+            using var refresh = await PostAsync(h.App, "/dbsc/refresh", sessionId: DeviceBoundSessionMiddleware.SessionIdentifier(Sid));
+
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, refresh.StatusCode);
+            Assert.True(h.App.Cookies.ContainsKey(MainCookie));
+        }
+
+        // ---------- enforcement ----------
 
         [Fact]
         public async Task Reject_Default_MissingProof_Guest_CookieKept_NoMeCall()
@@ -370,26 +543,46 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
         }
 
         [Fact]
-        public async Task Reject_GuestRequest_DoesNotSendTheSessionToken()
+        public async Task Reject_GuestRequest_DoesNotSendTheSessionToken_NorDropsTheCookie()
         {
-            string? authorization = null;
-            await using var h = await StartAsync(mapEndpoints: endpoints => endpoints.MapGet("/call", async (HttpContext context) =>
-            {
-                var handler = context.RequestServices.GetRequiredService<SessionBearerHandler>();
-                var echo = new BearerEcho();
-                handler.InnerHandler = echo;
-                using var client = new HttpClient(handler);
-                using var _ = await client.GetAsync("http://api/items");
-                authorization = echo.LastAuthorization;
-                return Results.Ok();
-            }));
+            await using var h = await StartAsync();
             await SignInAndBindAsync(h);
             h.App.RemoveCookie(ProofCookie);
 
             using var response = await h.App.SendAsync(HttpMethod.Get, "/call");
 
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-            Assert.Null(authorization);
+            Assert.Equal("none", await response.Content.ReadAsStringAsync());
+            Assert.True(h.App.Cookies.ContainsKey(MainCookie));
+        }
+
+        [Fact]
+        public async Task Reject_ExplicitSchemeEndpoint_NoToken_CookieNotDropped()
+        {
+            await using var h = await StartAsync();
+            await SignInAndBindAsync(h);
+            h.App.RemoveCookie(ProofCookie);
+
+            using var response = await h.App.SendAsync(HttpMethod.Get, "/explicit-scheme");
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal("none", await response.Content.ReadAsStringAsync());
+            Assert.DoesNotContain(WebAuthTestApp.SetCookies(response), c => c.StartsWith(MainCookie + "=", StringComparison.Ordinal));
+            Assert.True(h.App.Cookies.ContainsKey(MainCookie));
+        }
+
+        [Fact]
+        public async Task Reject_ReExecutedByExceptionHandler_NoToken()
+        {
+            await using var h = await StartAsync(beforeRouting: app => app.UseExceptionHandler("/error"));
+            await SignInAndBindAsync(h);
+            h.App.RemoveCookie(ProofCookie);
+
+            using var response = await h.App.SendAsync(HttpMethod.Get, "/boom");
+
+            Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+            Assert.Equal("error:none", await response.Content.ReadAsStringAsync());
+            Assert.True(h.App.Cookies.ContainsKey(MainCookie));
         }
 
         [Theory]
@@ -405,6 +598,18 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             h.App.SetCookie(ProofCookie, kind == "invalid" ? "garbage" : foreignProof);
 
             Assert.False(await IsAuthenticatedAsync(h.App));
+            Assert.Equal(kind == "invalid" ? DeviceProofFailureReason.Invalid : DeviceProofFailureReason.WrongSession, h.Handler.Calls.Last().Reason);
+        }
+
+        [Fact]
+        public async Task ProofCookieForAnotherKey_Invalid()
+        {
+            await using var h = await StartAsync();
+            await SignInAndBindAsync(h);
+            h.App.SetCookie(ProofCookie, h.ProofCookies.CreateValue(Sid, "thumbprint-of-another-key"));
+
+            Assert.False(await IsAuthenticatedAsync(h.App));
+            Assert.Equal(DeviceProofFailureReason.Invalid, Assert.Single(h.Handler.Calls).Reason);
         }
 
         [Fact]
@@ -474,17 +679,94 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             Assert.Equal("/public", rule.GetProperty("path").GetString());
         }
 
-        // ---------- policy: fixed vs user choice, hook ----------
+        [Fact]
+        public async Task BindingCacheHit_MeFailing_StillEnforced()
+        {
+            await using var h = await StartAsync(o => o.AllowUserChoice = true); // soft policy: `me` is called first
+            await SignInAndBindAsync(h);
+            h.App.RemoveCookie(ProofCookie);
+            h.App.Api.Me = () => throw new HttpRequestException("API down", null, HttpStatusCode.BadGateway);
+            var meCalls = h.App.Api.MeCalls;
+
+            Assert.False(await IsAuthenticatedAsync(h.App));
+            Assert.Equal(meCalls + 1, h.App.Api.MeCalls);
+            var failure = Assert.Single(h.Handler.Calls);
+            Assert.Null(failure.User);
+            Assert.Equal(DeviceProofFailureMode.Reject, failure.DefaultMode);
+        }
 
         [Fact]
-        public async Task FixedPolicy_IgnoresUserChoice()
+        public async Task SkipCurrentUser_BoundSession_StillEnforced()
+        {
+            await using var h = await StartAsync(o => o.AllowUserChoice = true,
+                configureWeb: o => o.SkipCurrentUser = context => context.Request.Path.StartsWithSegments("/whoami"));
+            await SignInAndBindAsync(h);
+            h.App.RemoveCookie(ProofCookie);
+            var meCalls = h.App.Api.MeCalls;
+
+            Assert.False(await IsAuthenticatedAsync(h.App));
+            Assert.Equal(meCalls, h.App.Api.MeCalls);
+            Assert.Single(h.Handler.Calls);
+        }
+
+        [Fact]
+        public async Task ThrowFailureMode_SoftPolicy_MeFailing_EnforcementRunsFirst_GuestWithoutToken()
+        {
+            await using var h = await StartAsync(o => o.AllowUserChoice = true,
+                configureWeb: o => o.CurrentUserFailureMode = CurrentUserFailureMode.Throw);
+            await SignInAndBindAsync(h);
+            h.App.RemoveCookie(ProofCookie);
+            h.App.Api.Me = () => throw new HttpRequestException("API down", null, HttpStatusCode.BadGateway);
+
+            using var response = await h.App.SendAsync(HttpMethod.Get, "/call");
+
+            // No CurrentUserUnavailableException: the proof failure made the request a guest first.
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal("none", await response.Content.ReadAsStringAsync());
+            Assert.Single(h.Handler.Calls);
+        }
+
+        [Fact]
+        public async Task BindingUnknown_MeSaysBound_LearnedFromMe_ThenDecidedBeforeMe()
+        {
+            await using var h = await StartAsync(o => o.FailureMode = DeviceProofFailureMode.ReportOnly);
+            h.KeyApi.ThrowAfterStore = true; // bound at the API, unknown to the web
+            using var signIn = await h.App.SignInAsync(Sid);
+            using var start = await PostAsync(h.App, "/dbsc/start", h.Device.RegistrationJwt(ChallengeFrom(RegistrationHeader(signIn)!)));
+
+            // Unknown binding: `me` decides (ReportOnly keeps the request authenticated, the failure is reported).
+            Assert.True(await IsAuthenticatedAsync(h.App));
+            var first = Assert.Single(h.Handler.Calls);
+            Assert.NotNull(first.User);
+            // Now known: the next failure is decided before `me` (no user).
+            h.App.Services.GetRequiredService<CurrentUserCache>().Remove(Sid);
+            Assert.True(await IsAuthenticatedAsync(h.App));
+            Assert.Null(h.Handler.Calls[1].User);
+        }
+
+        [Fact]
+        public async Task Unbound_ApiSaysNotBound_NoProofNeeded()
+        {
+            await using var h = await StartAsync();
+            await h.App.SignInAsync(Sid);
+
+            Assert.True(await IsAuthenticatedAsync(h.App));
+        }
+
+        // ---------- failure handler: default policy ----------
+
+        [Fact]
+        public async Task FixedPolicy_IgnoresUserChoice_HandlerGetsNoUser()
         {
             await using var h = await StartAsync(o => o.FailureMode = DeviceProofFailureMode.Reject);
-            h.App.Api.Me = () => new CurrentUserInfo { Id = "u-1", UserName = "editor", DeviceBindingMode = "ReportOnly" };
+            h.App.Api.Me = () => h.User("ReportOnly");
             await SignInAndBindAsync(h);
             h.App.RemoveCookie(ProofCookie);
 
             Assert.False(await IsAuthenticatedAsync(h.App));
+            var failure = Assert.Single(h.Handler.Calls);
+            Assert.Null(failure.User);
+            Assert.Equal(DeviceProofFailureMode.Reject, failure.DefaultMode);
         }
 
         [Theory]
@@ -498,11 +780,12 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
                 o.AllowUserChoice = true;
                 o.FailureMode = userMode == "Reject" ? DeviceProofFailureMode.ReportOnly : DeviceProofFailureMode.Reject;
             });
-            h.App.Api.Me = () => new CurrentUserInfo { Id = "u-1", UserName = "editor", DeviceBindingMode = userMode };
+            h.App.Api.Me = () => h.User(userMode);
             await SignInAndBindAsync(h);
             h.App.RemoveCookie(ProofCookie);
 
             Assert.Equal(authenticated, await IsAuthenticatedAsync(h.App));
+            Assert.Equal(userMode, Assert.Single(h.Handler.Calls).User!.DeviceBindingMode);
         }
 
         [Fact]
@@ -513,7 +796,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
                 o.AllowUserChoice = true;
                 o.FailureMode = DeviceProofFailureMode.ReportOnly;
             });
-            h.App.Api.Me = () => new CurrentUserInfo { Id = "u-1", UserName = "editor", DeviceBindingMode = "SignOut" };
+            h.App.Api.Me = () => h.User("SignOut");
             await SignInAndBindAsync(h);
             h.App.RemoveCookie(ProofCookie);
 
@@ -526,7 +809,10 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
         [InlineData("ReportOnly")] // valid name, but not allowed
         [InlineData("bogus")]
         [InlineData("0")]          // numeric value of ReportOnly
-        public async Task UserChoice_DisallowedOrUnknownValue_FallsBackToDefault(string userMode)
+        [InlineData(null)]
+        [InlineData("")]
+        [InlineData("   ")]
+        public async Task UserChoice_DisallowedUnknownOrEmptyValue_FallsBackToDefault(string? userMode)
         {
             await using var h = await StartAsync(o =>
             {
@@ -534,84 +820,157 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
                 o.FailureMode = DeviceProofFailureMode.Reject;
                 o.AllowedUserModes = new HashSet<DeviceProofFailureMode> { DeviceProofFailureMode.Reject, DeviceProofFailureMode.SignOut };
             });
-            h.App.Api.Me = () => new CurrentUserInfo { Id = "u-1", UserName = "editor", DeviceBindingMode = userMode };
+            h.App.Api.Me = () => h.User(userMode);
             await SignInAndBindAsync(h);
             h.App.RemoveCookie(ProofCookie);
 
             Assert.False(await IsAuthenticatedAsync(h.App));
             Assert.Equal(0, h.App.Api.LogoutCalls);
+            Assert.Equal(DeviceProofFailureMode.Reject, Assert.Single(h.Handler.Calls).DefaultMode);
         }
 
-        [Fact]
-        public async Task Hook_RunsLast_AndChangesTheDecision()
+        // ---------- failure handler: overrides ----------
+
+        [Theory]
+        [InlineData(DeviceProofOutcome.Continue, true, 0)]
+        [InlineData(DeviceProofOutcome.Reject, false, 0)]
+        [InlineData(DeviceProofOutcome.SignOut, false, 1)]
+        public async Task Handler_Outcome_IsApplied(DeviceProofOutcome outcome, bool authenticated, int logouts)
         {
-            DeviceProofFailureContext? seen = null;
-            await using var h = await StartAsync(o =>
-            {
-                o.AllowUserChoice = true;
-                o.FailureMode = DeviceProofFailureMode.SignOut;
-                o.OnProofFailure = ctx =>
-                {
-                    seen = ctx;
-                    return ValueTask.FromResult(DeviceProofFailureMode.ReportOnly);
-                };
-            });
-            h.App.Api.Me = () => new CurrentUserInfo { Id = "u-1", UserName = "editor", DeviceBindingMode = "Reject" };
+            await using var h = await StartAsync(o => o.FailureMode = DeviceProofFailureMode.ReportOnly);
+            h.Handler.Outcome = _ => ValueTask.FromResult(outcome);
             await SignInAndBindAsync(h);
             h.App.RemoveCookie(ProofCookie);
 
-            Assert.True(await IsAuthenticatedAsync(h.App));
-            Assert.NotNull(seen);
-            Assert.Equal(DeviceProofFailureReason.Missing, seen!.Reason);
-            Assert.Equal(DeviceProofFailureMode.Reject, seen.Mode); // user choice already applied
-            Assert.Equal(Sid, seen.SessionId);
-            Assert.Equal("Reject", seen.User!.DeviceBindingMode);
+            Assert.Equal(authenticated, await IsAuthenticatedAsync(h.App));
+            Assert.Equal(logouts, h.App.Api.LogoutCalls);
+            Assert.Equal(logouts == 0, h.App.Cookies.ContainsKey(MainCookie));
         }
 
         [Fact]
-        public async Task Hook_FixedPolicy_GetsNoUser_AndCanReject()
+        public async Task Handler_Handled_OwnResponse_ShortCircuits_NoApiCall_CookiesKept()
         {
-            DeviceProofFailureContext? seen = null;
-            await using var h = await StartAsync(o =>
+            await using var h = await StartAsync();
+            h.Handler.Outcome = async context =>
             {
-                o.FailureMode = DeviceProofFailureMode.ReportOnly;
-                o.OnProofFailure = ctx =>
-                {
-                    seen = ctx;
-                    return ValueTask.FromResult(DeviceProofFailureMode.Reject);
-                };
-            });
+                context.HttpContext.Response.StatusCode = StatusCodes.Status403Forbidden;
+                await context.HttpContext.Response.WriteAsync("device proof required");
+                return DeviceProofOutcome.Handled;
+            };
             await SignInAndBindAsync(h);
             h.App.SetCookie(ProofCookie, "garbage");
+            var meCalls = h.App.Api.MeCalls;
 
-            Assert.False(await IsAuthenticatedAsync(h.App));
-            Assert.Equal(DeviceProofFailureReason.Invalid, seen!.Reason);
-            Assert.Null(seen.User);
-        }
+            using var response = await h.App.SendAsync(HttpMethod.Get, "/call");
 
-        // ---------- downgrade, logout, disabled, startup ----------
-
-        [Fact]
-        public async Task Downgrade_ApiSaysBound_TicketWithoutKey_Guest_UserNotCached()
-        {
-            await using var h = await StartAsync(o => o.FailureMode = DeviceProofFailureMode.ReportOnly);
-            h.App.Api.Me = () => new CurrentUserInfo { Id = "u-1", UserName = "editor", IsDeviceBound = true };
-            await h.App.SignInAsync(Sid); // never registered: ticket has no key
-
-            Assert.False(await IsAuthenticatedAsync(h.App));
-            Assert.False(await IsAuthenticatedAsync(h.App));
-            Assert.Equal(2, h.App.Api.MeCalls);
+            Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+            Assert.Equal("device proof required", await response.Content.ReadAsStringAsync());
+            Assert.Empty(h.CallAuthorizations);
+            Assert.Equal(meCalls, h.App.Api.MeCalls);
+            Assert.Empty(WebAuthTestApp.SetCookies(response));
+            Assert.Equal("garbage", h.App.Cookies[ProofCookie]);
             Assert.True(h.App.Cookies.ContainsKey(MainCookie));
         }
 
         [Fact]
-        public async Task Unbound_ApiSaysNotBound_NoProofNeeded()
+        public async Task Handler_Handled_SoftPolicy_UserNotCached()
         {
-            await using var h = await StartAsync();
-            await h.App.SignInAsync(Sid);
+            await using var h = await StartAsync(o => o.AllowUserChoice = true);
+            h.Handler.Outcome = context =>
+            {
+                context.HttpContext.Response.StatusCode = StatusCodes.Status403Forbidden;
+                return ValueTask.FromResult(DeviceProofOutcome.Handled);
+            };
+            await SignInAndBindAsync(h);
+            h.App.RemoveCookie(ProofCookie);
+
+            using var response = await h.App.SendAsync(HttpMethod.Get, "/whoami");
+
+            Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+            Assert.Null(h.App.Services.GetRequiredService<CurrentUserCache>().Get(Sid));
+        }
+
+        [Fact]
+        public async Task Handler_Throws_DefaultOutcomeApplies()
+        {
+            await using var h = await StartAsync(o => o.FailureMode = DeviceProofFailureMode.Reject);
+            h.Handler.Outcome = _ => throw new InvalidOperationException("handler bug");
+            await SignInAndBindAsync(h);
+            h.App.RemoveCookie(ProofCookie);
+
+            Assert.False(await IsAuthenticatedAsync(h.App));
+            Assert.True(h.App.Cookies.ContainsKey(MainCookie));
+        }
+
+        [Fact]
+        public async Task Handler_ThrowsWithReportOnlyDefault_RequestContinues()
+        {
+            await using var h = await StartAsync(o => o.FailureMode = DeviceProofFailureMode.ReportOnly);
+            h.Handler.Outcome = _ => throw new InvalidOperationException("handler bug");
+            await SignInAndBindAsync(h);
+            h.App.RemoveCookie(ProofCookie);
 
             Assert.True(await IsAuthenticatedAsync(h.App));
         }
+
+        [Theory]
+        [InlineData(99)]
+        [InlineData(-1)]
+        public async Task Handler_UndefinedOutcome_DefaultOutcomeApplies(int value)
+        {
+            await using var h = await StartAsync(o => o.FailureMode = DeviceProofFailureMode.ReportOnly);
+            h.Handler.Outcome = _ => ValueTask.FromResult((DeviceProofOutcome)value);
+            await SignInAndBindAsync(h);
+            h.App.RemoveCookie(ProofCookie);
+
+            Assert.True(await IsAuthenticatedAsync(h.App));
+        }
+
+        private sealed class StricterForInvalid : DeviceProofFailureHandler
+        {
+            public override async ValueTask<DeviceProofOutcome> HandleAsync(DeviceProofFailureContext context)
+                => context.Reason == DeviceProofFailureReason.Invalid ? DeviceProofOutcome.SignOut : await base.HandleAsync(context);
+        }
+
+        [Theory]
+        [InlineData(false, true, 0)]  // missing proof: base → ReportOnly
+        [InlineData(true, false, 1)]  // invalid proof: overridden → SignOut
+        public async Task Handler_SubclassCallsBase(bool invalid, bool authenticated, int logouts)
+        {
+            var keyApi = new FakeDeviceKeyApi();
+            await using var app = await WebAuthTestApp.StartAsync(o =>
+            {
+                o.DeviceBound.Enabled = true;
+                o.DeviceBound.FailureMode = DeviceProofFailureMode.ReportOnly;
+            }, services =>
+            {
+                services.AddSingleton<IDeviceKeyApiClient>(keyApi);
+                services.AddSingleton<DeviceProofFailureHandler, StricterForInvalid>();
+            }, https: true);
+            app.Api.Me = () => new CurrentUserInfo { Id = "u-1", UserName = "editor", DeviceKeyJwk = keyApi.StoredJwk, DeviceKeyAlgorithm = keyApi.StoredAlgorithm };
+            using var device = DbscTestDevice.Es256();
+            using var signIn = await app.SignInAsync(Sid);
+            using var start = await PostAsync(app, "/dbsc/start", device.RegistrationJwt(ChallengeFrom(RegistrationHeader(signIn)!)));
+            Assert.Equal(HttpStatusCode.OK, start.StatusCode);
+            if (invalid)
+                app.SetCookie(ProofCookie, "garbage");
+            else
+                app.RemoveCookie(ProofCookie);
+
+            Assert.Equal(authenticated, await IsAuthenticatedAsync(app));
+            Assert.Equal(logouts, app.Api.LogoutCalls);
+        }
+
+        [Fact]
+        public void DefaultHandler_MapsEveryModeToAnOutcome()
+        {
+            Assert.Equal(DeviceProofOutcome.Continue, DeviceProofFailureHandler.ToOutcome(DeviceProofFailureMode.ReportOnly));
+            Assert.Equal(DeviceProofOutcome.Reject, DeviceProofFailureHandler.ToOutcome(DeviceProofFailureMode.Reject));
+            Assert.Equal(DeviceProofOutcome.SignOut, DeviceProofFailureHandler.ToOutcome(DeviceProofFailureMode.SignOut));
+            Assert.All(Enum.GetValues<DeviceProofFailureMode>(), m => Assert.NotEqual(DeviceProofOutcome.Handled, DeviceProofFailureHandler.ToOutcome(m)));
+        }
+
+        // ---------- logout, disabled, startup ----------
 
         [Fact]
         public async Task SignOut_DeletesProofCookie_AndClearSiteDataWhenAsked()
@@ -630,7 +989,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
         public async Task Disabled_BehavesAsBefore()
         {
             await using var h = await StartAsync(enabled: false);
-            h.App.Api.Me = () => new CurrentUserInfo { Id = "u-1", UserName = "editor", IsDeviceBound = true };
+            h.KeyApi.StoredJwk = "{\"kty\":\"EC\"}";
 
             using var signIn = await h.App.SignInAsync(Sid);
             using var start = await PostAsync(h.App, "/dbsc/start", h.Device.RegistrationJwt("c"));
@@ -644,10 +1003,11 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
         }
 
         [Fact]
-        public async Task Disabled_IgnoresIsDeviceBound()
+        public async Task Disabled_IgnoresABoundSession()
         {
             await using var h = await StartAsync(enabled: false);
-            h.App.Api.Me = () => new CurrentUserInfo { Id = "u-1", UserName = "editor", IsDeviceBound = true };
+            h.KeyApi.StoredJwk = "{\"kty\":\"EC\"}";
+            h.KeyApi.StoredAlgorithm = "ES256";
             await h.App.SignInAsync(Sid);
 
             Assert.True(await IsAuthenticatedAsync(h.App));
@@ -659,6 +1019,29 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             var error = await Assert.ThrowsAnyAsync<Exception>(() => WebAuthTestApp.StartAsync(o => o.DeviceBound.Enabled = true));
 
             Assert.Contains("IDeviceKeyApiClient", error.ToString());
+        }
+
+        [Fact]
+        public async Task EnabledOutsideAddTqkWebAuth_WithoutDeviceKeyClient_FailsAtStartup()
+        {
+            var error = await Assert.ThrowsAnyAsync<Exception>(() => WebAuthTestApp.StartAsync(
+                configureServices: services => services.Configure<WebAuthOptions>(o => o.DeviceBound.Enabled = true)));
+
+            Assert.Contains("IDeviceKeyApiClient", error.ToString());
+        }
+
+        [Fact]
+        public async Task EnabledOutsideAddTqkWebAuth_Works()
+        {
+            await using var app = await WebAuthTestApp.StartAsync(configureServices: services =>
+            {
+                services.Configure<WebAuthOptions>(o => o.DeviceBound.Enabled = true);
+                services.AddSingleton<IDeviceKeyApiClient>(new FakeDeviceKeyApi());
+            }, https: true);
+
+            using var signIn = await app.SignInAsync(Sid);
+
+            Assert.NotNull(RegistrationHeader(signIn));
         }
 
         [Fact]

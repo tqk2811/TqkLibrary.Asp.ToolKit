@@ -22,8 +22,9 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
     /// <para>
     /// <c>IHttpClientFactory</c> reuses handlers for MANY users, so this one keeps no user state: everything is read
     /// from <see cref="IHttpContextAccessor"/> per call. Without a session (guest), inside
-    /// <see cref="AnonymousApiScope"/>, when the caller set <c>Authorization</c> itself, or for a path listed in
-    /// <see cref="WebAuthOptions.AnonymousPathSuffixes"/>, the request passes through untouched.
+    /// <see cref="AnonymousApiScope"/>, when the caller set <c>Authorization</c> itself, for a path listed in
+    /// <see cref="WebAuthOptions.AnonymousPathSuffixes"/>, or when the request's device proof (DBSC) was rejected, the
+    /// request passes through untouched (no token, and a 401 is returned as is).
     /// </para>
     /// </summary>
     public sealed class SessionBearerHandler : DelegatingHandler
@@ -46,8 +47,10 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
             var options = _options.Value;
             var context = _httpContextAccessor.HttpContext;
             var sessionId = context?.User.FindFirst(options.SessionIdClaimType)?.Value;
+            // DBSC rejected request: no token and no "session ended" handling, whatever context.User is now (an endpoint
+            // with explicit AuthenticationSchemes re-authenticates and restores the cookie principal).
             if (context is null || string.IsNullOrEmpty(sessionId) || request.Headers.Authorization is not null
-                || AnonymousApiScope.IsActive || IsAnonymousPath(request, options))
+                || AnonymousApiScope.IsActive || IsAnonymousPath(request, options) || WebSessionTicket.IsRejected(context))
                 return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
 
             var ticket = WebSessionTicket.For(context);

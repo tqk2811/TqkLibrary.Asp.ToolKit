@@ -109,24 +109,6 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
                 + ";challenge=" + DeviceBoundSessionMiddleware.SfString(challenge);
         }
 
-        /// <summary>
-        /// DBSC: reissues the main cookie ONCE with the device key added to the ticket, keeping its principal, tokens,
-        /// <c>IssuedUtc</c>, <c>ExpiresUtc</c> and <c>IsPersistent</c>; the user cache of the session is dropped so the
-        /// next <c>me</c> reports the binding.
-        /// </summary>
-        internal async Task BindDeviceKeyAsync(HttpContext context, AuthenticateResult ticket, string sessionId, DeviceKey key)
-        {
-            var properties = new AuthenticationProperties(new Dictionary<string, string?>(ticket.Properties!.Items));
-            var tokens = ticket.Properties.GetTokens()
-                .Where(t => t.Name != WebSessionTicket.DeviceJwkName && t.Name != WebSessionTicket.DeviceAlgorithmName)
-                .ToList();
-            tokens.Add(new AuthenticationToken { Name = WebSessionTicket.DeviceJwkName, Value = key.Jwk });
-            tokens.Add(new AuthenticationToken { Name = WebSessionTicket.DeviceAlgorithmName, Value = key.Algorithm });
-            properties.StoreTokens(tokens);
-            await context.SignInAsync(_options.Scheme, ticket.Principal!, properties).ConfigureAwait(false);
-            _currentUserCache.Remove(sessionId);
-        }
-
         /// <summary>Revokes the session on the API with the cookie token (best effort, never throws for API errors), then clears the cookie.</summary>
         public async Task SignOutAsync(HttpContext context)
         {

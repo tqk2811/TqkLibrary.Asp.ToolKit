@@ -34,8 +34,8 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Extensions
         /// </param>
         /// <param name="configure">
         /// Optional <see cref="WebAuthOptions"/> overrides. <see cref="WebAuthOptions.Scheme"/> can ONLY be set here
-        /// (it is needed at registration time), and so must <c>DeviceBound.Enabled</c> (its startup validation and
-        /// middleware are wired from this value). This delegate is invoked twice (once on a snapshot at registration,
+        /// (it is needed at registration time). <c>DeviceBound</c> may be set here or in a later
+        /// <c>Configure&lt;WebAuthOptions&gt;</c>: it is validated at startup either way. This delegate is invoked twice (once on a snapshot at registration,
         /// once by the options system), so it must have no side effects outside the options object.
         /// </param>
         public static AuthenticationBuilder AddTqkWebAuth(this IServiceCollection services,
@@ -50,22 +50,20 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Extensions
             var optionsBuilder = services.AddOptions<WebAuthOptions>();
             if (configure is not null)
                 optionsBuilder.Configure(configure);
-            // DBSC: validated at startup (and its API client required) only when enabled; off keeps the previous behaviour.
-            if (snapshot.DeviceBound.Enabled)
-            {
-                optionsBuilder
-                    .Validate<IServiceProviderIsService>((options, isService) =>
-                    {
-                        if (!options.DeviceBound.Enabled)
-                            return true;
-                        options.DeviceBound.Validate();
-                        if (!isService.IsService(typeof(IDeviceKeyApiClient)))
-                            throw new InvalidOperationException(
-                                "WebAuthOptions.DeviceBound.Enabled requires an IDeviceKeyApiClient registration.");
+            // DBSC: always registered, a no-op while disabled, so enabling it anywhere (also in a later
+            // Configure<WebAuthOptions>) is validated at startup and requires its API client.
+            optionsBuilder
+                .Validate<IServiceProviderIsService>((options, isService) =>
+                {
+                    if (!options.DeviceBound.Enabled)
                         return true;
-                    })
-                    .ValidateOnStart();
-            }
+                    options.DeviceBound.Validate();
+                    if (!isService.IsService(typeof(IDeviceKeyApiClient)))
+                        throw new InvalidOperationException(
+                            "WebAuthOptions.DeviceBound.Enabled requires an IDeviceKeyApiClient registration.");
+                    return true;
+                })
+                .ValidateOnStart();
 
             services.AddHttpContextAccessor();
             services.AddMemoryCache();
@@ -80,6 +78,8 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Extensions
             services.TryAddSingleton<DeviceProofCookie>();
             services.TryAddSingleton<DeviceProofJwtVerifier>();
             services.TryAddSingleton<DeviceProofEnforcer>();
+            services.TryAddSingleton<DeviceBindingCache>();
+            services.TryAddSingleton<DeviceProofFailureHandler>();
 
             // Outside Development the cookie only travels over HTTPS. Registered BEFORE AddCookie so configureCookie wins.
             services.AddOptions<CookieAuthenticationOptions>(snapshot.Scheme)

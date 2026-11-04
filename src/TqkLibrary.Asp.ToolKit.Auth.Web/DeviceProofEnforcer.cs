@@ -8,127 +8,169 @@ using TqkLibrary.Asp.ToolKit.Auth.Web.Models;
 namespace TqkLibrary.Asp.ToolKit.Auth.Web
 {
     /// <summary>
-    /// Enforces the DBSC proof on ordinary requests (singleton), called by <see cref="CurrentUserMiddleware"/>:
-    /// <see cref="CheckAsync"/> reads whether the ticket is bound and checks the proof cookie;
-    /// <see cref="DecideAsync"/> picks the mode (project default → user choice when allowed → hook);
-    /// <see cref="ApplyAsync"/> logs, counts and applies it.
+    /// Enforces the DBSC proof on ordinary requests (singleton), called by <see cref="CurrentUserMiddleware"/>. Whether a
+    /// session is bound, and to which key, comes from the API (<c>me</c>) through <see cref="DeviceBindingCache"/>:
+    /// <see cref="Check"/> uses what the cache knows; <see cref="LearnAsync"/> completes it from a <c>me</c> result;
+    /// <see cref="EnforceAsync"/> asks <see cref="DeviceProofFailureHandler"/> and applies the outcome.
     /// </summary>
     internal sealed class DeviceProofEnforcer
     {
         private readonly IOptions<WebAuthOptions> _options;
         private readonly DeviceProofCookie _proofCookie;
+        private readonly DeviceBindingCache _bindings;
         private readonly DeviceBoundMetrics _metrics;
+        private readonly DeviceProofFailureHandler _handler;
         private readonly ILogger<DeviceProofEnforcer> _logger;
 
-        public DeviceProofEnforcer(IOptions<WebAuthOptions> options, DeviceProofCookie proofCookie, DeviceBoundMetrics metrics,
-            ILogger<DeviceProofEnforcer> logger)
+        public DeviceProofEnforcer(IOptions<WebAuthOptions> options, DeviceProofCookie proofCookie, DeviceBindingCache bindings,
+            DeviceBoundMetrics metrics, DeviceProofFailureHandler handler, ILogger<DeviceProofEnforcer> logger)
         {
             _options = options;
             _proofCookie = proofCookie;
+            _bindings = bindings;
             _metrics = metrics;
+            _handler = handler;
             _logger = logger;
         }
-
-        public bool Enabled => _options.Value.DeviceBound.Enabled;
 
         /// <summary>Whether the decision depends on the user (<see cref="DeviceBoundSessionOptions.AllowUserChoice"/>).</summary>
         public bool NeedsUser => _options.Value.DeviceBound.AllowUserChoice;
 
-        /// <summary>DBSC state of the request of session <paramref name="sessionId"/>.</summary>
-        public async Task<DeviceProofCheck> CheckAsync(HttpContext context, string sessionId)
+        /// <summary>
+        /// DBSC state of the request from what the binding cache knows: not applicable (off / excluded path), unknown
+        /// (<see cref="DeviceProofCheck.Bound"/> false: <see cref="LearnAsync"/> may complete it), or bound with the result
+        /// of the proof cookie check against the stored key.
+        /// </summary>
+        public DeviceProofCheck Check(HttpContext context, string sessionId)
         {
-            var options = _options.Value;
-            if (!options.DeviceBound.Enabled || IsExcluded(context.Request.Path, options.DeviceBound))
+            var options = _options.Value.DeviceBound;
+            if (!options.Enabled || IsExcluded(context.Request.Path, options))
                 return DeviceProofCheck.NotApplicable;
-            // Cached by the cookie handler: no second decryption.
-            var ticket = await context.AuthenticateAsync(options.Scheme).ConfigureAwait(false);
-            var bound = ticket.Succeeded && !string.IsNullOrEmpty(ticket.Properties?.GetTokenValue(WebSessionTicket.DeviceJwkName));
-            if (!bound)
+            if (_bindings.Get(sessionId) is not { } key)
                 return new DeviceProofCheck(true, false, null);
-            return new DeviceProofCheck(true, true, _proofCookie.CheckRequest(context, sessionId));
+            return new DeviceProofCheck(true, true, _proofCookie.CheckRequest(context, sessionId, key.Thumbprint));
         }
 
         /// <summary>
-        /// The mode for a failed proof: <see cref="DeviceBoundSessionOptions.FailureMode"/>; with
-        /// <see cref="DeviceBoundSessionOptions.AllowUserChoice"/> the user's <see cref="CurrentUserInfo.DeviceBindingMode"/>
-        /// when it names an allowed mode; then <see cref="DeviceBoundSessionOptions.OnProofFailure"/>.
+        /// Records the binding reported by <paramref name="user"/> (<c>me</c>) in the binding cache and, for a request whose
+        /// binding was unknown, checks the proof against it. A bound user whose key cannot be read (corrupt, unsupported)
+        /// fails as <see cref="DeviceProofFailureReason.Invalid"/>.
         /// </summary>
-        public async ValueTask<DeviceProofFailureMode> DecideAsync(HttpContext context, string sessionId,
-            DeviceProofFailureReason reason, CurrentUserInfo? user)
+        public async Task<DeviceProofCheck> LearnAsync(HttpContext context, string sessionId, DeviceProofCheck check, CurrentUserInfo? user)
+        {
+            if (!_options.Value.DeviceBound.Enabled || user is null || !user.IsDeviceBound || _bindings.Get(sessionId) is not null)
+                return check;
+            var key = DeviceKey.TryParse(user.DeviceKeyJwk, user.DeviceKeyAlgorithm, DeviceKey.StoredKeyMinRsaKeySize);
+            if (key is null)
+            {
+                _logger.LogError("DBSC: the API reports session {SessionId} as bound but its device key ({Algorithm}) cannot be used.",
+                    sessionId, user.DeviceKeyAlgorithm is null ? "none" : Sanitize(user.DeviceKeyAlgorithm));
+                return check.Applicable && !check.Bound ? new DeviceProofCheck(true, true, DeviceProofFailureReason.Invalid) : check;
+            }
+            key = _bindings.Set(sessionId, key, await GetSessionExpiryAsync(context).ConfigureAwait(false));
+            if (!check.Applicable || check.Bound)
+                return check;
+            return new DeviceProofCheck(true, true, _proofCookie.CheckRequest(context, sessionId, key.Thumbprint));
+        }
+
+        /// <summary>Absolute expiry of the web session (the cookie ticket's <c>ExpiresUtc</c>; cached by the cookie handler).</summary>
+        internal async Task<DateTimeOffset?> GetSessionExpiryAsync(HttpContext context)
+        {
+            var ticket = await context.AuthenticateAsync(_options.Value.Scheme).ConfigureAwait(false);
+            return ticket.Succeeded ? ticket.Properties?.ExpiresUtc : null;
+        }
+
+        /// <summary>
+        /// When <paramref name="check"/> carries a failure: asks the handler (with <paramref name="user"/>, null = unknown),
+        /// logs, counts and applies the outcome.
+        /// </summary>
+        public async Task<DeviceProofResult> EnforceAsync(HttpContext context, WebSessionManager sessions, string sessionId,
+            DeviceProofCheck check, CurrentUserInfo? user)
+        {
+            if (!check.Applicable || check.Failure is not { } reason)
+                return DeviceProofResult.Proceed;
+            var outcome = await DecideAsync(context, sessionId, reason, user).ConfigureAwait(false);
+            _metrics.ProofFailure(DeviceBoundMetrics.ReasonTag(reason), outcome);
+            // Debug, not Warning: a browser that lost its DBSC session fails on EVERY request until the next sign-in;
+            // the counter tqk.auth.dbsc.proof_failures is the signal to watch.
+            _logger.LogDebug("DBSC proof failed for session {SessionId}: {Reason}; outcome {Outcome}.", sessionId, reason, outcome);
+            switch (outcome)
+            {
+                case DeviceProofOutcome.Continue:
+                    return DeviceProofResult.Proceed;
+                case DeviceProofOutcome.SignOut:
+                    // Revokes on the API with the session token (still readable from the ticket), then drops both cookies.
+                    await sessions.SignOutAsync(context).ConfigureAwait(false);
+                    RejectRequest(context);
+                    return DeviceProofResult.Guest;
+                case DeviceProofOutcome.Handled:
+                    RejectRequest(context);
+                    if (!context.Response.HasStarted)
+                        _logger.LogDebug("DBSC: the proof failure handler returned Handled for session {SessionId} without starting the response.", sessionId);
+                    return DeviceProofResult.Handled;
+                default:
+                    RejectRequest(context);
+                    return DeviceProofResult.Guest;
+            }
+        }
+
+        /// <summary>The handler's outcome; its exception or an undefined value falls back to the default outcome.</summary>
+        private async ValueTask<DeviceProofOutcome> DecideAsync(HttpContext context, string sessionId, DeviceProofFailureReason reason,
+            CurrentUserInfo? user)
+        {
+            var defaultMode = DefaultMode(sessionId, user);
+            var fallback = DeviceProofFailureHandler.ToOutcome(defaultMode);
+            DeviceProofOutcome outcome;
+            try
+            {
+                outcome = await _handler.HandleAsync(new DeviceProofFailureContext
+                {
+                    HttpContext = context,
+                    SessionId = sessionId,
+                    Reason = reason,
+                    DefaultMode = defaultMode,
+                    User = user,
+                }).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !context.RequestAborted.IsCancellationRequested)
+            {
+                _logger.LogError(ex, "DBSC: the proof failure handler threw; using the default outcome {Outcome}.", fallback);
+                return fallback;
+            }
+            if (Enum.IsDefined(outcome))
+                return outcome;
+            _logger.LogWarning("DBSC: the proof failure handler returned undefined outcome {Outcome}; using the default outcome {Fallback}.",
+                (int)outcome, fallback);
+            return fallback;
+        }
+
+        /// <summary>
+        /// <see cref="DeviceBoundSessionOptions.FailureMode"/>; with <see cref="DeviceBoundSessionOptions.AllowUserChoice"/>
+        /// the user's <see cref="CurrentUserInfo.DeviceBindingMode"/> when it names an allowed mode.
+        /// </summary>
+        private DeviceProofFailureMode DefaultMode(string sessionId, CurrentUserInfo? user)
         {
             var options = _options.Value.DeviceBound;
             var mode = options.FailureMode;
-            if (options.AllowUserChoice && !string.IsNullOrEmpty(user?.DeviceBindingMode))
+            if (options.AllowUserChoice && !string.IsNullOrWhiteSpace(user?.DeviceBindingMode))
             {
                 if (TryParseMode(user.DeviceBindingMode, out var chosen) && options.AllowedUserModes.Contains(chosen))
                     mode = chosen;
                 else
-                    _logger.LogWarning("DBSC: device binding mode {UserMode} of session {SessionId} is unknown or not allowed; using {Mode}.",
+                    _logger.LogDebug("DBSC: device binding mode {UserMode} of session {SessionId} is unknown or not allowed; using {Mode}.",
                         Sanitize(user.DeviceBindingMode), sessionId, mode);
-            }
-            if (options.OnProofFailure is { } hook)
-            {
-                try
-                {
-                    var decided = await hook(new DeviceProofFailureContext
-                    {
-                        HttpContext = context,
-                        SessionId = sessionId,
-                        Reason = reason,
-                        Mode = mode,
-                        User = user,
-                    }).ConfigureAwait(false);
-                    if (Enum.IsDefined(decided))
-                        mode = decided;
-                    else
-                        _logger.LogWarning("DBSC: OnProofFailure returned undefined mode {Mode}; keeping the decided mode.", (int)decided);
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException || !context.RequestAborted.IsCancellationRequested)
-                {
-                    _logger.LogError(ex, "DBSC: OnProofFailure threw; keeping mode {Mode}.", mode);
-                }
             }
             return mode;
         }
 
         /// <summary>
-        /// Logs, counts and applies <paramref name="mode"/>. True when the request now runs as a guest (Reject,
-        /// SignOut), false for ReportOnly.
+        /// Guest for this request only, WITHOUT the session token: the cookie is kept, but the ticket is marked rejected so
+        /// <see cref="SessionBearerHandler"/> sends no token even when an endpoint re-authenticates the cookie scheme or the
+        /// request is re-executed.
         /// </summary>
-        public async Task<bool> ApplyAsync(HttpContext context, WebSessionManager sessions, string sessionId,
-            DeviceProofFailureReason reason, DeviceProofFailureMode mode)
-        {
-            _metrics.ProofFailure(DeviceBoundMetrics.ReasonTag(reason), mode);
-            _logger.LogWarning("DBSC proof failed for session {SessionId}: {Reason}; mode {Mode}.", sessionId, reason, mode);
-            switch (mode)
-            {
-                case DeviceProofFailureMode.ReportOnly:
-                    return false;
-                case DeviceProofFailureMode.SignOut:
-                    // Revokes on the API with the session token (still readable from the ticket), then drops both cookies.
-                    await sessions.SignOutAsync(context).ConfigureAwait(false);
-                    return true;
-                default:
-                    RejectRequest(context);
-                    return true;
-            }
-        }
-
-        /// <summary>
-        /// The ticket has no key but the API says the session is bound: a copy of the main cookie taken before the
-        /// binding. Always a guest (whatever the mode), counted with reason <c>unbound</c>.
-        /// </summary>
-        public void RejectUnbound(HttpContext context, string sessionId)
-        {
-            _metrics.ProofFailure("unbound", DeviceProofFailureMode.Reject);
-            _logger.LogWarning("DBSC: session {SessionId} is device-bound but the cookie has no device key; request runs as a guest.", sessionId);
-            RejectRequest(context);
-        }
-
-        /// <summary>Guest for this request only: the cookie is kept, the session token is not used.</summary>
         private static void RejectRequest(HttpContext context)
         {
-            WebSessionTicket.For(context).Clear();
+            WebSessionTicket.For(context).Reject();
             context.User = new ClaimsPrincipal(new ClaimsIdentity());
         }
 

@@ -170,38 +170,49 @@ Browser support (11/2026): Chrome 145+ on Windows with a TPM, generally availabl
 out). Other browsers ignore it. The specification is a W3C draft (<https://w3c.github.io/webappsec-dbsc/>) and may
 still change.
 
+The **API is the single source of truth for the device key**: the web never stores the key in its cookie. It learns
+whether a session is bound, and the key, from `me` (`deviceKeyJwk`, `deviceKeyAlgorithm`) and keeps that in a small
+in-memory binding cache per instance (an entry lives until the session's absolute expiry, at most 30 days, bounded to
+100 000 sessions, independent of the app's `IMemoryCache`). Once a session is known to be bound it stays bound.
+
 ### Flow
 
 1. `WebSessionManager.SignInAsync` (HTTPS only) adds
    `Secure-Session-Registration: (ES256 RS256);path="/dbsc/start";challenge="..."` to the login response.
 2. The browser creates a key and posts a signed JWT (`Secure-Session-Response`) to `RegistrationPath`. The web checks
-   the challenge (issued for this session, not expired, not used), the JWT (`typ` `dbsc+jwt`, `alg` ES256/RS256, the
-   public key, the signature made by that key), calls `IDeviceKeyApiClient.RegisterDeviceKeyAsync`, reissues the main
-   cookie once with the public key in the ticket (same expiry and persistence), sets the proof cookie and returns the
-   session config (`session_identifier`, `refresh_url`, `scope`, `credentials`).
-3. When the proof cookie expires the browser posts to `RefreshPath`: the web answers 403 with
-   `Secure-Session-Challenge`, the browser signs it, the web verifies it with the key from the ticket and issues a new
-   proof cookie. A signed-out or unbound session gets `{"continue": false}`, which ends the browser's DBSC session.
-4. On every other request `CurrentUserMiddleware` checks the proof cookie of a bound session and applies the failure
-   mode below.
+   the challenge (issued for this session, not expired, not used), the JWT (`typ` `dbsc+jwt`, `alg` in `Algorithms`,
+   the public key, the signature made by that key), calls `IDeviceKeyApiClient.RegisterDeviceKeyAsync`, records the
+   binding in memory, drops the cached `me` result, sets the proof cookie and returns the session config
+   (`session_identifier`, `refresh_url`, `scope`, `credentials`). The main cookie is not touched.
+3. When the proof cookie expires the browser posts to `RefreshPath` (HTTPS only): the web takes the stored key from its
+   binding cache, or asks `me` on a miss, answers 403 with `Secure-Session-Challenge`, verifies the signed challenge
+   with that key and issues a new proof cookie. A signed-out, unbound session, or a request over HTTP gets
+   `{"continue": false}`, which ends the browser's DBSC session; `me` unavailable gets 503 (the browser skips the
+   refresh).
+4. On every other request `CurrentUserMiddleware` checks the proof cookie of a bound session and hands a failure to
+   the failure handler below.
 
 Challenges and proofs are stateless (Data Protection, purpose-separated; expiry inside the payload), so several
-instances only need the shared key ring, as for the main cookie. Replay protection of a used challenge is kept in
-memory, per instance (best effort).
+instances only need the shared key ring, as for the main cookie. The proof cookie carries the session id and the
+RFC 7638 thumbprint of the device key; a proof made for another key is `Invalid`. Replay protection of a used
+challenge is kept in memory, per instance (best effort), keyed on the decoded challenge bytes.
+
+A **lost registration response** (the API stored the key but the answer never reached the browser) is not a lockout:
+the next request without proof is a proof failure (`Missing`), and a refresh obtains the key through `me` and issues
+the proof for the same, unchanged main cookie.
 
 ```csharp
 builder.Services.AddTqkWebAuth(cookie => { /* ... */ }, o =>
 {
-    o.DeviceBound.Enabled = true;                              // set it HERE (checked at startup)
+    o.DeviceBound.Enabled = true;
     o.DeviceBound.FailureMode = DeviceProofFailureMode.ReportOnly; // start with ReportOnly
     o.DeviceBound.ExcludedPaths = ["/health", "/lib"];
 });
 builder.Services.AddHttpClient<IDeviceKeyApiClient, MyDeviceKeyApi>(c => c.BaseAddress = new(apiUrl)).AddTqkSessionBearer();
 ```
 
-`Enabled = true` without an `IDeviceKeyApiClient` registration, or with invalid options, fails at startup. Set
-`Enabled` in the `AddTqkWebAuth` delegate (like `Scheme`): the startup check and the endpoint middleware are wired from
-it.
+`Enabled = true` without an `IDeviceKeyApiClient` registration, or with invalid options, fails at startup, whether it
+is set in the `AddTqkWebAuth` delegate or in a later `Configure<WebAuthOptions>`.
 
 ### Options (`WebAuthOptions.DeviceBound`)
 
@@ -212,68 +223,105 @@ it.
 | `ProofCookieName` | `null` | Null = `{main cookie name}.proof`. Attributes `Path=/; Secure; HttpOnly; SameSite=Lax`, host-only. |
 | `ProofLifetime` | 10 min | Lifetime of the proof cookie (at least 1 minute). |
 | `RegistrationChallengeLifetime` / `RefreshChallengeLifetime` | 5 min / 2 min | Validity of the challenges. |
-| `Algorithms` | `ES256`, `RS256` | Accepted signature algorithms (`none`, HMAC and others are always refused). |
-| `MinRsaKeySize` | 2048 | Smallest RSA modulus; exponent must be 65537. |
-| `ExcludedPaths` | empty | Path prefixes not checked; also sent to the browser as `exclude` scope rules. |
-| `FailureMode` | `Reject` | Fixed mode, or the default when users may choose. |
+| `Algorithms` | `ES256`, `RS256` | Algorithms accepted for NEW registrations. A bound session keeps working with its stored key's algorithm after it is removed here. |
+| `MinRsaKeySize` | 2048 | Smallest RSA modulus for new registrations; exponent must be 65537. Stored keys are read with the 2048 floor. |
+| `ExcludedPaths` | empty | Path prefixes that BYPASS enforcement completely (a copied cookie without proof works there, with the session token); also sent to the browser as `exclude` scope rules. Exclude only paths that expose nothing sensitive. |
+| `FailureMode` | `Reject` | Fixed mode, or the default when users may choose (used by the default failure handler). |
 | `AllowUserChoice` | `false` | `false` = fixed policy, `true` = each user chooses (see below). |
 | `AllowedUserModes` | all three | Modes a user may pick. |
 | `ProofExpiryGrace` | 2 min | A genuine proof of the right session that expired less than this ago still counts. |
-| `OnProofFailure` | `null` | `Func<DeviceProofFailureContext, ValueTask<DeviceProofFailureMode>>`, last word on the decision. |
 | `ClearSiteDataOnSignOut` | `false` | Sends `Clear-Site-Data: "cookies"` on sign-out/drop (deletes EVERY cookie of the site). |
 
-### Failure modes
+### Failure handling
 
-When a bound session's request has no proof, an expired one (beyond the grace), one of another session, or an
-invalid one:
+When a bound session's request has no proof (`Missing`), an expired one beyond the grace (`Expired`), one of another
+session (`WrongSession`), or an invalid one or one made for another key (`Invalid`), the library asks the
+`DeviceProofFailureHandler` (singleton) for a `DeviceProofOutcome`:
 
-- `ReportOnly`: the request runs as usual; a Warning is logged and the counter is incremented.
-- `Reject` (default): the request runs as a guest. The session is NOT signed out and the main cookie is kept, so the
-  next request works again once the browser refreshed the proof.
+- `Continue` (= `ReportOnly`): the request runs as usual; the failure is counted and logged at Debug level.
+- `Reject` (default): the request runs as a guest WITHOUT the session token, for the rest of the request: an endpoint
+  with explicit `AuthenticationSchemes` that re-authenticates the cookie, or an error page re-executed by
+  `UseExceptionHandler`, still sends no token and a 401 there does not drop the cookie. The session is NOT signed out
+  and the main cookie is kept, so the next request works again once the browser refreshed the proof.
 - `SignOut`: the session is revoked on the API (`IAuthApiClient.LogoutAsync`, best effort), the main and proof cookies
   are deleted, the request runs as a guest.
+- `Handled` (custom handlers only): the handler wrote the response itself; the pipeline stops right there, no token is
+  sent, the user is not cached and both cookies stay as they are.
+
+The default handler returns `context.DefaultMode` as an outcome: the fixed `FailureMode`, or the user's allowed choice
+(see below). To customise, subclass it and register the subclass (before or after `AddTqkWebAuth`); scoped services
+come from `context.HttpContext.RequestServices`:
+
+```csharp
+public sealed class MyProofFailureHandler : DeviceProofFailureHandler
+{
+    public override async ValueTask<DeviceProofOutcome> HandleAsync(DeviceProofFailureContext context)
+    {
+        if (context.Reason == DeviceProofFailureReason.Invalid)
+        {
+            context.HttpContext.Response.StatusCode = StatusCodes.Status403Forbidden;
+            await context.HttpContext.Response.WriteAsync("Device proof required.");
+            return DeviceProofOutcome.Handled;
+        }
+        return await base.HandleAsync(context);   // FailureMode / user choice
+    }
+}
+
+builder.Services.AddSingleton<DeviceProofFailureHandler, MyProofFailureHandler>();
+```
+
+`DeviceProofFailureContext` carries `HttpContext`, `SessionId`, `Reason`, `DefaultMode` and `User` (when known). A
+handler that throws (other than a cancellation of the aborted request) or returns an undefined value is logged and the
+default outcome applies. `DeviceProofFailureMode` stays the type of the options and of the user's choice, so
+`Handled` can never be configured or chosen by a user.
 
 Recommended rollout: deploy with `ReportOnly`, watch the counter `tqk.auth.dbsc.proof_failures` (meter
-`TqkLibrary.Asp.ToolKit.Auth.Web`, tags `reason` = `missing`/`expired`/`wrong_session`/`invalid`/`unbound`,
-`mode`), then switch to `Reject`. `SignOut` is the strictest and makes every DBSC hiccup (TPM error, browser bug) a
-forced login.
+`TqkLibrary.Asp.ToolKit.Auth.Web`, tags `reason` = `missing`/`expired`/`wrong_session`/`invalid`, `mode` =
+`report_only`/`reject`/`sign_out`/`handled`), then switch to `Reject`. The per-request log line is Debug on purpose:
+a browser that lost its DBSC session fails on every request until the next sign-in. `SignOut` is the strictest and
+makes every DBSC hiccup (TPM error, browser bug) a forced login.
 
 ### Fixed policy or user choice
 
 - **Fixed** (`AllowUserChoice = false`, default): `FailureMode` applies to everybody; `me.deviceBindingMode` is ignored.
-  The decision is taken before `me`, so a rejected request does not call the API.
+  For a session already known to be bound, the decision is taken before `me`, so a rejected request does not call the
+  API.
 - **User choice** (`AllowUserChoice = true`): each user picks a mode in their account settings (stored by the app,
-  returned by `me` as `deviceBindingMode`). An allowed value wins; no value, an unknown value or one outside
-  `AllowedUserModes` falls back to `FailureMode` (a bad value is logged). The decision waits for the user (cached or
-  loaded through `me`); when `me` is unavailable or skipped (`SkipCurrentUser`) the default applies.
+  returned by `me` as `deviceBindingMode`). An allowed value wins; no value, a blank or unknown value, or one outside
+  `AllowedUserModes` falls back to `FailureMode`. The decision waits for the user (cached or loaded through `me`);
+  when `me` is unavailable or skipped (`SkipCurrentUser`) the default applies. Exception to "no token after a failed
+  proof": to learn the user's mode, this policy necessarily calls `me` WITH the session token first. The same holds
+  for a session whose binding this instance does not know yet (it has to ask `me`).
 
-Order of the decision: project default → user choice (when allowed) → `OnProofFailure` hook. The hook receives the
-`HttpContext`, the session id, the reason (`Missing`, `Expired`, `WrongSession`, `Invalid`), the mode decided so far
-and the user when known; it returns the mode to apply (an exception keeps the decided mode).
+When `me` fails (or `SkipCurrentUser` applies) and the session is known to be bound, the proof is still enforced
+(user unknown), BEFORE `CurrentUserFailureMode.Throw` could fail the request: a request made a guest by the proof
+failure does not throw. When nothing is known about the binding (a cold instance during an API outage), the session
+is treated as not bound for that request: this is the residual gap of the design.
 
 ### Contract with the app's API
 
+- `me` (`CurrentUserInfo`) must return `deviceKeyJwk` and `deviceKeyAlgorithm` (the stored key, null when not bound)
+  and may return `deviceBindingMode` (the user's choice, `ReportOnly`/`Reject`/`SignOut`, case-insensitive; the web
+  whitelists it). `IsDeviceBound` is derived from `deviceKeyJwk`. Auth.Api provides `GetDeviceBinding` for this.
 - `IDeviceKeyApiClient.RegisterDeviceKeyAsync(jwk, algorithm, ct)` stores the public key (canonical public JWK, ES256
-  or RS256) on the API session, through the client with `AddTqkSessionBearer`. Return `false` when the API refuses (for
-  example 409: already bound, or outside the API's registration window right after login): the browser gets 403 and the
-  session stays unbound. The web verifies the proof of possession BEFORE this call; the API does not have to.
-- `me` (`CurrentUserInfo`) may return `isDeviceBound` (the session has a key) and `deviceBindingMode` (the user's
-  choice, `ReportOnly`/`Reject`/`SignOut`, case-insensitive; the web whitelists it).
-- The web treats a successful registration as bound right away (the key is in the cookie ticket); it does not wait for
-  `me` to report `isDeviceBound`.
+  or RS256) on the API session, through the client with `AddTqkSessionBearer`. Return `false` for HTTP 409 (already
+  bound, revoked/expired, or outside the API's registration window right after login) and 400 — never throw for
+  them: the browser gets 400. A transient failure may throw: the browser gets 503. The web verifies the proof of
+  possession BEFORE this call; the API does not have to.
 
 ### Risks and limits
 
-- Downgrade: a copy of the main cookie taken BEFORE the binding carries no key. When `me` reports `isDeviceBound`
-  for such a ticket the request runs as a guest (whatever the mode) and the user is not cached. Until the API reports
-  it (cache TTL) such a copy still works.
-- A stolen proof cookie works until it expires (`ProofLifetime` + grace): keep the lifetime short.
-- A request with a rejected proof still authenticates through an explicit `HttpContext.AuthenticateAsync(scheme)` or an
-  `[Authorize]` policy naming the scheme; the library itself never sends the session token for it.
+- Losing the browser's DBSC session (site data cleared, `continue: false`, any 4xx except 403 on refresh) leaves a
+  bound session without proof: with `Reject`/`SignOut` the user has to sign in again, because registration only
+  happens right after sign-in (the API accepts a key only within its registration window, 10 minutes by default).
+- A stolen proof cookie works until it expires (`ProofLifetime` + grace), and only with the session's own main cookie:
+  keep the lifetime short.
+- `ExcludedPaths` bypass enforcement completely.
+- Cold instance + API outage: an instance that never saw the session cannot tell it is bound while `me` fails, and
+  treats it as not bound until `me` answers again.
 - Replay protection is per instance; behind a load balancer a proof can be replayed to another instance within the
   challenge lifetime (it stays bound to the same session and key).
-- The draft may change header or field names; browsers that end their DBSC session (any 4xx except 403 on refresh)
-  leave a bound main cookie without proof, which the failure mode then handles.
+- The draft may change header or field names.
 
 ## Dependencies
 

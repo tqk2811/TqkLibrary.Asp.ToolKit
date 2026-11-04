@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System.Security.Claims;
 using TqkLibrary.Asp.ToolKit.Auth.Web.Interfaces;
 using TqkLibrary.Asp.ToolKit.Auth.Web.Models;
 
@@ -20,16 +21,17 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
     ///   <item>API unreachable (network, 5xx, timeout <see cref="WebAuthOptions.CurrentUserTimeout"/>) → still
     ///   authenticated (session id and user id only, no name) but WITHOUT any permission: admin pages answer "forbidden" instead of
     ///   opening on stale data. <see cref="WebAuthOptions.CurrentUserFailureMode"/> = <c>Throw</c> fails the request
-    ///   with <see cref="CurrentUserUnavailableException"/> instead; <see cref="WebAuthOptions.CurrentUserFailureCacheFor"/>
-    ///   remembers the failure per session so an outage does not make every request wait for the timeout.</item>
+    ///   with <see cref="CurrentUserUnavailableException"/> instead (unless a DBSC proof failure already made it a guest);
+    ///   <see cref="WebAuthOptions.CurrentUserFailureCacheFor"/> remembers the failure per session so an outage does not
+    ///   make every request wait for the timeout.</item>
     ///   <item><see cref="WebAuthOptions.SkipCurrentUser"/> → no API call for that request (a cached user still applies).</item>
-    ///   <item>DBSC (<see cref="DeviceBoundSessionOptions.Enabled"/>): for a cookie bound to a device key, the proof
-    ///   cookie is checked here (outside <see cref="DeviceBoundSessionOptions.ExcludedPaths"/>). A failure applies
-    ///   <see cref="DeviceProofFailureMode"/>: with a fixed policy it is decided BEFORE <c>me</c> (a rejected request
-    ///   does not call the API); with <see cref="DeviceBoundSessionOptions.AllowUserChoice"/> after the user is known,
-    ///   so the user's <see cref="CurrentUserInfo.DeviceBindingMode"/> can apply. A cookie without key for a session
-    ///   the API reports bound (<see cref="CurrentUserInfo.IsDeviceBound"/>) runs as a guest and the user is not
-    ///   cached.</item>
+    ///   <item>DBSC (<see cref="DeviceBoundSessionOptions.Enabled"/>), outside <see cref="DeviceBoundSessionOptions.ExcludedPaths"/>:
+    ///   a session is bound when <see cref="DeviceBindingCache"/> knows it or <c>me</c> (cached or fresh) reports it;
+    ///   a bound session needs a valid proof cookie for the stored key. A known binding with the fixed policy is decided
+    ///   BEFORE <c>me</c> (a rejected request does not call the API); otherwise after the user is known. When <c>me</c>
+    ///   fails or is skipped, a known binding is still enforced (unknown user); an unknown binding counts as not bound.
+    ///   The outcome comes from <see cref="DeviceProofFailureHandler"/>; <see cref="DeviceProofOutcome.Handled"/> ends
+    ///   the pipeline here. A rejected request stays a guest for the rest of the request, re-executions included.</item>
     /// </list>
     /// Place it AFTER <c>UseAuthentication</c> and BEFORE <c>UseAuthorization</c>.
     /// </summary>
@@ -51,17 +53,25 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
             CurrentUserCache cache, WebSessionPrincipalFactory principals, WebSessionManager sessions)
         {
             var sessionId = context.User.FindFirst(options.Value.SessionIdClaimType)?.Value;
-            if (context.User.Identity?.IsAuthenticated == true && !string.IsNullOrEmpty(sessionId)
+            if (WebSessionTicket.IsRejected(context))
+            {
+                // A DBSC rejection is final for the request: a re-execution where UseAuthentication restored the cookie
+                // principal still runs as a guest.
+                context.User = new ClaimsPrincipal(new ClaimsIdentity());
+            }
+            else if (context.User.Identity?.IsAuthenticated == true && !string.IsNullOrEmpty(sessionId)
                 && !context.Items.ContainsKey(ResolvedKey))
             {
                 var device = options.Value.DeviceBound.Enabled ? context.RequestServices.GetRequiredService<DeviceProofEnforcer>() : null;
-                var check = device is null ? DeviceProofCheck.NotApplicable : await device.CheckAsync(context, sessionId).ConfigureAwait(false);
-                // Fixed DBSC policy: the decision needs no user, so it is taken before `me` and a rejected request never
-                // calls the API. With user choice it waits for the user (cached or loaded) below.
-                if (check.Failure is { } reason && !device!.NeedsUser)
+                var check = device is null ? DeviceProofCheck.NotApplicable : device.Check(context, sessionId);
+                // Fixed DBSC policy and a session known to be bound: the decision needs no user, so it is taken before
+                // `me` and a rejected request never calls the API. Otherwise it waits for the user (cached or loaded).
+                if (check.Failure is not null && !device!.NeedsUser)
                 {
-                    var mode = await device.DecideAsync(context, sessionId, reason, null).ConfigureAwait(false);
-                    if (await device.ApplyAsync(context, sessions, sessionId, reason, mode).ConfigureAwait(false))
+                    var early = await device.EnforceAsync(context, sessions, sessionId, check, null).ConfigureAwait(false);
+                    if (early == DeviceProofResult.Handled)
+                        return;
+                    if (early == DeviceProofResult.Guest)
                     {
                         context.Items[ResolvedKey] = true;
                         await _next(context).ConfigureAwait(false);
@@ -70,38 +80,39 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
                     check = check with { Failure = null };
                 }
 
+                DeviceProofResult result;
                 if (cache.Get(sessionId) is { } cached)
                 {
                     context.Items[ResolvedKey] = true;
-                    if (!await EnforceDeviceProofAsync(device, check, context, sessions, sessionId, cached).ConfigureAwait(false))
+                    result = await EnforceDeviceProofAsync(device, check, context, sessions, sessionId, cached).ConfigureAwait(false);
+                    if (result == DeviceProofResult.Proceed)
                         context.User = principals.Create(sessionId, cached);
                 }
                 else if (options.Value.SkipCurrentUser?.Invoke(context) == true)
                 {
                     // Not marked resolved: a re-execution on another path may still load the user.
-                    if (!await EnforceDeviceProofAsync(device, check, context, sessions, sessionId, null).ConfigureAwait(false))
+                    result = await EnforceDeviceProofAsync(device, check, context, sessions, sessionId, null).ConfigureAwait(false);
+                    if (result == DeviceProofResult.Proceed)
                         context.User = principals.CreateSessionOnly(sessionId, GetUserId(context));
                 }
                 else
                 {
                     context.Items[ResolvedKey] = true;
-                    await ResolveAsync(context, options.Value, client, cache, principals, sessions, sessionId, device, check).ConfigureAwait(false);
+                    result = await ResolveAsync(context, options.Value, client, cache, principals, sessions, sessionId, device, check).ConfigureAwait(false);
                 }
+                if (result == DeviceProofResult.Handled)
+                    return;
             }
 
             await _next(context).ConfigureAwait(false);
         }
 
-        private async Task ResolveAsync(HttpContext context, WebAuthOptions options, IAuthApiClient client, CurrentUserCache cache,
+        private async Task<DeviceProofResult> ResolveAsync(HttpContext context, WebAuthOptions options, IAuthApiClient client, CurrentUserCache cache,
             WebSessionPrincipalFactory principals, WebSessionManager sessions, string sessionId, DeviceProofEnforcer? device,
             DeviceProofCheck check)
         {
             if (options.CurrentUserFailureCacheFor is not null && cache.HasFailure(sessionId))
-            {
-                ApplyFailure(context, options, principals, sessionId, null);
-                await EnforceDeviceProofAsync(device, check, context, sessions, sessionId, null).ConfigureAwait(false);
-                return;
-            }
+                return await FailAsync(context, options, principals, sessions, sessionId, device, check, null).ConfigureAwait(false);
 
             CurrentUserInfo user;
             using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted))
@@ -114,7 +125,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
                 catch (SessionExpiredException)
                 {
                     await sessions.DropAsync(context).ConfigureAwait(false);
-                    return;
+                    return DeviceProofResult.Proceed;
                 }
                 catch (Exception ex) when (!context.RequestAborted.IsCancellationRequested)
                 {
@@ -122,41 +133,47 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
                     // Only outages are remembered: a bug-type exception would otherwise hide behind the cache.
                     if (options.CurrentUserFailureCacheFor is { } remember && IsTransientFailure(ex))
                         cache.SetFailure(sessionId, remember);
-                    ApplyFailure(context, options, principals, sessionId, ex);
-                    await EnforceDeviceProofAsync(device, check, context, sessions, sessionId, null).ConfigureAwait(false);
-                    return;
+                    return await FailAsync(context, options, principals, sessions, sessionId, device, check, ex).ConfigureAwait(false);
                 }
             }
 
-            // A cookie copy without the device key of a bound session must not leave a full user behind in the cache.
-            if (!IsDowngrade(check, user))
+            var result = await EnforceDeviceProofAsync(device, check, context, sessions, sessionId, user).ConfigureAwait(false);
+            // A Handled request ends here: nothing of it is kept.
+            if (result != DeviceProofResult.Handled)
                 cache.Set(sessionId, user);
-            if (!await EnforceDeviceProofAsync(device, check, context, sessions, sessionId, user).ConfigureAwait(false))
+            if (result == DeviceProofResult.Proceed)
                 context.User = principals.Create(sessionId, user);
+            return result;
         }
 
-        private static bool IsDowngrade(DeviceProofCheck check, CurrentUserInfo? user)
-            => check.Applicable && !check.Bound && user?.IsDeviceBound == true;
+        /// <summary>
+        /// <c>me</c> unavailable: the DBSC proof of a session known to be bound is enforced FIRST (unknown user), so a
+        /// rejected request is a guest before <see cref="CurrentUserFailureMode.Throw"/> could re-execute an error page
+        /// with the cookie principal. Only a request that is not a guest then gets the configured failure handling.
+        /// </summary>
+        private static async Task<DeviceProofResult> FailAsync(HttpContext context, WebAuthOptions options, WebSessionPrincipalFactory principals,
+            WebSessionManager sessions, string sessionId, DeviceProofEnforcer? device, DeviceProofCheck check, Exception? error)
+        {
+            var result = await EnforceDeviceProofAsync(device, check, context, sessions, sessionId, null).ConfigureAwait(false);
+            if (result != DeviceProofResult.Proceed)
+                return result;
+            if (options.CurrentUserFailureMode == CurrentUserFailureMode.Throw)
+                throw new CurrentUserUnavailableException("The current user could not be loaded from the API.", error);
+            context.User = principals.CreateSessionOnly(sessionId, GetUserId(context));
+            return result;
+        }
 
         /// <summary>
-        /// DBSC on an ordinary request (no-op when off/excluded): a downgrade (API says bound, ticket has no key) is a
-        /// guest; a failed proof is decided with <paramref name="user"/> (null = unknown) and applied. True when the
-        /// request now runs as a guest.
+        /// DBSC on an ordinary request (no-op when off): learns the binding from <paramref name="user"/> (null = unknown),
+        /// then enforces a failed proof.
         /// </summary>
-        private static async Task<bool> EnforceDeviceProofAsync(DeviceProofEnforcer? device, DeviceProofCheck check, HttpContext context,
+        private static async Task<DeviceProofResult> EnforceDeviceProofAsync(DeviceProofEnforcer? device, DeviceProofCheck check, HttpContext context,
             WebSessionManager sessions, string sessionId, CurrentUserInfo? user)
         {
-            if (device is null || !check.Applicable)
-                return false;
-            if (IsDowngrade(check, user))
-            {
-                device.RejectUnbound(context, sessionId);
-                return true;
-            }
-            if (check.Failure is not { } reason)
-                return false;
-            var mode = await device.DecideAsync(context, sessionId, reason, user).ConfigureAwait(false);
-            return await device.ApplyAsync(context, sessions, sessionId, reason, mode).ConfigureAwait(false);
+            if (device is null)
+                return DeviceProofResult.Proceed;
+            check = await device.LearnAsync(context, sessionId, check, user).ConfigureAwait(false);
+            return await device.EnforceAsync(context, sessions, sessionId, check, user).ConfigureAwait(false);
         }
 
         /// <summary>
@@ -171,16 +188,8 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
             _ => false,
         };
 
-        private static void ApplyFailure(HttpContext context, WebAuthOptions options, WebSessionPrincipalFactory principals,
-            string sessionId, Exception? error)
-        {
-            if (options.CurrentUserFailureMode == CurrentUserFailureMode.Throw)
-                throw new CurrentUserUnavailableException("The current user could not be loaded from the API.", error);
-            context.User = principals.CreateSessionOnly(sessionId, GetUserId(context));
-        }
-
         /// <summary>User id stored in the cookie at sign-in.</summary>
         private static string? GetUserId(HttpContext context)
-            => context.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+            => context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
     }
 }

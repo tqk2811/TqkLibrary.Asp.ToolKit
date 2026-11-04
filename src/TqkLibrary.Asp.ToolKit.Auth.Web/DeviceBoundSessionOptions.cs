@@ -38,23 +38,31 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         /// <summary>How long a refresh challenge stays valid.</summary>
         public TimeSpan RefreshChallengeLifetime { get; set; } = TimeSpan.FromMinutes(2);
 
-        /// <summary>Accepted signature algorithms, in order of preference (subset of <c>ES256</c>, <c>RS256</c>).</summary>
+        /// <summary>
+        /// Algorithms accepted for NEW registrations, in order of preference (subset of <c>ES256</c>, <c>RS256</c>). A
+        /// session already bound keeps working with its stored key's algorithm even after it is removed from this list.
+        /// </summary>
         public IList<string> Algorithms { get; set; } = new List<string>(SupportedAlgorithms);
 
-        /// <summary>Smallest accepted RSA modulus in bits (at least 2048).</summary>
+        /// <summary>
+        /// Smallest accepted RSA modulus in bits for NEW registrations (at least 2048). Stored keys of bound sessions are
+        /// read with the library floor (2048), so raising it does not lock existing sessions out.
+        /// </summary>
         public int MinRsaKeySize { get; set; } = 2048;
 
         /// <summary>
         /// Paths (prefix match by segment, without PathBase) where the proof is not checked, e.g. static files or
         /// health checks. They are also sent to the browser as <c>exclude</c> scope rules, so it never delays these
-        /// requests to refresh the proof first.
+        /// requests to refresh the proof first. They BYPASS enforcement completely: a copied main cookie without proof
+        /// works there (with the session token on API calls), so exclude only paths that expose nothing sensitive.
         /// </summary>
         public IList<PathString> ExcludedPaths { get; set; } = new List<PathString>();
 
         /// <summary>
-        /// Mode applied when the proof of a bound session fails. With <see cref="AllowUserChoice"/> = false it is the
-        /// FIXED mode of the project; with true it is the default for users who have not chosen. Default
-        /// <see cref="DeviceProofFailureMode.Reject"/>.
+        /// Mode applied when the proof of a bound session fails (by the default <see cref="DeviceProofFailureHandler"/>;
+        /// a replacement handler receives it as <see cref="DeviceProofFailureContext.DefaultMode"/>). With
+        /// <see cref="AllowUserChoice"/> = false it is the FIXED mode of the project; with true it is the default for users
+        /// who have not chosen. Default <see cref="DeviceProofFailureMode.Reject"/>.
         /// </summary>
         public DeviceProofFailureMode FailureMode { get; set; } = DeviceProofFailureMode.Reject;
 
@@ -75,13 +83,6 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         /// flight while the browser refreshes, clock drift). Never applies to a missing, foreign or invalid proof.
         /// </summary>
         public TimeSpan ProofExpiryGrace { get; set; } = TimeSpan.FromMinutes(2);
-
-        /// <summary>
-        /// Last word on a failed proof, after the project default and the user's choice: receives the reason and the
-        /// mode decided so far and returns the mode to apply. Null = keep the decided mode. An exception is logged and
-        /// the decided mode is kept.
-        /// </summary>
-        public Func<DeviceProofFailureContext, ValueTask<DeviceProofFailureMode>>? OnProofFailure { get; set; }
 
         /// <summary>
         /// Sends <c>Clear-Site-Data: "cookies"</c> when the web session is signed out or dropped, which also ends the

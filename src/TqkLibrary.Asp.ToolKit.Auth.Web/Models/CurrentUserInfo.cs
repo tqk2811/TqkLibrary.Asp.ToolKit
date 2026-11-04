@@ -27,11 +27,21 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Models
         public IReadOnlyList<CurrentUserClaim> ExtraClaims { get; init; } = Array.Empty<CurrentUserClaim>();
 
         /// <summary>
-        /// DBSC: the API session has a device key (<see cref="Interfaces.IDeviceKeyApiClient.RegisterDeviceKeyAsync"/>
-        /// succeeded). When true but the request's cookie ticket has no key (a copy of the cookie taken before binding),
-        /// the request runs as a guest. Ignored when <see cref="DeviceBoundSessionOptions.Enabled"/> is off.
+        /// DBSC: the device public key stored on the API session (canonical public JWK, <c>me</c> field
+        /// <c>deviceKeyJwk</c>); null = the session is not bound. The API is the single source of truth for the key: the
+        /// web verifies refresh proofs with it and requires a proof cookie made for it on every request of the session.
+        /// Ignored when <see cref="DeviceBoundSessionOptions.Enabled"/> is off.
         /// </summary>
-        public bool IsDeviceBound { get; init; }
+        public string? DeviceKeyJwk { get; init; }
+
+        /// <summary>DBSC: algorithm of <see cref="DeviceKeyJwk"/> (<c>ES256</c> or <c>RS256</c>, <c>me</c> field <c>deviceKeyAlgorithm</c>).</summary>
+        public string? DeviceKeyAlgorithm { get; init; }
+
+        /// <summary>
+        /// DBSC: the API session has a device key (derived: <see cref="DeviceKeyJwk"/> is not empty). A <c>me</c> field
+        /// <c>isDeviceBound</c> is not read; the key itself decides.
+        /// </summary>
+        public bool IsDeviceBound => !string.IsNullOrEmpty(DeviceKeyJwk);
 
         /// <summary>
         /// DBSC: the user's own choice of <see cref="DeviceProofFailureMode"/> (name, case-insensitive:

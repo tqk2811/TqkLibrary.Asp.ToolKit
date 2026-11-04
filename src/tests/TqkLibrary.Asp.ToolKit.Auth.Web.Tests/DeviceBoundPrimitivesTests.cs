@@ -14,6 +14,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
     public class DeviceBoundPrimitivesTests
     {
         private const string Sid = "s-1";
+        private const string Thumb = "thumb-1";
 
         private static DeviceProofJwtVerifier Verifier(Action<DeviceBoundSessionOptions>? configure = null)
         {
@@ -258,18 +259,44 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
         }
 
         [Theory]
-        [InlineData(true)]
-        [InlineData(false)]
-        public void Refresh_WithJwk_Refused(bool inHeader)
+        [InlineData("header.jwk")]
+        [InlineData("payload.jwk")]
+        [InlineData("payload.key")]
+        public void Refresh_WithKey_Refused(string where)
         {
             using var device = DbscTestDevice.Es256();
             var payload = DbscTestDevice.Payload("c");
-            if (!inHeader)
-                payload["jwk"] = device.Jwk();
+            if (where.StartsWith("payload.", StringComparison.Ordinal))
+                payload[where["payload.".Length..]] = device.Jwk();
 
-            var result = Verifier().VerifyRefresh(device.Jwt(device.Header(withJwk: inHeader), payload), StoredKey(device));
+            var result = Verifier().VerifyRefresh(device.Jwt(device.Header(withJwk: where == "header.jwk"), payload), StoredKey(device));
 
             Assert.Equal(DeviceProofJwtError.KeyNotAllowed, result.Error);
+        }
+
+        [Fact]
+        public void Refresh_AlgorithmRemovedFromOptions_StillValidForTheStoredKey()
+        {
+            using var device = DbscTestDevice.Rs256();
+
+            var result = Verifier(o => o.Algorithms = ["ES256"]).VerifyRefresh(device.RefreshJwt("c"), StoredKey(device));
+
+            Assert.True(result.IsValid, result.Error.ToString());
+            // New registrations with it are refused.
+            Assert.Equal(DeviceProofJwtError.AlgorithmNotAllowed, Verifier(o => o.Algorithms = ["ES256"]).VerifyRegistration(device.RegistrationJwt("c")).Error);
+        }
+
+        [Fact]
+        public void DeviceKey_Thumbprint_IsRfc7638OfTheCanonicalJwk()
+        {
+            using var device = DbscTestDevice.Es256();
+            var key = StoredKey(device);
+            var p = device.Jwk();
+            var canonical = "{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"" + p["x"] + "\",\"y\":\"" + p["y"] + "\"}";
+
+            Assert.Equal(canonical, key.Jwk);
+            Assert.Equal(DbscTestDevice.B64(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(canonical))), key.Thumbprint);
+            Assert.NotEqual(key.Thumbprint, StoredKey(DbscTestDevice.Es256()).Thumbprint);
         }
 
         [Fact]
@@ -312,6 +339,39 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             var challenge = service.Issue(DeviceChallengeKind.Refresh, Sid);
 
             Assert.Equal(DeviceChallengeStatus.Valid, service.Validate(challenge, DeviceChallengeKind.Refresh, Sid, consume: false));
+            Assert.Equal(DeviceChallengeStatus.Valid, service.Validate(challenge, DeviceChallengeKind.Refresh, Sid, consume: true));
+            Assert.Equal(DeviceChallengeStatus.Replayed, service.Validate(challenge, DeviceChallengeKind.Refresh, Sid, consume: true));
+        }
+
+        [Theory]
+        [InlineData("padding")]
+        [InlineData("whitespace")]
+        public void Challenge_ReEncodedSpelling_IsTheSameUsedChallenge(string spelling)
+        {
+            var (service, _) = Challenges();
+            string challenge;
+            do
+                challenge = service.Issue(DeviceChallengeKind.Refresh, Sid);
+            while (spelling == "padding" && challenge.Length % 4 == 0);
+            // Another spelling of the SAME bytes, accepted by the base64url decoder.
+            var respelled = spelling == "padding"
+                ? challenge + new string('=', 4 - challenge.Length % 4)
+                : challenge[..8] + " " + challenge[8..];
+            Assert.NotEqual(challenge, respelled);
+            Assert.Equal(System.Buffers.Text.Base64Url.DecodeFromChars(challenge), System.Buffers.Text.Base64Url.DecodeFromChars(respelled));
+
+            Assert.Equal(DeviceChallengeStatus.Valid, service.Validate(challenge, DeviceChallengeKind.Refresh, Sid, consume: true));
+            Assert.Equal(DeviceChallengeStatus.Replayed, service.Validate(respelled, DeviceChallengeKind.Refresh, Sid, consume: true));
+        }
+
+        [Fact]
+        public void Challenge_WorksWithASizeLimitedMemoryCache()
+        {
+            var service = new DeviceChallengeService(new EphemeralDataProtectionProvider(),
+                new MemoryCache(new MemoryCacheOptions { SizeLimit = 10 }), new FakeTimeProvider(DateTimeOffset.UtcNow),
+                Options.Create(new WebAuthOptions()));
+            var challenge = service.Issue(DeviceChallengeKind.Refresh, Sid);
+
             Assert.Equal(DeviceChallengeStatus.Valid, service.Validate(challenge, DeviceChallengeKind.Refresh, Sid, consume: true));
             Assert.Equal(DeviceChallengeStatus.Replayed, service.Validate(challenge, DeviceChallengeKind.Refresh, Sid, consume: true));
         }
@@ -397,36 +457,45 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
         public void Proof_Valid_ForItsSession_Only()
         {
             var (cookie, _) = ProofCookie();
-            var value = cookie.CreateValue(Sid);
+            var value = cookie.CreateValue(Sid, Thumb);
 
-            Assert.Null(cookie.Check(value, Sid));
-            Assert.Equal(DeviceProofFailureReason.WrongSession, cookie.Check(value, "s-2"));
-            Assert.Equal(DeviceProofFailureReason.Missing, cookie.Check(null, Sid));
-            Assert.Equal(DeviceProofFailureReason.Invalid, cookie.Check("garbage", Sid));
-            Assert.Equal(DeviceProofFailureReason.Invalid, cookie.Check(value[..^4] + "AAAA", Sid));
+            Assert.Null(cookie.Check(value, Sid, Thumb));
+            Assert.Equal(DeviceProofFailureReason.WrongSession, cookie.Check(value, "s-2", Thumb));
+            Assert.Equal(DeviceProofFailureReason.Missing, cookie.Check(null, Sid, Thumb));
+            Assert.Equal(DeviceProofFailureReason.Invalid, cookie.Check("garbage", Sid, Thumb));
+            Assert.Equal(DeviceProofFailureReason.Invalid, cookie.Check(value[..^4] + "AAAA", Sid, Thumb));
+        }
+
+        [Fact]
+        public void Proof_OfAnotherKey_Invalid()
+        {
+            var (cookie, _) = ProofCookie();
+            var value = cookie.CreateValue(Sid, Thumb);
+
+            Assert.Equal(DeviceProofFailureReason.Invalid, cookie.Check(value, Sid, "other-thumbprint"));
         }
 
         [Fact]
         public void Proof_ExpiredWithinGrace_StillValid_ThenExpired()
         {
             var (cookie, clock) = ProofCookie();
-            var value = cookie.CreateValue(Sid);
+            var value = cookie.CreateValue(Sid, Thumb);
 
             clock.Advance(TimeSpan.FromMinutes(10) + TimeSpan.FromMinutes(2) - TimeSpan.FromSeconds(1));
-            Assert.Null(cookie.Check(value, Sid));
+            Assert.Null(cookie.Check(value, Sid, Thumb));
             clock.Advance(TimeSpan.FromSeconds(1));
-            Assert.Equal(DeviceProofFailureReason.Expired, cookie.Check(value, Sid));
+            Assert.Equal(DeviceProofFailureReason.Expired, cookie.Check(value, Sid, Thumb));
         }
 
         [Fact]
         public void Proof_ZeroGrace_ExpiresExactlyAtLifetime()
         {
             var (cookie, clock) = ProofCookie(o => o.ProofExpiryGrace = TimeSpan.Zero);
-            var value = cookie.CreateValue(Sid);
+            var value = cookie.CreateValue(Sid, Thumb);
 
             clock.Advance(TimeSpan.FromMinutes(10));
 
-            Assert.Equal(DeviceProofFailureReason.Expired, cookie.Check(value, Sid));
+            Assert.Equal(DeviceProofFailureReason.Expired, cookie.Check(value, Sid, Thumb));
         }
 
         // ---------- options ----------

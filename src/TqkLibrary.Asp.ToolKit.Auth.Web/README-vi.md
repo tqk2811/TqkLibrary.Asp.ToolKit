@@ -166,37 +166,48 @@ chính như cũ.
 Hỗ trợ trình duyệt (11/2026): Chrome 145+ trên Windows có TPM, chính thức từ 146; macOS từ 147 (đang mở dần). Trình
 duyệt khác bỏ qua. Đặc tả là bản nháp W3C (<https://w3c.github.io/webappsec-dbsc/>), còn có thể đổi.
 
+**API là nguồn sự thật duy nhất của khoá thiết bị**: web không bao giờ lưu khoá trong cookie. Web biết phiên đã gắn
+khoá chưa, và khoá là gì, qua `me` (`deviceKeyJwk`, `deviceKeyAlgorithm`), rồi giữ trong một binding cache nhỏ trong bộ
+nhớ của từng instance (mỗi mục sống tới hạn tuyệt đối của phiên, tối đa 30 ngày, giới hạn 100 000 phiên, tách riêng
+khỏi `IMemoryCache` của app). Phiên đã biết là gắn khoá thì luôn được coi là gắn khoá.
+
 ### Luồng chạy
 
 1. `WebSessionManager.SignInAsync` (chỉ HTTPS) thêm
    `Secure-Session-Registration: (ES256 RS256);path="/dbsc/start";challenge="..."` vào response đăng nhập.
 2. Trình duyệt tạo khoá rồi POST một JWT đã ký (`Secure-Session-Response`) tới `RegistrationPath`. Web kiểm challenge
-   (cấp cho đúng phiên này, chưa hết hạn, chưa dùng), kiểm JWT (`typ` `dbsc+jwt`, `alg` ES256/RS256, public key, chữ
-   ký bằng chính khoá đó), gọi `IDeviceKeyApiClient.RegisterDeviceKeyAsync`, cấp lại cookie chính đúng một lần với
-   public key trong ticket (giữ nguyên hạn và kiểu persistent), đặt cookie proof và trả session config
-   (`session_identifier`, `refresh_url`, `scope`, `credentials`).
-3. Cookie proof hết hạn thì trình duyệt POST tới `RefreshPath`: web trả 403 kèm `Secure-Session-Challenge`, trình
-   duyệt ký challenge đó, web kiểm bằng khoá trong ticket rồi cấp cookie proof mới. Phiên đã đăng xuất hoặc chưa gắn
-   khoá nhận `{"continue": false}`, trình duyệt kết thúc phiên DBSC của nó.
-4. Ở mọi request khác, `CurrentUserMiddleware` kiểm cookie proof của phiên đã gắn khoá và áp failure mode bên dưới.
+   (cấp cho đúng phiên này, chưa hết hạn, chưa dùng), kiểm JWT (`typ` `dbsc+jwt`, `alg` nằm trong `Algorithms`, public
+   key, chữ ký bằng chính khoá đó), gọi `IDeviceKeyApiClient.RegisterDeviceKeyAsync`, ghi nhận việc gắn khoá trong bộ
+   nhớ, bỏ kết quả `me` đang cache, đặt cookie proof và trả session config (`session_identifier`, `refresh_url`,
+   `scope`, `credentials`). Cookie chính không bị đụng tới.
+3. Cookie proof hết hạn thì trình duyệt POST tới `RefreshPath` (chỉ HTTPS): web lấy khoá đã lưu từ binding cache, chưa
+   có thì hỏi `me`, trả 403 kèm `Secure-Session-Challenge`, kiểm challenge đã ký bằng khoá đó rồi cấp cookie proof mới.
+   Phiên đã đăng xuất, chưa gắn khoá, hoặc request qua HTTP nhận `{"continue": false}`, trình duyệt kết thúc phiên DBSC
+   của nó; `me` không trả lời được thì nhận 503 (trình duyệt bỏ qua lượt refresh đó).
+4. Ở mọi request khác, `CurrentUserMiddleware` kiểm cookie proof của phiên đã gắn khoá và giao lỗi cho failure handler
+   bên dưới.
 
 Challenge và proof không lưu trạng thái (Data Protection, purpose riêng; hạn nằm trong payload), nên nhiều instance
-chỉ cần dùng chung key ring như cookie chính. Chống replay challenge đã dùng thì giữ trong memory của từng instance
-(cố gắng hết mức, không tuyệt đối).
+chỉ cần dùng chung key ring như cookie chính. Cookie proof mang session id và thumbprint RFC 7638 của khoá thiết bị;
+proof làm cho khoá khác là `Invalid`. Chống replay challenge đã dùng thì giữ trong memory của từng instance (cố gắng
+hết mức), khoá theo byte đã giải mã của challenge.
+
+**Mất response đăng ký** (API đã lưu khoá nhưng câu trả lời không về tới trình duyệt) không làm khoá chặt người dùng:
+request kế tiếp không có proof là một lỗi proof (`Missing`), còn lượt refresh lấy khoá qua `me` và cấp proof cho đúng
+cookie chính cũ, không đổi.
 
 ```csharp
 builder.Services.AddTqkWebAuth(cookie => { /* ... */ }, o =>
 {
-    o.DeviceBound.Enabled = true;                              // đặt Ở ĐÂY (kiểm lúc khởi động)
+    o.DeviceBound.Enabled = true;
     o.DeviceBound.FailureMode = DeviceProofFailureMode.ReportOnly; // bắt đầu bằng ReportOnly
     o.DeviceBound.ExcludedPaths = ["/health", "/lib"];
 });
 builder.Services.AddHttpClient<IDeviceKeyApiClient, MyDeviceKeyApi>(c => c.BaseAddress = new(apiUrl)).AddTqkSessionBearer();
 ```
 
-`Enabled = true` mà không đăng ký `IDeviceKeyApiClient`, hoặc option sai, thì app hỏng ngay lúc khởi động. Đặt
-`Enabled` trong delegate của `AddTqkWebAuth` (giống `Scheme`): bước kiểm lúc khởi động và middleware endpoint được
-gắn theo giá trị ở đó.
+`Enabled = true` mà không đăng ký `IDeviceKeyApiClient`, hoặc option sai, thì app hỏng ngay lúc khởi động, dù đặt
+trong delegate của `AddTqkWebAuth` hay trong một `Configure<WebAuthOptions>` sau đó.
 
 ### Option (`WebAuthOptions.DeviceBound`)
 
@@ -207,68 +218,105 @@ gắn theo giá trị ở đó.
 | `ProofCookieName` | `null` | Null = `{tên cookie chính}.proof`. Thuộc tính `Path=/; Secure; HttpOnly; SameSite=Lax`, host-only. |
 | `ProofLifetime` | 10 phút | Thời gian sống của cookie proof (tối thiểu 1 phút). |
 | `RegistrationChallengeLifetime` / `RefreshChallengeLifetime` | 5 phút / 2 phút | Hạn của challenge. |
-| `Algorithms` | `ES256`, `RS256` | Thuật toán chữ ký nhận (`none`, HMAC và các loại khác luôn bị từ chối). |
-| `MinRsaKeySize` | 2048 | Modulus RSA nhỏ nhất; exponent phải là 65537. |
-| `ExcludedPaths` | rỗng | Tiền tố path không kiểm proof; cũng gửi cho trình duyệt dưới dạng luật scope `exclude`. |
-| `FailureMode` | `Reject` | Mode cố định, hoặc mode mặc định khi cho người dùng tự chọn. |
+| `Algorithms` | `ES256`, `RS256` | Thuật toán nhận cho lượt đăng ký MỚI. Phiên đã gắn khoá vẫn chạy với thuật toán của khoá đã lưu dù bị bỏ khỏi đây. |
+| `MinRsaKeySize` | 2048 | Modulus RSA nhỏ nhất cho lượt đăng ký mới; exponent phải là 65537. Khoá đã lưu được đọc với ngưỡng sàn 2048. |
+| `ExcludedPaths` | rỗng | Tiền tố path BỎ QUA hoàn toàn việc kiểm proof (cookie bị chép không có proof vẫn dùng được ở đó, kèm session token); cũng gửi cho trình duyệt dưới dạng luật scope `exclude`. Chỉ loại trừ path không lộ gì nhạy cảm. |
+| `FailureMode` | `Reject` | Mode cố định, hoặc mode mặc định khi cho người dùng tự chọn (failure handler mặc định dùng nó). |
 | `AllowUserChoice` | `false` | `false` = chính sách cố định, `true` = mỗi người dùng tự chọn (xem dưới). |
 | `AllowedUserModes` | cả ba | Các mode người dùng được chọn. |
 | `ProofExpiryGrace` | 2 phút | Proof thật, đúng phiên, hết hạn chưa quá khoảng này vẫn tính là hợp lệ. |
-| `OnProofFailure` | `null` | `Func<DeviceProofFailureContext, ValueTask<DeviceProofFailureMode>>`, quyết định cuối cùng. |
 | `ClearSiteDataOnSignOut` | `false` | Gửi `Clear-Site-Data: "cookies"` khi đăng xuất/drop (xoá MỌI cookie của site). |
 
-### Failure mode
+### Xử lý khi proof lỗi
 
-Khi request của phiên đã gắn khoá không có proof, proof hết hạn (quá thời gian ân hạn), proof của phiên khác, hoặc
-proof không hợp lệ:
+Khi request của phiên đã gắn khoá không có proof (`Missing`), proof hết hạn quá thời gian ân hạn (`Expired`), proof
+của phiên khác (`WrongSession`), hoặc proof không hợp lệ hay làm cho khoá khác (`Invalid`), thư viện hỏi
+`DeviceProofFailureHandler` (singleton) để lấy một `DeviceProofOutcome`:
 
-- `ReportOnly`: request chạy bình thường; ghi log Warning và tăng counter.
-- `Reject` (mặc định): request chạy như khách. Phiên KHÔNG bị đăng xuất, cookie chính vẫn giữ, nên khi trình duyệt
-  làm mới proof xong thì request sau lại chạy bình thường.
+- `Continue` (= `ReportOnly`): request chạy bình thường; tăng counter và ghi log mức Debug.
+- `Reject` (mặc định): request chạy như khách, KHÔNG có session token, cho tới hết request: endpoint có
+  `AuthenticationSchemes` tường minh xác thực lại cookie, hay trang lỗi do `UseExceptionHandler` chạy lại, vẫn không gửi
+  token và một 401 ở đó không xoá cookie. Phiên KHÔNG bị đăng xuất, cookie chính vẫn giữ, nên khi trình duyệt làm mới
+  proof xong thì request sau lại chạy bình thường.
 - `SignOut`: thu hồi phiên trên API (`IAuthApiClient.LogoutAsync`, cố gắng), xoá cookie chính và cookie proof, request
   chạy như khách.
+- `Handled` (chỉ handler tự viết): handler đã tự ghi response; pipeline dừng ngay tại đó, không gửi token, không cache
+  user, hai cookie để nguyên.
+
+Handler mặc định trả `context.DefaultMode` dưới dạng outcome: `FailureMode` cố định, hoặc lựa chọn hợp lệ của người
+dùng (xem dưới). Muốn tuỳ biến thì kế thừa nó và đăng ký lớp con (trước hay sau `AddTqkWebAuth` đều được); service
+scoped lấy từ `context.HttpContext.RequestServices`:
+
+```csharp
+public sealed class MyProofFailureHandler : DeviceProofFailureHandler
+{
+    public override async ValueTask<DeviceProofOutcome> HandleAsync(DeviceProofFailureContext context)
+    {
+        if (context.Reason == DeviceProofFailureReason.Invalid)
+        {
+            context.HttpContext.Response.StatusCode = StatusCodes.Status403Forbidden;
+            await context.HttpContext.Response.WriteAsync("Device proof required.");
+            return DeviceProofOutcome.Handled;
+        }
+        return await base.HandleAsync(context);   // FailureMode / lựa chọn của người dùng
+    }
+}
+
+builder.Services.AddSingleton<DeviceProofFailureHandler, MyProofFailureHandler>();
+```
+
+`DeviceProofFailureContext` có `HttpContext`, `SessionId`, `Reason`, `DefaultMode` và `User` (nếu đã biết). Handler
+ném exception (trừ lệnh huỷ do request bị abort) hoặc trả giá trị không định nghĩa thì được ghi log và outcome mặc định
+được áp. `DeviceProofFailureMode` vẫn là kiểu của option và của lựa chọn người dùng, nên không ai cấu hình hay chọn
+được `Handled`.
 
 Cách triển khai khuyên dùng: chạy `ReportOnly` trước, theo dõi counter `tqk.auth.dbsc.proof_failures` (meter
-`TqkLibrary.Asp.ToolKit.Auth.Web`, tag `reason` = `missing`/`expired`/`wrong_session`/`invalid`/`unbound`, `mode`),
-rồi mới chuyển sang `Reject`. `SignOut` chặt nhất, và biến mọi trục trặc DBSC (lỗi TPM, lỗi trình duyệt) thành một
-lần bắt đăng nhập lại.
+`TqkLibrary.Asp.ToolKit.Auth.Web`, tag `reason` = `missing`/`expired`/`wrong_session`/`invalid`, `mode` =
+`report_only`/`reject`/`sign_out`/`handled`), rồi mới chuyển sang `Reject`. Dòng log mỗi request cố ý để mức Debug:
+trình duyệt mất phiên DBSC sẽ lỗi ở MỌI request cho tới lần đăng nhập sau. `SignOut` chặt nhất, và biến mọi trục trặc
+DBSC (lỗi TPM, lỗi trình duyệt) thành một lần bắt đăng nhập lại.
 
 ### Chính sách cố định hay để người dùng chọn
 
 - **Cố định** (`AllowUserChoice = false`, mặc định): `FailureMode` áp cho mọi người; `me.deviceBindingMode` bị bỏ
-  qua. Quyết định có trước khi gọi `me`, nên request bị từ chối không gọi API.
+  qua. Với phiên đã biết là gắn khoá, quyết định có trước khi gọi `me`, nên request bị từ chối không gọi API.
 - **Người dùng chọn** (`AllowUserChoice = true`): mỗi người dùng chọn mode trong trang cài đặt tài khoản (app lưu,
-  `me` trả về ở `deviceBindingMode`). Giá trị được phép thì thắng; không có giá trị, giá trị lạ, hoặc nằm ngoài
-  `AllowedUserModes` thì dùng `FailureMode` (giá trị sai được ghi log). Quyết định chờ có user (từ cache hoặc qua
-  `me`); `me` lỗi hoặc bị bỏ qua (`SkipCurrentUser`) thì dùng mode mặc định.
+  `me` trả về ở `deviceBindingMode`). Giá trị được phép thì thắng; không có giá trị, giá trị rỗng/khoảng trắng, giá
+  trị lạ, hoặc nằm ngoài `AllowedUserModes` thì dùng `FailureMode`. Quyết định chờ có user (từ cache hoặc qua `me`);
+  `me` lỗi hoặc bị bỏ qua (`SkipCurrentUser`) thì dùng mode mặc định. Ngoại lệ của "proof lỗi thì không gửi token": để
+  biết mode của người dùng, chính sách này buộc phải gọi `me` CÓ session token trước. Phiên mà instance chưa biết là
+  đã gắn khoá cũng vậy (phải hỏi `me`).
 
-Thứ tự quyết định: mặc định của project → lựa chọn của người dùng (khi được phép) → hook `OnProofFailure`. Hook nhận
-`HttpContext`, session id, lý do (`Missing`, `Expired`, `WrongSession`, `Invalid`), mode đã quyết tới lúc đó và user
-nếu biết; hook trả mode sẽ áp (hook ném exception thì giữ mode đã quyết).
+Khi `me` lỗi (hoặc `SkipCurrentUser` áp dụng) mà phiên đã biết là gắn khoá, proof vẫn được kiểm (không biết user),
+TRƯỚC khi `CurrentUserFailureMode.Throw` kịp làm hỏng request: request đã thành khách vì proof lỗi thì không ném. Khi
+không biết gì về việc gắn khoá (instance mới khởi động đúng lúc API sập), phiên được coi là chưa gắn khoá cho request
+đó: đây là lỗ hổng còn lại của thiết kế.
 
 ### Hợp đồng với API của app
 
+- `me` (`CurrentUserInfo`) phải trả `deviceKeyJwk` và `deviceKeyAlgorithm` (khoá đã lưu, null khi chưa gắn) và có thể
+  trả `deviceBindingMode` (lựa chọn của người dùng, `ReportOnly`/`Reject`/`SignOut`, không phân biệt hoa thường; web tự
+  lọc theo danh sách cho phép). `IsDeviceBound` suy ra từ `deviceKeyJwk`. Auth.Api có sẵn `GetDeviceBinding` cho việc
+  này.
 - `IDeviceKeyApiClient.RegisterDeviceKeyAsync(jwk, algorithm, ct)` lưu public key (JWK public dạng chuẩn, ES256 hoặc
-  RS256) vào phiên trên API, qua client có `AddTqkSessionBearer`. Trả `false` khi API từ chối (vd 409: đã gắn khoá,
-  hoặc đã quá cửa sổ cho phép gắn khoá ngay sau đăng nhập của API): trình duyệt nhận 403 và phiên vẫn chưa gắn khoá.
-  Web kiểm proof-of-possession TRƯỚC lời gọi này; API không phải kiểm lại.
-- `me` (`CurrentUserInfo`) có thể trả `isDeviceBound` (phiên đã có khoá) và `deviceBindingMode` (lựa chọn của người
-  dùng, `ReportOnly`/`Reject`/`SignOut`, không phân biệt hoa thường; web tự lọc theo danh sách cho phép).
-- Đăng ký thành công thì web coi là đã gắn khoá ngay (khoá nằm trong ticket cookie), không chờ `me` báo
-  `isDeviceBound`.
+  RS256) vào phiên trên API, qua client có `AddTqkSessionBearer`. Trả `false` cho HTTP 409 (đã gắn khoá, đã thu hồi/hết
+  hạn, hoặc đã quá cửa sổ gắn khoá ngay sau đăng nhập của API) và 400, KHÔNG ném exception cho các mã này: trình duyệt
+  nhận 400. Lỗi tạm thời được phép ném: trình duyệt nhận 503. Web kiểm proof-of-possession TRƯỚC lời gọi này; API
+  không phải kiểm lại.
 
 ### Rủi ro và giới hạn
 
-- Hạ cấp: bản chép cookie chính lấy TRƯỚC lúc gắn khoá không có khoá. Khi `me` báo `isDeviceBound` cho ticket như vậy
-  thì request chạy như khách (bất kể mode) và user không được cache. Trước khi API báo (TTL cache) bản chép đó vẫn
-  dùng được.
-- Cookie proof bị trộm dùng được tới khi hết hạn (`ProofLifetime` + ân hạn): giữ thời gian sống ngắn.
-- Request có proof bị từ chối vẫn xác thực được qua lời gọi `HttpContext.AuthenticateAsync(scheme)` tường minh hoặc
-  policy `[Authorize]` ghi rõ scheme; bản thân thư viện không bao giờ gửi session token cho request đó.
+- Trình duyệt mất phiên DBSC (xoá dữ liệu site, `continue: false`, mọi 4xx trừ 403 ở refresh) thì phiên đã gắn khoá
+  không còn proof: với `Reject`/`SignOut` người dùng phải đăng nhập lại, vì chỉ đăng ký khoá ngay sau đăng nhập (API chỉ
+  nhận khoá trong cửa sổ đăng ký, mặc định 10 phút).
+- Cookie proof bị trộm dùng được tới khi hết hạn (`ProofLifetime` + ân hạn), và chỉ đi cùng đúng cookie chính của phiên
+  đó: giữ thời gian sống ngắn.
+- `ExcludedPaths` bỏ qua hoàn toàn việc kiểm proof.
+- Instance mới + API sập: instance chưa từng thấy phiên thì không biết phiên đã gắn khoá khi `me` lỗi, và coi là chưa
+  gắn khoá tới khi `me` trả lời lại.
 - Chống replay theo từng instance; sau load balancer, một proof có thể bị phát lại sang instance khác trong thời hạn
   của challenge (vẫn gắn với đúng phiên và khoá đó).
-- Bản nháp có thể đổi tên header hoặc field; trình duyệt kết thúc phiên DBSC (mọi 4xx trừ 403 ở refresh) thì để lại
-  cookie chính đã gắn khoá mà không có proof, khi đó failure mode xử lý.
+- Bản nháp có thể đổi tên header hoặc field.
 
 ## Phụ thuộc
 

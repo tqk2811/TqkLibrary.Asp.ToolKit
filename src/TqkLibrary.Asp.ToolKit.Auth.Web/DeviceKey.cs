@@ -8,12 +8,19 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
     /// <summary>
     /// A validated device public key of a DBSC session: EC P-256 for <c>ES256</c> or RSA (modulus of at least the
     /// configured size, exponent 65537) for <c>RS256</c>. Private members are refused. <see cref="Jwk"/> is the canonical
-    /// public JWK (only the required members, ordered), stored in the cookie ticket and sent to the API.
+    /// public JWK (only the required members, ordered), sent to the API at registration and read back from <c>me</c>.
     /// </summary>
     internal sealed class DeviceKey
     {
         /// <summary>Largest accepted RSA modulus in bits (bounds the verification cost).</summary>
         internal const int MaxRsaKeySize = 8192;
+
+        /// <summary>
+        /// Smallest RSA modulus accepted for a key STORED on the API (read back from <c>me</c>): the floor of the library,
+        /// not <see cref="DeviceBoundSessionOptions.MinRsaKeySize"/>, so raising that option only affects new registrations
+        /// and never locks existing bound sessions out.
+        /// </summary>
+        internal const int StoredKeyMinRsaKeySize = 2048;
 
         private static readonly byte[] Rsa65537 = [0x01, 0x00, 0x01];
         private static readonly string[] PrivateMembers = ["d", "p", "q", "dp", "dq", "qi", "oth", "k"];
@@ -25,6 +32,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         {
             Algorithm = algorithm;
             Jwk = jwk;
+            Thumbprint = Base64Url.EncodeToString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(jwk)));
             _ec = ec;
             _rsa = rsa;
         }
@@ -32,10 +40,15 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         /// <summary><c>ES256</c> or <c>RS256</c>.</summary>
         public string Algorithm { get; }
 
-        /// <summary>Canonical public JWK JSON.</summary>
+        /// <summary>Canonical public JWK JSON (required members only, in lexicographic order, no whitespace).</summary>
         public string Jwk { get; }
 
-        /// <summary>Parses a JWK JSON text (as stored in the ticket).</summary>
+        /// <summary>
+        /// RFC 7638 JWK thumbprint: base64url SHA-256 of <see cref="Jwk"/>, which is exactly the RFC 7638 canonical form.
+        /// </summary>
+        public string Thumbprint { get; }
+
+        /// <summary>Parses a JWK JSON text (as stored on the API and returned by <c>me</c>).</summary>
         public static DeviceKey? TryParse(string? jwkJson, string? algorithm, int minRsaKeySize)
         {
             if (string.IsNullOrEmpty(jwkJson) || string.IsNullOrEmpty(algorithm) || jwkJson.Length > 4096)

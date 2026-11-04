@@ -57,10 +57,12 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         {
             if (string.IsNullOrEmpty(challenge) || challenge.Length > 2048 || string.IsNullOrEmpty(sessionId))
                 return DeviceChallengeStatus.Invalid;
+            byte[] raw;
             string payload;
             try
             {
-                payload = Encoding.UTF8.GetString(_protector.Unprotect(Base64Url.DecodeFromChars(challenge)));
+                raw = Base64Url.DecodeFromChars(challenge);
+                payload = Encoding.UTF8.GetString(_protector.Unprotect(raw));
             }
             catch (Exception ex) when (ex is CryptographicException or FormatException)
             {
@@ -74,22 +76,30 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
             if (remaining <= TimeSpan.Zero)
                 return DeviceChallengeStatus.Expired;
             if (!consume)
-                return IsUsed(challenge) ? DeviceChallengeStatus.Replayed : DeviceChallengeStatus.Valid;
+                return IsUsed(raw) ? DeviceChallengeStatus.Replayed : DeviceChallengeStatus.Valid;
 
             lock (_consumeLock)
             {
-                if (IsUsed(challenge))
+                if (IsUsed(raw))
                     return DeviceChallengeStatus.Replayed;
-                // Keep the mark a little longer than the challenge lives (the cache runs on its own clock).
-                _cache.Set(UsedKey(challenge), true, remaining + TimeSpan.FromMinutes(1));
+                // Keep the mark a little longer than the challenge lives (the cache runs on its own clock). Size: an app
+                // may register IMemoryCache with a SizeLimit, which then requires a size on every entry.
+                _cache.Set(UsedKey(raw), true, new MemoryCacheEntryOptions
+                {
+                    AbsoluteExpirationRelativeToNow = remaining + TimeSpan.FromMinutes(1),
+                    Size = 1,
+                });
                 return DeviceChallengeStatus.Valid;
             }
         }
 
-        private bool IsUsed(string challenge) => _cache.TryGetValue(UsedKey(challenge), out _);
+        private bool IsUsed(byte[] raw) => _cache.TryGetValue(UsedKey(raw), out _);
 
-        private static string UsedKey(string challenge)
-            => UsedPrefix + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(challenge)));
+        /// <summary>
+        /// Keyed on the DECODED challenge bytes, not on the text: base64url has several spellings of the same bytes (the
+        /// unused low bits of the last character), and a re-encoded challenge must count as the same, already used one.
+        /// </summary>
+        private static string UsedKey(byte[] raw) => UsedPrefix + Convert.ToHexString(SHA256.HashData(raw));
 
         private TimeSpan Lifetime(DeviceChallengeKind kind) => kind == DeviceChallengeKind.Registration
             ? _options.Value.DeviceBound.RegistrationChallengeLifetime
