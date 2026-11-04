@@ -24,7 +24,8 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
     ///   <item>slides the expiry at most once per <see cref="ApiAuthOptions.SessionTouchInterval"/>
     ///   (<see cref="ISessionAccessSource.TouchAsync"/>; a failure is only logged);</item>
     ///   <item>builds the principal from CURRENT data: user id (<c>NameIdentifier</c> and
-    ///   <see cref="ApiAuthOptions.UserIdClaimType"/>), session id, name, email, roles, permissions.</item>
+    ///   <see cref="ApiAuthOptions.UserIdClaimType"/>), session id, name, email, roles, permissions, and the device
+    ///   binding state (<see cref="ApiAuthOptions.DeviceBoundClaimType"/>, <see cref="ApiAuthOptions.DeviceBindingModeClaimType"/>).</item>
     /// </list>
     /// A request without a bearer token gets no result (other schemes may run). A rejected token fails with a
     /// <see cref="SessionRejection"/> stored in <c>HttpContext.Features</c> (see
@@ -168,6 +169,10 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
                 claims.Add(new Claim(ClaimTypes.Email, access.Email));
             claims.AddRange(access.Roles.Select(role => new Claim(ClaimTypes.Role, role)));
             claims.AddRange(access.Permissions.Select(permission => new Claim(_apiOptions.PermissionClaimType, permission)));
+            if (access.IsDeviceBound)
+                claims.Add(new Claim(_apiOptions.DeviceBoundClaimType, "true", ClaimValueTypes.Boolean));
+            if (!string.IsNullOrEmpty(access.DeviceBindingMode))
+                claims.Add(new Claim(_apiOptions.DeviceBindingModeClaimType, access.DeviceBindingMode));
             return new ClaimsPrincipal(new ClaimsIdentity(claims, Scheme.Name, ClaimTypes.Name, ClaimTypes.Role));
         }
 

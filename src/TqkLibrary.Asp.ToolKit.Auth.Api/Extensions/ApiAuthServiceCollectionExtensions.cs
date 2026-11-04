@@ -9,9 +9,10 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Extensions
     public static class ApiAuthServiceCollectionExtensions
     {
         /// <summary>
-        /// Registers <see cref="ApiAuthOptions"/> (validated at startup), <see cref="SessionAccessCache"/> and
-        /// <see cref="SlidingSessionPolicy"/>. The app must register its <see cref="ISessionAccessSource"/> and add the
-        /// scheme with <see cref="AddTqkSessionToken"/>.
+        /// Registers <see cref="ApiAuthOptions"/> (validated at startup), <see cref="SessionAccessCache"/>,
+        /// <see cref="SlidingSessionPolicy"/> and <see cref="DeviceKeyRegistrar"/> (scoped). The app must register its
+        /// <see cref="ISessionAccessSource"/> and add the scheme with <see cref="AddTqkSessionToken"/>; for device binding
+        /// (DBSC) also its <see cref="IDeviceKeyStore"/>.
         /// </summary>
         public static IServiceCollection AddTqkApiAuth(this IServiceCollection services, Action<ApiAuthOptions> configure)
         {
@@ -29,6 +30,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Extensions
             services.TryAddSingleton<SessionAccessCache>();
             services.TryAddSingleton<SlidingSessionPolicy>();
             services.TryAddSingleton<SessionTouchThrottle>();
+            services.TryAddScoped<DeviceKeyRegistrar>();
             return services;
         }
 

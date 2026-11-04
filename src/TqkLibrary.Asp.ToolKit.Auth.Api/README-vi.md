@@ -36,8 +36,8 @@ dotnet add package TqkLibrary.Asp.ToolKit.Auth.Api
 ## Cách dùng
 
 API sở hữu phiên. App giữ bảng phiên (trong database của app; thư viện không có entity) với tối thiểu: id, user id,
-hash secret, thời điểm tạo, lần truy cập cuối, hạn, cờ persistent, cờ thu hồi. Dữ liệu thêm theo phiên về sau (vd
-public key gắn thiết bị) do app tự thêm: định dạng token không đổi.
+hash secret, thời điểm tạo, lần truy cập cuối, hạn, cờ persistent, cờ thu hồi. Gắn thiết bị
+thêm hai cột tuỳ chọn (xem [Gắn phiên với thiết bị (DBSC)](#gắn-phiên-với-thiết-bị-dbsc)); định dạng token không đổi.
 
 Cài `ISessionAccessSource`:
 
@@ -115,7 +115,8 @@ builder.Services.AddAuthentication(SessionTokenDefaults.AuthenticationScheme).Ad
    process; lỗi hoặc quá `SessionTouchTimeout` được log mức warning và thử lại sau tối đa một phút; lượt ghi không dùng
    cancellation token của request) rồi cập nhật bản ghi trong cache;
 5. dựng principal: `ClaimTypes.NameIdentifier` và `UserIdClaimType` (`sub`) = user id, `SessionIdClaimType` (`sid`),
-   `ClaimTypes.Name`, `ClaimTypes.Email`, `ClaimTypes.Role`, `PermissionClaimType` (`permission`).
+   `ClaimTypes.Name`, `ClaimTypes.Email`, `ClaimTypes.Role`, `PermissionClaimType` (`permission`), và khi gắn thiết bị
+   `device_bound` / `device_binding_mode` (xem [Gắn phiên với thiết bị (DBSC)](#gắn-phiên-với-thiết-bị-dbsc)).
 
 Request không có header bearer thì không có kết quả (endpoint ẩn danh vẫn chạy, `[Authorize]` trả 401). Lý do từ chối
 (`SessionRejection(Reason, Message)`) đọc được trong `OnChallenge` và qua `HttpContext.GetSessionRejection()`. Token
@@ -155,6 +156,82 @@ invalidate ngay sau khi ghi thành công:
 
 Lượt tra cứu đang chạy dở lúc invalidate không được dùng lại. Nhiều instance API thì invalidate chỉ tới instance xử
 lý lần ghi; các instance khác trễ tối đa thời gian cache.
+
+### Gắn phiên với thiết bị (DBSC)
+
+Device Bound Session Credentials gắn một phiên với cặp khoá nằm trên thiết bị của user: phía Web front end
+([TqkLibrary.Asp.ToolKit.Auth.Web](https://www.nuget.org/packages/TqkLibrary.Asp.ToolKit.Auth.Web)) kiểm các bằng chứng
+(proof) của thiết bị; API chỉ lưu public key một lần cho mỗi phiên và báo cho front end qua claim là phiên đã gắn hay
+chưa. App không dùng DBSC thì bỏ qua cả mục này.
+
+Thêm hai cột nullable vào bảng phiên: `DevicePublicKey` (JWK public dạng chuẩn hoá, text tối đa 4 KB) và
+`DeviceKeyAlgorithm` (`ES256` hoặc `RS256`). Tuỳ chọn lưu thêm lựa chọn riêng của user `DeviceBindingMode` (vd ở bảng
+user, do CHÍNH USER đặt ở trang cài đặt tài khoản): `ReportOnly`, `Reject` hoặc `SignOut`, null = mặc định của
+project. Web front end chỉ theo lựa chọn này khi developer bật chính sách "mềm" (cho user tự chọn); với chính sách
+"cứng" thì mode developer cố định được áp dụng và giá trị của user bị bỏ qua. API không bao giờ diễn giải giá trị này.
+
+Điền bản ghi trong `GetAsync`:
+
+```csharp
+IsDeviceBound = row.Session.DevicePublicKey != null,
+DeviceBindingMode = row.User.DeviceBindingMode,         // null = mặc định của project
+```
+
+Principal khi đó có `DeviceBoundClaimType` (`device_bound`) = `true` khi đã gắn, và `DeviceBindingModeClaimType`
+(`device_binding_mode`) khi có mode; không có thì không thêm claim. Hai claim type là option của `AddTqkApiAuth`.
+
+Viết `IDeviceKeyStore` bằng MỘT câu lệnh nguyên tử, chỉ ghi khoá vào phiên còn sống và chưa có khoá, trả true khi và
+chỉ khi đúng một dòng bị đổi (mỗi phiên đăng ký khoá một lần và không bao giờ bị thay, để token phiên bị lộ không gắn
+lại được phiên sang thiết bị khác):
+
+```csharp
+public sealed class DeviceKeyStore(AppDbContext db) : IDeviceKeyStore
+{
+    // UPDATE Sessions SET DevicePublicKey = @key, DeviceKeyAlgorithm = @alg
+    // WHERE Id = @id AND RevokedAt IS NULL AND DevicePublicKey IS NULL
+    public async Task<bool> TrySetDeviceKeyAsync(string sessionId, string publicKeyJwk, string algorithm, CancellationToken ct)
+        => await db.Sessions.Where(s => s.Id == sessionId && s.RevokedAt == null && s.DevicePublicKey == null)
+            .ExecuteUpdateAsync(u => u.SetProperty(s => s.DevicePublicKey, publicKeyJwk)
+                                      .SetProperty(s => s.DeviceKeyAlgorithm, algorithm), ct) == 1;
+}
+
+builder.Services.AddScoped<IDeviceKeyStore, DeviceKeyStore>();
+```
+
+`AddTqkApiAuth` đăng ký `DeviceKeyRegistrar` (scoped); nó chỉ resolve `IDeviceKeyStore` lúc đăng ký khoá.
+`RegisterAsync(user, publicKeyJwk, algorithm)` trả về:
+
+| Kết quả | Khi nào | HTTP gợi ý |
+| --- | --- | --- |
+| `Registered` | đã lưu khoá; cache của phiên bị invalidate nên request sau có `device_bound` | 200 |
+| `AlreadyBound` | phiên đã có khoá (theo claim, hoặc store trả false) | 409 |
+| `Invalid` | thuật toán không phải `ES256`/`RS256`, hoặc JWK không phải public key hợp lệ | 400 |
+| `NoSession` | người gọi không được xác thực bằng scheme session token có claim `sid` | 401 |
+
+Khoá được nhận: EC `P-256` (`x`/`y` mỗi cái 32 byte, điểm phải nằm trên đường cong) cho `ES256`; RSA có modulus 2048
+tới 8192 bit và `e` = `AQAB` cho `RS256`. Bị từ chối: có thành phần private (`d`, `p`, `q`, `dp`, `dq`, `qi`, `oth`,
+`k`), thành phần trùng tên, `alg` trong JWK khác thuật toán truyền vào, `use` khác `sig`, base64url không chuẩn, hoặc JWK
+dài quá 4096 ký tự. Text được lưu chỉ giữ các thành phần public theo thứ tự cố định (`crv`, `kty`, `x`, `y` / `e`,
+`kty`, `n`).
+
+Endpoint của app (Web front end gọi một lần sau khi đăng nhập, kèm khoá nó vừa sinh):
+
+```csharp
+app.MapPost("/auth/device-key", async (DeviceKeyRequest body, ClaimsPrincipal user, DeviceKeyRegistrar registrar, CancellationToken ct) =>
+    await registrar.RegisterAsync(user, body.PublicKeyJwk, body.Algorithm, ct) switch
+    {
+        DeviceKeyRegistrationResult.Registered => Results.Ok(),
+        DeviceKeyRegistrationResult.AlreadyBound => Results.Conflict(),
+        DeviceKeyRegistrationResult.Invalid => Results.BadRequest(),
+        _ => Results.Unauthorized(),
+    }).RequireAuthorization();
+
+public sealed record DeviceKeyRequest(string PublicKeyJwk, string Algorithm);
+```
+
+Endpoint `me` của app phải trả `isDeviceBound` và `deviceBindingMode` (lấy từ claim hoặc bản ghi) để Web front end biết
+có cần đăng ký khoá không và user đã chọn mode nào. Trang cài đặt tài khoản đổi `DeviceBindingMode` phải gọi
+`InvalidateUser(userId)` sau khi ghi.
 
 ### Job dọn dẹp
 

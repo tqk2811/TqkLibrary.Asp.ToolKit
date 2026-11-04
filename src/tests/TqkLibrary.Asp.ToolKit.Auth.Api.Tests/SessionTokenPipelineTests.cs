@@ -648,6 +648,66 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
             Assert.Contains("perm=items.edit", body);
         }
 
+        [Fact]
+        public async Task NotDeviceBound_NoDeviceClaims()
+        {
+            await using var app = await App.StartAsync();
+
+            using var response = await app.GetAsync(app.SignIn());
+            var body = await response.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.DoesNotContain("device_bound=", body);
+            Assert.DoesNotContain("device_binding_mode=", body);
+        }
+
+        [Fact]
+        public async Task DeviceBound_WithUserMode_AddsBothClaims()
+        {
+            await using var app = await App.StartAsync();
+            var token = app.SignIn();
+            app.Source.Sessions["s-1"] = app.Source.Sessions["s-1"] with { IsDeviceBound = true, DeviceBindingMode = "SignOut" };
+
+            using var response = await app.GetAsync(token);
+            var body = await response.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Contains("device_bound=true", body);
+            Assert.Contains("device_binding_mode=SignOut", body);
+        }
+
+        [Fact]
+        public async Task DeviceBound_WithoutUserMode_OnlyBoundClaim()
+        {
+            await using var app = await App.StartAsync();
+            var token = app.SignIn();
+            app.Source.Sessions["s-1"] = app.Source.Sessions["s-1"] with { IsDeviceBound = true };
+
+            using var response = await app.GetAsync(token);
+            var body = await response.Content.ReadAsStringAsync();
+
+            Assert.Contains("device_bound=true", body);
+            Assert.DoesNotContain("device_binding_mode=", body);
+        }
+
+        [Fact]
+        public async Task ConfiguredDeviceClaimTypes_AreUsed()
+        {
+            await using var app = await App.StartAsync(configureApi: o =>
+            {
+                o.DeviceBoundClaimType = "dbsc";
+                o.DeviceBindingModeClaimType = "dbsc_mode";
+            });
+            var token = app.SignIn();
+            app.Source.Sessions["s-1"] = app.Source.Sessions["s-1"] with { IsDeviceBound = true, DeviceBindingMode = "Reject" };
+
+            using var response = await app.GetAsync(token);
+            var body = await response.Content.ReadAsStringAsync();
+
+            Assert.Contains("dbsc=true", body);
+            Assert.Contains("dbsc_mode=Reject", body);
+        }
+
         private static async Task WriteReason(SessionTokenChallengeContext context)
         {
             if (context.Rejection is not { } rejection)
