@@ -55,7 +55,8 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         /// session is still alive. <c>context.User</c> is set to the new session principal, so API calls made later in
         /// the same request already carry the bearer token.
         /// </summary>
-        /// <exception cref="ArgumentException">The token is not <c>{sessionId}.{secret}</c> or the user id is empty.</exception>
+        /// <exception cref="ArgumentException">The token is not a valid <c>{sessionId}.{secret}</c> (same rules as the API
+        /// <c>SessionTokenCodec</c>), the user id is empty, or <see cref="AuthSession.ExpiresAt"/> is not in the future.</exception>
         public async Task SignInAsync(HttpContext context, AuthSession session, bool persistent)
         {
             ArgumentNullException.ThrowIfNull(context);
@@ -65,6 +66,8 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
                 ?? throw new ArgumentException("The session token must have the form {sessionId}.{secret}.", nameof(session));
 
             var now = _clock.GetUtcNow();
+            if (session.ExpiresAt <= now)
+                throw new ArgumentException("The session is already expired (ExpiresAt must be in the future).", nameof(session));
             var properties = new AuthenticationProperties
             {
                 IsPersistent = persistent,
@@ -115,13 +118,31 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
 
         private string? GetSessionId(ClaimsPrincipal user) => user.FindFirst(_options.SessionIdClaimType)?.Value;
 
-        /// <summary>The part before the first '.' of a well-formed <c>{sessionId}.{secret}</c> token, otherwise null.</summary>
-        private static string? GetSessionId(string? sessionToken)
+        // Same limits as the API SessionTokenCodec (this package does not reference it): keep them in sync, a token
+        // this check accepts must be one the API SessionTokenCodec.TryParse accepts.
+        private const int MaxTokenLength = 1024;
+        private const int MaxSessionIdLength = 128;
+        private const int SecretLength = 43;
+
+        /// <summary>
+        /// The session id of a well-formed token (id of 1..128 chars <c>A-Z a-z 0-9 - _</c>, a '.', then a secret of
+        /// exactly 43 base64url chars; see the API <c>SessionTokenCodec</c>), otherwise null.
+        /// </summary>
+        internal static string? GetSessionId(string? sessionToken)
         {
-            if (string.IsNullOrWhiteSpace(sessionToken))
+            if (string.IsNullOrWhiteSpace(sessionToken) || sessionToken.Length > MaxTokenLength)
                 return null;
             var dot = sessionToken.IndexOf('.');
-            return dot <= 0 || dot == sessionToken.Length - 1 ? null : sessionToken[..dot];
+            if (dot <= 0 || dot > MaxSessionIdLength || sessionToken.Length - dot - 1 != SecretLength)
+                return null;
+            for (var i = 0; i < sessionToken.Length; i++)
+            {
+                if (i != dot && !IsBase64UrlChar(sessionToken[i]))
+                    return null;
+            }
+            return sessionToken[..dot];
         }
+
+        private static bool IsBase64UrlChar(char c) => c is (>= 'A' and <= 'Z') or (>= 'a' and <= 'z') or (>= '0' and <= '9') or '-' or '_';
     }
 }

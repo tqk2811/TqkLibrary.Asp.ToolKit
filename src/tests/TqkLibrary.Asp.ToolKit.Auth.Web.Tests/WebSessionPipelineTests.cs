@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
@@ -168,7 +169,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
 
             using var response = await app.SendAsync(HttpMethod.Get, "/api-call");
 
-            Assert.Equal("Bearer " + Sid + ".secret", await response.Content.ReadAsStringAsync());
+            Assert.Equal("Bearer " + Sid + "." + WebAuthTestApp.Secret, await response.Content.ReadAsStringAsync());
         }
 
         [Fact]
@@ -179,7 +180,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
                 {
                     await sessions.SignInAsync(context, new AuthSession
                     {
-                        SessionToken = "s-9.fresh", UserId = "u-9", ExpiresAt = DateTimeOffset.UtcNow.AddDays(1),
+                        SessionToken = "s-9." + WebAuthTestApp.Secret, UserId = "u-9", ExpiresAt = DateTimeOffset.UtcNow.AddDays(1),
                     }, persistent: false);
                     // No manual context.User here: SignInAsync must make the new session visible to the bearer handler.
                     var handler = context.RequestServices.GetRequiredService<SessionBearerHandler>();
@@ -192,7 +193,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
 
             using var response = await app.SendAsync(HttpMethod.Get, "/sign-in-and-call");
 
-            Assert.Equal("Bearer s-9.fresh", await response.Content.ReadAsStringAsync());
+            Assert.Equal("Bearer s-9." + WebAuthTestApp.Secret, await response.Content.ReadAsStringAsync());
         }
 
         [Fact]
@@ -222,6 +223,12 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
         [InlineData("nodot")]
         [InlineData(".secret")]
         [InlineData("s-1.")]
+        [InlineData("s-1.secret")] // secret is not 43 chars
+        [InlineData("s-1.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")] // 42 chars
+        [InlineData("s-1.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")] // 44 chars
+        [InlineData("s-1.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa+")] // not base64url
+        [InlineData("s 1.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")] // id char not allowed
+        [InlineData("s.1.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")] // '.' in the secret part is not base64url
         public async Task SignIn_MalformedToken_Throws(string token)
         {
             await using var app = await WebAuthTestApp.StartAsync(mapEndpoints: endpoints => endpoints.MapGet("/bad-sign-in",
@@ -236,6 +243,83 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
 
             Assert.Equal("session", await response.Content.ReadAsStringAsync());
             Assert.Empty(app.Cookies);
+        }
+
+        [Fact]
+        public async Task SignIn_SessionIdLongerThan128_Throws_128IsAccepted()
+        {
+            await using var app = await WebAuthTestApp.StartAsync(mapEndpoints: endpoints => endpoints.MapGet("/long-sign-in",
+                async (HttpContext context, WebSessionManager sessions) =>
+                {
+                    await Assert.ThrowsAsync<ArgumentException>(()
+                        => sessions.SignInAsync(context, new AuthSession { SessionToken = new string('a', 129) + "." + WebAuthTestApp.Secret, UserId = "u-1", ExpiresAt = DateTimeOffset.UtcNow.AddDays(1) }, persistent: false));
+                    await sessions.SignInAsync(context, new AuthSession { SessionToken = new string('a', 128) + "." + WebAuthTestApp.Secret, UserId = "u-1", ExpiresAt = DateTimeOffset.UtcNow.AddDays(1) }, persistent: false);
+                    return Results.Ok();
+                }));
+
+            using var response = await app.SendAsync(HttpMethod.Get, "/long-sign-in");
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        }
+
+        [Fact]
+        public async Task SignIn_AlreadyExpiredSession_Throws_NoCookie()
+        {
+            await using var app = await WebAuthTestApp.StartAsync(mapEndpoints: endpoints => endpoints.MapGet("/expired-sign-in",
+                async (HttpContext context, WebSessionManager sessions) =>
+                {
+                    var ex = await Assert.ThrowsAsync<ArgumentException>(()
+                        => sessions.SignInAsync(context, new AuthSession { SessionToken = "s-1." + WebAuthTestApp.Secret, UserId = "u-1", ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1) }, persistent: false));
+                    return Results.Text(ex.ParamName ?? "");
+                }));
+
+            using var response = await app.SendAsync(HttpMethod.Get, "/expired-sign-in");
+
+            Assert.Equal("session", await response.Content.ReadAsStringAsync());
+            Assert.Empty(app.Cookies);
+        }
+
+        [Fact]
+        public async Task Ticket_ReplaceDuringLoadOfTheOldCookie_KeepsTheReplacedToken()
+        {
+            var auth = new BlockingAuthenticationService();
+            var services = new ServiceCollection()
+                .AddSingleton<Microsoft.AspNetCore.Authentication.IAuthenticationService>(auth)
+                .AddSingleton(Microsoft.Extensions.Options.Options.Create(new WebAuthOptions()))
+                .BuildServiceProvider();
+            var context = new DefaultHttpContext { RequestServices = services };
+            var ticket = WebSessionTicket.For(context);
+
+            var load = ticket.GetSessionTokenAsync(); // reads the OLD cookie, parked inside AuthenticateAsync
+            await auth.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            ticket.Replace("new-sid." + WebAuthTestApp.Secret);
+            auth.Release.SetResult();
+
+            var expected = "new-sid." + WebAuthTestApp.Secret;
+            Assert.Equal(expected, await load.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.Equal(expected, await ticket.GetSessionTokenAsync());
+        }
+
+        private sealed class BlockingAuthenticationService : Microsoft.AspNetCore.Authentication.IAuthenticationService
+        {
+            public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            public async Task<Microsoft.AspNetCore.Authentication.AuthenticateResult> AuthenticateAsync(HttpContext context, string? scheme)
+            {
+                Entered.TrySetResult();
+                await Release.Task;
+                var identity = new ClaimsIdentity([new Claim("tqk_sid", "old-sid")], "test");
+                var properties = new Microsoft.AspNetCore.Authentication.AuthenticationProperties();
+                properties.StoreTokens([new Microsoft.AspNetCore.Authentication.AuthenticationToken { Name = WebSessionTicket.SessionTokenName, Value = "old-sid." + WebAuthTestApp.Secret }]);
+                return Microsoft.AspNetCore.Authentication.AuthenticateResult.Success(
+                    new Microsoft.AspNetCore.Authentication.AuthenticationTicket(new ClaimsPrincipal(identity), properties, scheme ?? "x"));
+            }
+
+            public Task ChallengeAsync(HttpContext context, string? scheme, Microsoft.AspNetCore.Authentication.AuthenticationProperties? properties) => Task.CompletedTask;
+            public Task ForbidAsync(HttpContext context, string? scheme, Microsoft.AspNetCore.Authentication.AuthenticationProperties? properties) => Task.CompletedTask;
+            public Task SignInAsync(HttpContext context, string? scheme, ClaimsPrincipal principal, Microsoft.AspNetCore.Authentication.AuthenticationProperties? properties) => Task.CompletedTask;
+            public Task SignOutAsync(HttpContext context, string? scheme, Microsoft.AspNetCore.Authentication.AuthenticationProperties? properties) => Task.CompletedTask;
         }
 
         [Fact]

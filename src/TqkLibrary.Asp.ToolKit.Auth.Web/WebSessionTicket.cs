@@ -21,8 +21,10 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         private readonly HttpContext _context;
         private readonly WebAuthOptions _options;
         private readonly SemaphoreSlim _gate = new(1, 1);
-        // volatile: Replace/Clear write these outside _gate (they run on the request thread right after sign-in/drop,
-        // while a parallel API call may be reading under the gate); the token is written before _loaded is published.
+        // Replace/Clear run outside _gate (request thread right after sign-in/drop) while a parallel API call may be
+        // loading the OLD cookie under _gate. _commit makes "check _loaded, then write the loaded token" atomic against
+        // Replace/Clear, so a load that started before them can never overwrite the token they set.
+        private readonly object _commit = new();
         private volatile bool _loaded;
         private volatile string? _sessionToken;
         private volatile bool _dropPending;
@@ -60,10 +62,16 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
                 {
                     var result = await _context.AuthenticateAsync(_options.Scheme).ConfigureAwait(false);
                     var sessionId = result.Succeeded ? result.Principal?.FindFirst(_options.SessionIdClaimType)?.Value : null;
-                    _sessionToken = string.IsNullOrEmpty(sessionId) ? null : result.Properties?.GetTokenValue(SessionTokenName);
-                    if (string.IsNullOrEmpty(_sessionToken))
-                        _sessionToken = null;
-                    _loaded = true;
+                    var loaded = string.IsNullOrEmpty(sessionId) ? null : result.Properties?.GetTokenValue(SessionTokenName);
+                    lock (_commit)
+                    {
+                        // Replace/Clear ran while the (old) cookie was being read: their value wins.
+                        if (!_loaded)
+                        {
+                            _sessionToken = string.IsNullOrEmpty(loaded) ? null : loaded;
+                            _loaded = true;
+                        }
+                    }
                 }
                 return _sessionToken;
             }
@@ -76,17 +84,23 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         /// <summary>Sets the token of a ticket just issued (sign-in) so later API calls in the same request use it.</summary>
         internal void Replace(string sessionToken)
         {
-            _dropPending = false;
-            _sessionToken = sessionToken;
-            _loaded = true;
+            lock (_commit)
+            {
+                _dropPending = false;
+                _sessionToken = sessionToken;
+                _loaded = true;
+            }
         }
 
         /// <summary>Forgets the request token (session just dropped).</summary>
         internal void Clear()
         {
-            _dropPending = false;
-            _sessionToken = null;
-            _loaded = true;
+            lock (_commit)
+            {
+                _dropPending = false;
+                _sessionToken = null;
+                _loaded = true;
+            }
         }
 
         /// <summary>

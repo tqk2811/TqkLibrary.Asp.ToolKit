@@ -245,7 +245,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
                 await TriggerExpiredCaughtAsync(context);
                 await sessions.SignInAsync(context, new TqkLibrary.Asp.ToolKit.Auth.Web.Models.AuthSession
                 {
-                    SessionToken = "s-2.secret",
+                    SessionToken = "s-2." + WebAuthTestApp.Secret,
                     UserId = "u-1",
                     ExpiresAt = DateTimeOffset.UtcNow.AddDays(7),
                 }, persistent: false);

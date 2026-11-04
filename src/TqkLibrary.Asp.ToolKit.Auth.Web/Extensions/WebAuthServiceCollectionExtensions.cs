@@ -26,8 +26,11 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Extensions
         /// and <c>SlidingExpiration = false</c> first, so this delegate can override them. Sliding is off because the
         /// API slides the session itself; the ticket expires at the <see cref="Models.AuthSession.ExpiresAt"/> given at
         /// sign-in (the session's absolute cap) and is never reissued. A cookie without a session token (issued by an
-        /// older version) is rejected and signed out on its first request; <c>Events.OnValidatePrincipal</c> set by the
-        /// app still runs afterwards.
+        /// older version) is rejected and signed out on its first request, BEFORE the app's <c>Events.OnValidatePrincipal</c>:
+        /// that handler only runs for cookies that carry a token. The check is chained onto the <c>Events</c> object
+        /// present while this delegate runs, so it is NOT applied when the app uses <c>options.EventsType</c> or replaces
+        /// <c>Events</c> (or its <c>OnValidatePrincipal</c>) after <c>AddTqkWebAuth</c> (for example in a later
+        /// <c>Configure&lt;CookieAuthenticationOptions&gt;</c>); such a cookie is then only rejected when the API is called.
         /// </param>
         /// <param name="configure">
         /// Optional <see cref="WebAuthOptions"/> overrides. <see cref="WebAuthOptions.Scheme"/> can ONLY be set here
@@ -76,7 +79,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Extensions
         /// <summary>
         /// Rejects (and signs out) a ticket without the API session token, e.g. a cookie issued by 1.x, right when the
         /// cookie is validated, whether or not the request calls the API. The app's own
-        /// <c>OnValidatePrincipal</c> (if any) runs afterwards.
+        /// <c>OnValidatePrincipal</c> (if any) runs only for cookies that have a token.
         /// </summary>
         private static void ChainTokenCheck(CookieAuthenticationOptions options)
         {

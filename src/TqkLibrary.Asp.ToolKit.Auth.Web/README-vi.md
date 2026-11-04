@@ -84,7 +84,9 @@ await sessionManager.SignOutAsync(HttpContext);
 ```
 
 Cookie không có session token (do bản 1.x cấp) bị từ chối và đăng xuất ngay khi cookie được kiểm tra, ở request đầu tiên,
-dù request đó có gọi API hay không. `Events.OnValidatePrincipal` của app vẫn chạy sau bước kiểm này.
+dù request đó có gọi API hay không. `Events.OnValidatePrincipal` của app chạy sau bước kiểm này và chỉ chạy với cookie có token. Bước kiểm được gắn vào đối tượng
+`Events` có sẵn lúc `AddTqkWebAuth` chạy, nên KHÔNG áp dụng khi app dùng `options.EventsType` hoặc gán lại `Events` (hay
+`OnValidatePrincipal`) sau `AddTqkWebAuth`; khi đó cookie không token chỉ bị từ chối lúc gọi API.
 
 Phiên đã chết bên API (bị thu hồi, hết hạn, user bị khoá) chỉ được phát hiện khi request gọi API: lời gọi `me` của
 `CurrentUserMiddleware` cũng tính, và mọi lời gọi qua `SessionBearerHandler`. Trang không gọi API nào (vd dùng

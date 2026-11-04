@@ -25,6 +25,9 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
         public const string LoginPath = "/account/login";
         public const string PartialHeader = "X-Partial";
 
+        /// <summary>A secret of the exact length (43 base64url chars) the API SessionTokenCodec issues.</summary>
+        public const string Secret = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
         private readonly IHost _host;
         private readonly Dictionary<string, string> _cookies = new(StringComparer.Ordinal);
 
@@ -73,7 +76,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
                             {
                                 await sessions.SignInAsync(context, new AuthSession
                                 {
-                                    SessionToken = sid + ".secret",
+                                    SessionToken = sid + "." + Secret,
                                     UserId = "u-1",
                                     ExpiresAt = DateTimeOffset.UtcNow.AddDays(expiresInDays ?? 14),
                                 }, persistent: persistent == true);

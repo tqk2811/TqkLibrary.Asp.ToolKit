@@ -84,7 +84,9 @@ await sessionManager.SignOutAsync(HttpContext);
 ```
 
 A cookie without a session token (issued by 1.x) is rejected and signed out when it is validated, on its first request,
-whether or not that request calls the API. Your own `Events.OnValidatePrincipal` still runs after this check.
+whether or not that request calls the API. Your own `Events.OnValidatePrincipal` runs after this check, and only for cookies that have a token. The check is chained onto the
+`Events` present while `AddTqkWebAuth` runs, so it is not applied when you use `options.EventsType` or replace `Events` (or
+`OnValidatePrincipal`) after `AddTqkWebAuth`; such a cookie is then only rejected when the API is called.
 
 A session that died on the API (revoked, expired, user locked) is only detected when a request calls the API: the `me`
 call of `CurrentUserMiddleware` counts, as does any call through `SessionBearerHandler`. A page that calls no API (for
