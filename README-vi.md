@@ -352,7 +352,7 @@ Bên gửi (`HttpCacheInvalidationSender<TGroup>`, một `BackgroundService`):
 - Gom các group trong cửa sổ `Debounce` (200 ms) thành một lần gọi `POST {"groups":["News"]}` kèm header khoá (`X-Cache-Key`).
 - Lỗi tạm thì thử lại theo `RetryDelays` (mặc định 0,5 s / 1 s / 2 s); 401/403/404 là cấu hình sai, không retry và ghi error.
 - `TargetUrl` không phải URL tuyệt đối http/https → ghi error lúc khởi động và **không chạy vòng gửi** (khỏi retry vô ích).
-- Options được đọc qua `IOptionsMonitor` mỗi lô, nên đổi URL/khoá/retry không cần restart. Việc bật/tắt (thiếu `TargetUrl` hoặc `Key`) và tính hợp lệ của URL chỉ xét lúc khởi động.
+- Options được đọc qua `IOptionsMonitor` mỗi lô, nên đổi URL/khoá/retry không cần restart. Mỗi lô kiểm lại bật/tắt và URL: reload làm tắt gửi (thiếu `TargetUrl` hoặc `Key`) thì lô bị bỏ, URL không phải http/https tuyệt đối thì lô bị bỏ kèm log Error, không retry. Lúc khởi động mà đang tắt hoặc URL sai thì vòng gửi không chạy, muốn bật phải restart.
 - Hàng đợi có sức chứa `QueueCapacity` (256); đầy thì bỏ group cũ nhất (bên nhận vẫn hết hạn theo TTL).
 - **Lô đang chờ debounce hoặc retry sẽ bị bỏ khi app tắt**; bên nhận chỉ còn dựa vào TTL.
 

@@ -2,13 +2,6 @@
 
 Việc còn treo và đề xuất của thư viện. Mỗi mục: vấn đề, vị trí, vì sao nên làm, ngày ghi. Xử lý xong thì xoá mục trong cùng commit.
 
-### [Thấp] Sender đọc CurrentValue hai lần mỗi lô, không kiểm lại TargetUrl lúc chạy
-
-- **Vị trí**: `src/TqkLibrary.Asp.ToolKit.Caching/Remote/HttpCacheInvalidationSender.cs:84`, `:92`.
-- **Vấn đề**: debounce và phần gửi lấy từ hai bản options khác nhau. `TargetUrl` và bật/tắt chỉ xét lúc khởi động; reload sang URL sai thì `new HttpRequestMessage` ném ở mỗi lần thử và retry vô ích.
-- **Đề xuất**: đọc `CurrentValue` một lần mỗi lô; kiểm lại URL mỗi lô (sai thì LogError, bỏ lô, không retry). Hoặc ghi rõ trong README chỉ Debounce/Timeout/RetryDelays/Key được reload.
-- **Ngày ghi**: 2026-10-28.
-
 ### [Thấp] Auth/Caching chưa có test
 
 - **Vấn đề**: repo mới có project test cho Queue; chưa có test cho các hành vi đã sửa: config danh sách thay thế mặc định (bind từ JSON), `SessionExpiredMiddleware` giữ header xoá cookie, `SessionAccessCache` vô hiệu theo thế hệ.
