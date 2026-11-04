@@ -108,6 +108,9 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
                         {
                             app.Use(async (context, next) =>
                             {
+                                // Simulates another scheme's challenge already on the response (multi-scheme policy).
+                                if (context.Request.Headers.ContainsKey("X-Prior-Challenge"))
+                                    context.Response.Headers.Append("WWW-Authenticate", "Basic realm=\"x\"");
                                 context.Response.OnStarting(() =>
                                 {
                                     context.Response.Headers[RejectedHeader] = context.IsSessionRejected() ? "1" : "0";
@@ -214,6 +217,21 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
 
             Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
             Assert.Equal("Bearer", response.Headers.WwwAuthenticate.ToString());
+        }
+
+        /// <summary>The handler appends its challenge; the challenge of another scheme set earlier stays.</summary>
+        [Fact]
+        public async Task Challenge_KeepsChallengeOfOtherScheme()
+        {
+            await using var app = await App.StartAsync();
+            using var request = new HttpRequestMessage(HttpMethod.Get, "/me");
+            request.Headers.Add("X-Prior-Challenge", "1");
+
+            using var response = await app.Client.SendAsync(request);
+
+            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+            Assert.Contains(response.Headers.WwwAuthenticate, h => h.Scheme == "Basic");
+            Assert.Contains(response.Headers.WwwAuthenticate, h => h.Scheme == "Bearer");
         }
 
         [Fact]

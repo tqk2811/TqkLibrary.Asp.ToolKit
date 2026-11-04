@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using System.Net;
 using System.Security.Claims;
 using System.Text.Json;
+using TqkLibrary.Asp.ToolKit.Auth.Web.Extensions;
 using TqkLibrary.Asp.ToolKit.Auth.Web.Models;
 using Xunit;
 
@@ -132,6 +133,28 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
         {
             await using var app = await WebAuthTestApp.StartAsync();
             app.Api.Me = () => throw new SessionExpiredException();
+            await app.SignInAsync(Sid);
+
+            using var response = await app.SendAsync(HttpMethod.Get, "/whoami");
+            var body = await response.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.StartsWith("auth=false", body);
+            Assert.DoesNotContain("tqk_sid=", body);
+            AssertCookieDeleted(response, app);
+        }
+
+        /// <summary>Regression: a 401 from <c>me</c> WITHOUT a WWW-Authenticate header (stripped by a proxy) still ends the session.</summary>
+        [Fact]
+        public async Task Me_Unauthorized_WithoutChallengeHeader_ClearsCookie_AndRunsAsAnonymous()
+        {
+            await using var app = await WebAuthTestApp.StartAsync();
+            app.Api.Me = () =>
+            {
+                using var rejected = new HttpResponseMessage(HttpStatusCode.Unauthorized);
+                rejected.ThrowIfSessionRejected();
+                return new CurrentUserInfo { Id = "u-1", UserName = "editor" };
+            };
             await app.SignInAsync(Sid);
 
             using var response = await app.SendAsync(HttpMethod.Get, "/whoami");

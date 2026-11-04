@@ -43,12 +43,12 @@ Cài `IAuthApiClient` trên API client của app:
 ```csharp
 public sealed class MyAuthApiClient(IMyApi api) : IAuthApiClient
 {
-    // API từ chối me (401 có Bearer challenge) thì PHẢI ném SessionExpiredException; mọi exception khác coi là lỗi tạm và user
+    // API từ chối me (MỌI 401) thì PHẢI ném SessionExpiredException; mọi exception khác coi là lỗi tạm và user
     // KHÔNG bị đăng xuất.
     public async Task<CurrentUserInfo> GetCurrentUserAsync(CancellationToken ct)
     {
         using var response = await api.GetMeAsync(ct);
-        response.ThrowIfSessionRejected();     // 401 + Bearer challenge -> SessionExpiredException
+        response.ThrowIfSessionRejected();     // mọi 401 từ me -> SessionExpiredException
         response.EnsureSuccessStatusCode();
         return await ReadUserAsync(response, ct);
     }
@@ -103,8 +103,14 @@ cookie phiên của trình duyệt.
 401 KHÔNG có header đó là 401 nghiệp vụ của endpoint (ví dụ nhập sai mã 2FA ở trang `[Authorize]`) và được trả nguyên,
 user vẫn đăng nhập; mọi status khác và lỗi mạng cũng được trả nguyên. Nếu `Auth.Api` của bạn đặt `OnChallenge` thì phải
 giữ header `WWW-Authenticate`. Với API không xây trên `Auth.Api` và không gửi challenge header, đặt
-`TreatAnyUnauthorizedAsSessionExpired = true`: lúc đó mọi 401 đều kết thúc phiên. `ThrowIfSessionRejected` theo cùng quy
-tắc (403 không bao giờ tính). Upload không bao giờ bị buffer (không
+`TreatAnyUnauthorizedAsSessionExpired = true`: lúc đó mọi 401 đều kết thúc phiên (tuỳ chọn này áp dụng cho
+`SessionBearerHandler`, tức các lời gọi khác `me`).
+Với `me`, `ThrowIfSessionRejected` coi MỌI 401 là phiên đã kết thúc (có hay không có header; `me` không có 401 nghiệp vụ,
+và proxy có thể cắt `WWW-Authenticate`, khiến user đăng nhập mãi mà không có quyền). 403 không bao giờ tính.
+Phía API: trả 401 nghiệp vụ bằng `Results.Unauthorized()` / `Unauthorized()` / `Problem(statusCode: 401)`, TUYỆT ĐỐI KHÔNG
+dùng `Challenge()` / `Results.Challenge()` / `HttpContext.ChallengeAsync()` (challenge thêm `WWW-Authenticate: Bearer`,
+làm phiên web kết thúc); và đặt scheme session-token làm `DefaultChallengeScheme` (hoặc scheme của mọi endpoint mà Web
+gọi), vì một scheme Bearer khác (ví dụ JwtBearer) challenge cùng request cũng sẽ kết thúc phiên. Upload không bao giờ bị buffer (không
 có gì được gửi lại). Khách, lời gọi trong `AnonymousApiScope`, lời gọi tự đặt `Authorization`, và đường dẫn trong
 `AnonymousPathSuffixes` đi qua nguyên trạng.
 
@@ -125,7 +131,7 @@ Options (`AddTqkWebAuth(cookie => ..., options => ...)`), đều tuỳ chọn:
 | `IsAjaxRequest` | `X-Requested-With` / `Accept: application/json` | `Func<HttpRequest, bool>` dùng bởi `SessionExpiredMiddleware`. |
 | `WriteSessionExpiredAjaxResponse` | 401 `{ success, message, redirect }` | `Func<HttpContext, SessionExpiredException, string redirect, Task>`. |
 | `AnonymousPathSuffixes` | rỗng | Đuôi đường dẫn API không bao giờ nhận token (login, quên mật khẩu...). |
-| `TreatAnyUnauthorizedAsSessionExpired` | `false` | `false`: chỉ 401 có `WWW-Authenticate: Bearer` mới kết thúc phiên. `true`: mọi 401 đều kết thúc (API không xây trên `Auth.Api`, không gửi challenge header). |
+| `TreatAnyUnauthorizedAsSessionExpired` | `false` | Áp dụng cho `SessionBearerHandler` (các lời gọi khác `me`; `me` luôn coi mọi 401 là phiên đã kết thúc). `false`: chỉ 401 có `WWW-Authenticate: Bearer` mới kết thúc phiên. `true`: mọi 401 đều kết thúc (API không xây trên `Auth.Api`, không gửi challenge header). |
 | `StableIdentityClaimType` | `"sub"` | Claim mang session id trên mọi principal; xem antiforgery bên dưới. |
 
 `CurrentUserInfo.ExtraClaims` (danh sách `CurrentUserClaim(Type, Value)`) được thêm vào principal của request và cache

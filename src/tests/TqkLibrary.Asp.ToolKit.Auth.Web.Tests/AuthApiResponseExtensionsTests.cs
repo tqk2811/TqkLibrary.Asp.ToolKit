@@ -4,7 +4,7 @@ using Xunit;
 
 namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
 {
-    /// <summary><see cref="AuthApiResponseExtensions.ThrowIfSessionRejected"/>: only a 401 with a Bearer challenge ends the session.</summary>
+    /// <summary><see cref="AuthApiResponseExtensions.ThrowIfSessionRejected"/>: any 401 ends the session, a 403 does not.</summary>
     public class AuthApiResponseExtensionsTests
     {
         private static HttpResponseMessage Response(HttpStatusCode status, string? challenge = null)
@@ -22,11 +22,12 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             Assert.Throws<SessionExpiredException>(() => response.ThrowIfSessionRejected());
         }
 
+        /// <summary>A proxy may strip WWW-Authenticate; <c>me</c> has no business 401, so any 401 ends the session.</summary>
         [Fact]
-        public void Unauthorized_WithoutChallenge_DoesNotThrow()
+        public void Unauthorized_WithoutChallenge_Throws()
         {
             using var response = Response(HttpStatusCode.Unauthorized);
-            response.ThrowIfSessionRejected();
+            Assert.Throws<SessionExpiredException>(() => response.ThrowIfSessionRejected());
         }
 
         [Fact]
@@ -34,20 +35,6 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
         {
             using var response = Response(HttpStatusCode.Forbidden, "Bearer");
             response.ThrowIfSessionRejected();
-        }
-
-        [Fact]
-        public void TreatAnyUnauthorized_True_UnauthorizedWithoutChallenge_Throws()
-        {
-            using var response = Response(HttpStatusCode.Unauthorized);
-            Assert.Throws<SessionExpiredException>(() => response.ThrowIfSessionRejected(treatAnyUnauthorizedAsSessionExpired: true));
-        }
-
-        [Fact]
-        public void TreatAnyUnauthorized_True_Forbidden_StillDoesNotThrow()
-        {
-            using var response = Response(HttpStatusCode.Forbidden);
-            response.ThrowIfSessionRejected(treatAnyUnauthorizedAsSessionExpired: true);
         }
     }
 }

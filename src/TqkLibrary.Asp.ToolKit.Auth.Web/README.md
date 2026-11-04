@@ -43,12 +43,12 @@ Implement `IAuthApiClient` on top of your API client:
 ```csharp
 public sealed class MyAuthApiClient(IMyApi api) : IAuthApiClient
 {
-    // me rejected by the API (401 with a Bearer challenge) MUST throw SessionExpiredException; any other exception is treated as
+    // me rejected by the API (ANY 401) MUST throw SessionExpiredException; any other exception is treated as
     // transient and the user is NOT signed out.
     public async Task<CurrentUserInfo> GetCurrentUserAsync(CancellationToken ct)
     {
         using var response = await api.GetMeAsync(ct);
-        response.ThrowIfSessionRejected();     // 401 + Bearer challenge -> SessionExpiredException
+        response.ThrowIfSessionRejected();     // any 401 from me -> SessionExpiredException
         response.EnsureSuccessStatusCode();
         return await ReadUserAsync(response, ct);
     }
@@ -104,8 +104,16 @@ session) throws `SessionExpiredException` (`SessionExpiredMiddleware` drops the 
 a 401 JSON body). A 401 WITHOUT that header is a business 401 of the endpoint (for example a wrong 2FA code on an
 `[Authorize]` page) and is returned as is, so the user stays signed in; so is every other status and transport error.
 If your `Auth.Api` sets an `OnChallenge`, it must keep the `WWW-Authenticate` header. For an API not built on `Auth.Api`
-that sends no challenge header, set `TreatAnyUnauthorizedAsSessionExpired = true`: any 401 then ends the session.
-`ThrowIfSessionRejected` follows the same rule (a 403 never counts).
+that sends no challenge header, set `TreatAnyUnauthorizedAsSessionExpired = true`: any 401 then ends the session (this
+option applies to `SessionBearerHandler`, i.e. calls other than `me`).
+For `me`, `ThrowIfSessionRejected` treats ANY 401 as an ended session (with or without the header; `me` has no business
+401, and a proxy may strip `WWW-Authenticate`, which would leave the user signed in without permissions forever). A 403
+never counts.
+On the API side: write business 401s with `Results.Unauthorized()` / `Unauthorized()` / `Problem(statusCode: 401)`, NEVER
+with `Challenge()` / `Results.Challenge()` / `HttpContext.ChallengeAsync()` (a challenge adds `WWW-Authenticate: Bearer`,
+which ends the web session); and make the session-token scheme the `DefaultChallengeScheme` (or the scheme of every
+endpoint the Web calls), because another Bearer scheme (e.g. JwtBearer) that challenges the same request would end the
+session too.
 Uploads are never buffered (nothing is ever resent). Guests, calls inside `AnonymousApiScope`, calls that set
 `Authorization` themselves and paths in `AnonymousPathSuffixes` pass through untouched.
 
@@ -126,7 +134,7 @@ Options (`AddTqkWebAuth(cookie => ..., options => ...)`), all optional:
 | `IsAjaxRequest` | `X-Requested-With` / `Accept: application/json` | `Func<HttpRequest, bool>` used by `SessionExpiredMiddleware`. |
 | `WriteSessionExpiredAjaxResponse` | 401 `{ success, message, redirect }` | `Func<HttpContext, SessionExpiredException, string redirect, Task>`. |
 | `AnonymousPathSuffixes` | empty | API path suffixes that never get the token (login, password reset...). |
-| `TreatAnyUnauthorizedAsSessionExpired` | `false` | `false`: only a 401 with `WWW-Authenticate: Bearer` ends the session. `true`: any 401 does (APIs not built on `Auth.Api` that send no challenge header). |
+| `TreatAnyUnauthorizedAsSessionExpired` | `false` | Applies to `SessionBearerHandler` (calls other than `me`; `me` always treats any 401 as an ended session). `false`: only a 401 with `WWW-Authenticate: Bearer` ends the session. `true`: any 401 does (APIs not built on `Auth.Api` that send no challenge header). |
 | `StableIdentityClaimType` | `"sub"` | Claim carrying the session id on every principal; see antiforgery below. |
 
 `CurrentUserInfo.ExtraClaims` (`CurrentUserClaim(Type, Value)` list) are added to the request principal and cached

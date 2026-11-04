@@ -80,8 +80,9 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         public IList<string> AnonymousPathSuffixes { get; set; } = new List<string>();
 
         /// <summary>
-        /// Default false: only a 401 carrying a <c>WWW-Authenticate: Bearer</c> challenge (sent by Auth.Api) ends the
-        /// session, so a business 401 of an endpoint (e.g. a wrong 2FA code) does not sign the user out. Set true for
+        /// Applies to <see cref="SessionBearerHandler"/> (API calls other than <c>me</c>; <c>me</c> always treats any 401
+        /// as an ended session). Default false: only a 401 carrying a <c>WWW-Authenticate: Bearer</c> challenge (sent
+        /// by Auth.Api) ends the session, so a business 401 of an endpoint (e.g. a wrong 2FA code) does not sign the user out. Set true for
         /// APIs not built on Auth.Api that send no challenge header: then ANY 401 counts as an ended session.
         /// </summary>
         public bool TreatAnyUnauthorizedAsSessionExpired { get; set; }

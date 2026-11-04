@@ -126,6 +126,17 @@ carried no token, per RFC 6750). Both are set BEFORE `OnChallenge` runs, so the 
 NOT remove the `WWW-Authenticate` header: `Auth.Web` ends the user's session only on a 401 that carries this Bearer
 challenge, which is how it tells a dead session from a business 401 of your endpoint (e.g. a wrong 2FA code).
 
+Rules for your endpoints so a business 401 does not sign the user out:
+
+- Write a business 401 with `Results.Unauthorized()` / `Unauthorized()` / `Problem(statusCode: 401)` (status only). NEVER use
+  `Challenge()` / `Results.Challenge()` / `HttpContext.ChallengeAsync()` for it: a challenge goes through the
+  session-token handler and adds `WWW-Authenticate: Bearer`, which ends the user's web session.
+- The API's `DefaultChallengeScheme` (or the scheme of every endpoint the Web calls) must be the session-token scheme. If
+  another Bearer scheme (e.g. JwtBearer) challenges the same request, its `WWW-Authenticate: Bearer` also ends the web
+  session.
+- Summary of what `Auth.Web` treats as an ended session: for `me`, any 401; for other calls, only a 401 with a Bearer
+  challenge; a 403 never does.
+
 Login and logout (inside the app's auth service):
 
 ```csharp

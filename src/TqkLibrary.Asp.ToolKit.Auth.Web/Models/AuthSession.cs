@@ -15,7 +15,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Models
         /// <summary>
         /// Cookie expiry: give the session's ABSOLUTE cap (sign-in + the API's maximum session lifetime), not its
         /// sliding expiry, because the cookie is not reissued while the API slides the session. Until then the API
-        /// alone decides whether the session is alive (a 401 drops the cookie).
+        /// alone decides whether the session is alive (a 401 with a Bearer challenge from an API call, or any 401 from <c>me</c>, drops the cookie).
         /// </summary>
         public required DateTimeOffset ExpiresAt { get; init; }
     }
