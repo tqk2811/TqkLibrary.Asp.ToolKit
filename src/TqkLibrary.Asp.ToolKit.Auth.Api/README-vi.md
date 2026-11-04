@@ -180,17 +180,20 @@ DeviceBindingMode = row.User.DeviceBindingMode,         // null = mặc định 
 Principal khi đó có `DeviceBoundClaimType` (`device_bound`) = `true` khi đã gắn, và `DeviceBindingModeClaimType`
 (`device_binding_mode`) khi có mode; không có thì không thêm claim. Hai claim type là option của `AddTqkApiAuth`.
 
-Viết `IDeviceKeyStore` bằng MỘT câu lệnh nguyên tử, chỉ ghi khoá vào phiên còn sống và chưa có khoá, trả true khi và
-chỉ khi đúng một dòng bị đổi (mỗi phiên đăng ký khoá một lần và không bao giờ bị thay, để token phiên bị lộ không gắn
-lại được phiên sang thiết bị khác):
+Viết `IDeviceKeyStore` bằng MỘT câu lệnh nguyên tử, chỉ ghi khoá vào phiên còn sống (chưa revoke, chưa hết hạn), chưa
+có khoá và được tạo trong cửa sổ đăng ký, trả true khi và chỉ khi đúng một dòng bị đổi (mỗi phiên đăng ký khoá một lần
+và không bao giờ bị thay, để token phiên bị lộ không gắn lại được phiên sang thiết bị khác). `false` gồm các trường hợp:
+đã có khoá, đã revoke, đã hết hạn, đã bị xoá, hoặc cửa sổ đăng ký đã đóng:
 
 ```csharp
 public sealed class DeviceKeyStore(AppDbContext db) : IDeviceKeyStore
 {
-    // UPDATE Sessions SET DevicePublicKey = @key, DeviceKeyAlgorithm = @alg
-    // WHERE Id = @id AND RevokedAt IS NULL AND DevicePublicKey IS NULL
-    public async Task<bool> TrySetDeviceKeyAsync(string sessionId, string publicKeyJwk, string algorithm, CancellationToken ct)
-        => await db.Sessions.Where(s => s.Id == sessionId && s.RevokedAt == null && s.DevicePublicKey == null)
+    // UPDATE Sessions SET DevicePublicKey=@key, DeviceKeyAlgorithm=@alg WHERE Id=@id AND RevokedAt IS NULL
+    //   AND DevicePublicKey IS NULL AND ExpiresAt > @now AND (@createdNotBefore IS NULL OR CreatedAt >= @createdNotBefore)
+    public async Task<bool> TrySetDeviceKeyAsync(string sessionId, string publicKeyJwk, string algorithm,
+        DateTimeOffset now, DateTimeOffset? createdNotBefore, CancellationToken ct)
+        => await db.Sessions.Where(s => s.Id == sessionId && s.RevokedAt == null && s.DevicePublicKey == null
+                && s.ExpiresAt > now.UtcDateTime && (createdNotBefore == null || s.CreatedAt >= createdNotBefore.Value.UtcDateTime))
             .ExecuteUpdateAsync(u => u.SetProperty(s => s.DevicePublicKey, publicKeyJwk)
                                       .SetProperty(s => s.DeviceKeyAlgorithm, algorithm), ct) == 1;
 }
@@ -198,13 +201,19 @@ public sealed class DeviceKeyStore(AppDbContext db) : IDeviceKeyStore
 builder.Services.AddScoped<IDeviceKeyStore, DeviceKeyStore>();
 ```
 
-`AddTqkApiAuth` đăng ký `DeviceKeyRegistrar` (scoped); nó chỉ resolve `IDeviceKeyStore` lúc đăng ký khoá.
-`RegisterAsync(user, publicKeyJwk, algorithm)` trả về:
+`DeviceKeyRegistrationWindow` (option của `AddTqkApiAuth`, mặc định 10 phút, null = lúc nào cũng được) giới hạn việc
+đăng ký khoá trong khoảng thời gian đó kể từ lúc phiên được tạo, để bearer token bị lộ không gắn được một phiên chưa gắn
+sang thiết bị của kẻ tấn công (làm user thật bị khoá ngoài ở mode `Reject` / `SignOut`). Lần thử muộn hơn trả
+`AlreadyBound`. Với SQL Server ở isolation SNAPSHOT, một UPDATE đồng thời sẽ ném lỗi update-conflict thay vì trả 0 dòng;
+READ COMMITTED / RCSI, PostgreSQL, MySQL và SQLite trả 0 dòng.
+
+`AddTqkApiAuth` đăng ký `DeviceKeyRegistrar` (scoped, chỉ resolve trong request scope); nó chỉ resolve `IDeviceKeyStore`
+lúc đăng ký khoá. `RegisterAsync(user, publicKeyJwk, algorithm)` trả về:
 
 | Kết quả | Khi nào | HTTP gợi ý |
 | --- | --- | --- |
 | `Registered` | đã lưu khoá; cache của phiên bị invalidate nên request sau có `device_bound` | 200 |
-| `AlreadyBound` | phiên đã có khoá (theo claim, hoặc store trả false) | 409 |
+| `AlreadyBound` | phiên đã có khoá, hoặc đã revoke / hết hạn / quá cửa sổ đăng ký (theo claim, hoặc store trả false) | 409 |
 | `Invalid` | thuật toán không phải `ES256`/`RS256`, hoặc JWK không phải public key hợp lệ | 400 |
 | `NoSession` | người gọi không được xác thực bằng scheme session token có claim `sid` | 401 |
 
@@ -214,9 +223,16 @@ tới 8192 bit và `e` = `AQAB` cho `RS256`. Bị từ chối: có thành phần
 dài quá 4096 ký tự. Text được lưu chỉ giữ các thành phần public theo thứ tự cố định (`crv`, `kty`, `x`, `y` / `e`,
 `kty`, `n`).
 
-Endpoint của app (Web front end gọi một lần sau khi đăng nhập, kèm khoá nó vừa sinh):
+Registrar KHÔNG kiểm proof of possession: Web phải xác minh JWT đăng ký DBSC do khoá mới ký TRƯỚC khi gọi
+`RegisterAsync`. Nó cũng nhận ra scheme session token qua `ClaimsIdentity.AuthenticationType`, nên app không bao giờ
+được tự tạo identity mang tên scheme đó.
+
+Endpoint của app (Web front end gọi một lần sau khi đăng nhập, kèm khoá nó vừa sinh). Endpoint phải yêu cầu rõ scheme
+session token, để người gọi ẩn danh hoặc dùng scheme khác nhận 401:
 
 ```csharp
+using TqkLibrary.Asp.ToolKit.Auth.Api.Enums;
+
 app.MapPost("/auth/device-key", async (DeviceKeyRequest body, ClaimsPrincipal user, DeviceKeyRegistrar registrar, CancellationToken ct) =>
     await registrar.RegisterAsync(user, body.PublicKeyJwk, body.Algorithm, ct) switch
     {
@@ -224,10 +240,19 @@ app.MapPost("/auth/device-key", async (DeviceKeyRequest body, ClaimsPrincipal us
         DeviceKeyRegistrationResult.AlreadyBound => Results.Conflict(),
         DeviceKeyRegistrationResult.Invalid => Results.BadRequest(),
         _ => Results.Unauthorized(),
-    }).RequireAuthorization();
+    }).RequireAuthorization(p => p.AddAuthenticationSchemes(SessionTokenDefaults.AuthenticationScheme).RequireAuthenticatedUser());
 
 public sealed record DeviceKeyRequest(string PublicKeyJwk, string Algorithm);
 ```
+
+Lưu ý:
+
+- Nhiều instance: sau `Registered`, `InvalidateSession` chỉ tác động tới instance cục bộ. Các instance khác vẫn giữ bản
+  ghi trong cache không có claim `device_bound` cho tới khi hết `SessionAccessCacheLifetime`, nên Web nên tự coi
+  `Registered` là đã gắn ở phía nó. Nếu app có lúc nào xoá khoá thiết bị thì phải gọi `InvalidateSession`, vì đường tắt
+  `AlreadyBound` tin vào claim.
+- `DeviceBindingMode` là text tự do và API KHÔNG validate: Web phải whitelist các mode đã biết và quay về mặc định của nó
+  nếu giá trị lạ.
 
 Endpoint `me` của app phải trả `isDeviceBound` và `deviceBindingMode` (lấy từ claim hoặc bản ghi) để Web front end biết
 có cần đăng ký khoá không và user đã chọn mode nào. Trang cài đặt tài khoản đổi `DeviceBindingMode` phải gọi

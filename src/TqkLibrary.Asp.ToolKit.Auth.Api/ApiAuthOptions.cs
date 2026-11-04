@@ -54,6 +54,14 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
         /// </summary>
         public TimeSpan SessionTouchTimeout { get; set; } = TimeSpan.FromSeconds(5);
 
+        /// <summary>
+        /// A device key (DBSC) can only be registered within this time after the session was created. Null = any time
+        /// during the session (not recommended). Reason: a stolen bearer token must not be able to bind a not-yet-bound
+        /// session to the attacker's device, which would lock the real user out in the Reject / SignOut modes.
+        /// Must be positive when set. Default 10 minutes.
+        /// </summary>
+        public TimeSpan? DeviceKeyRegistrationWindow { get; set; } = TimeSpan.FromMinutes(10);
+
         private static readonly TimeSpan MaxLifetimeLimit = TimeSpan.FromDays(3650);
 
         /// <summary>Throws when the options are not usable.</summary>
@@ -80,6 +88,8 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
                 throw new InvalidOperationException("ApiAuthOptions.SessionTouchTimeout must be positive.");
             if (SessionAccessCacheLifetime < TimeSpan.Zero)
                 throw new InvalidOperationException("ApiAuthOptions.SessionAccessCacheLifetime must not be negative (zero disables the cache).");
+            if (DeviceKeyRegistrationWindow is { } window && window <= TimeSpan.Zero)
+                throw new InvalidOperationException("ApiAuthOptions.DeviceKeyRegistrationWindow must be positive when set.");
             // A session must be touched before it can expire while in use.
             var shortest = SessionLifetimes.Persistent is { } p && p < SessionLifetimes.Normal ? p : SessionLifetimes.Normal;
             if (SessionTouchInterval >= shortest)

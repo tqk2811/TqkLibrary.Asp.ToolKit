@@ -1,4 +1,4 @@
-namespace TqkLibrary.Asp.ToolKit.Auth.Api.Models
+namespace TqkLibrary.Asp.ToolKit.Auth.Api.Enums
 {
     /// <summary>Outcome of <see cref="DeviceKeyRegistrar.RegisterAsync"/>.</summary>
     public enum DeviceKeyRegistrationResult

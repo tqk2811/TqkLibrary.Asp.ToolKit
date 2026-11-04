@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using System.Security.Claims;
+using TqkLibrary.Asp.ToolKit.Auth.Api.Enums;
 using TqkLibrary.Asp.ToolKit.Auth.Api.Interfaces;
 using TqkLibrary.Asp.ToolKit.Auth.Api.Models;
 
@@ -22,6 +23,17 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
     /// on success the session's cached record is invalidated so the next request carries
     /// <see cref="ApiAuthOptions.DeviceBoundClaimType"/>.
     /// </para>
+    /// <para>
+    /// A key can only be registered within <see cref="ApiAuthOptions.DeviceKeyRegistrationWindow"/> after the session was
+    /// created (the store enforces it); later attempts answer <see cref="DeviceKeyRegistrationResult.AlreadyBound"/>.
+    /// </para>
+    /// <para>
+    /// This class does NOT verify proof of possession: the caller (the Web) must verify the DBSC registration JWT signed
+    /// by this key before calling. The session token scheme is detected through <see cref="ClaimsIdentity.AuthenticationType"/>,
+    /// so an app must not create identities with the session token scheme name by hand. Resolve it only inside a request
+    /// scope. If an app ever removes a device key it must call <see cref="SessionAccessCache.InvalidateSession"/>,
+    /// because the <see cref="DeviceKeyRegistrationResult.AlreadyBound"/> shortcut trusts the claim.
+    /// </para>
     /// </summary>
     public sealed class DeviceKeyRegistrar
     {
@@ -31,15 +43,18 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
         private readonly IServiceProvider _services;
         private readonly SessionAccessCache _cache;
         private readonly ApiAuthOptions _options;
+        private readonly TimeProvider _clock;
 
-        public DeviceKeyRegistrar(IServiceProvider services, SessionAccessCache cache, IOptions<ApiAuthOptions> options)
+        public DeviceKeyRegistrar(IServiceProvider services, SessionAccessCache cache, IOptions<ApiAuthOptions> options, TimeProvider clock)
         {
             ArgumentNullException.ThrowIfNull(services);
             ArgumentNullException.ThrowIfNull(cache);
             ArgumentNullException.ThrowIfNull(options);
+            ArgumentNullException.ThrowIfNull(clock);
             _services = services;
             _cache = cache;
             _options = options.Value;
+            _clock = clock;
         }
 
         /// <summary>
@@ -66,7 +81,9 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
 
             var store = _services.GetService<IDeviceKeyStore>()
                 ?? throw new InvalidOperationException("Device key registration requires an IDeviceKeyStore service registered by the app.");
-            if (!await store.TrySetDeviceKeyAsync(sessionId, canonical, algorithm, cancellationToken).ConfigureAwait(false))
+            var now = _clock.GetUtcNow();
+            DateTimeOffset? createdNotBefore = _options.DeviceKeyRegistrationWindow is { } w ? now - w : null;
+            if (!await store.TrySetDeviceKeyAsync(sessionId, canonical, algorithm, now, createdNotBefore, cancellationToken).ConfigureAwait(false))
                 return DeviceKeyRegistrationResult.AlreadyBound;
 
             _cache.InvalidateSession(sessionId);

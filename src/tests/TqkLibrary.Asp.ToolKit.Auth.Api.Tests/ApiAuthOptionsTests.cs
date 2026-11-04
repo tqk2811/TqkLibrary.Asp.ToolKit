@@ -21,6 +21,19 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
             => Assert.Throws<InvalidOperationException>(() => new ApiAuthOptions { SessionTouchTimeout = TimeSpan.FromSeconds(seconds) }.Validate());
 
         [Theory]
+        [InlineData(0)]
+        [InlineData(-1)]
+        public void NonPositiveDeviceKeyRegistrationWindow_Throws(int minutes)
+            => Assert.Throws<InvalidOperationException>(() => new ApiAuthOptions { DeviceKeyRegistrationWindow = TimeSpan.FromMinutes(minutes) }.Validate());
+
+        [Fact]
+        public void NullDeviceKeyRegistrationWindow_IsAllowed() => new ApiAuthOptions { DeviceKeyRegistrationWindow = null }.Validate();
+
+        [Fact]
+        public void DefaultDeviceKeyRegistrationWindow_IsTenMinutes()
+            => Assert.Equal(TimeSpan.FromMinutes(10), new ApiAuthOptions().DeviceKeyRegistrationWindow);
+
+        [Theory]
         [InlineData(null)]
         [InlineData("")]
         public void EmptyDeviceBoundClaimType_Throws(string? value)
