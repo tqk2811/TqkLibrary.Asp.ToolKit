@@ -22,13 +22,6 @@ Việc còn treo và đề xuất của thư viện. Mỗi mục: vấn đề, v
 - **Đề xuất**: cho repo gốc chuyển sang dùng package này rồi xoá bản riêng.
 - **Ngày ghi**: 2026-11-03.
 
-### [Vừa] Integration kéo theo System.Security.Cryptography.Pkcs có cảnh báo lỗ hổng
-
-- **Vị trí**: `src/TqkLibrary.Asp.ToolKit.Integration/TqkLibrary.Asp.ToolKit.Integration.csproj` (dependency `System.Security.Cryptography.Xml` 10.0.12 kéo theo `Pkcs` 10.0.12).
-- **Vấn đề**: restore báo NU1902/NU1903 (mức moderate và high); package publish ra mang theo dependency này.
-- **Đề xuất**: nâng `System.Security.Cryptography.Xml` lên bản đã vá, hoặc bỏ nếu Integration không thật sự cần.
-- **Ngày ghi**: 2026-11-03.
-
 ### [Thấp] ViewModels.AspNetCore: mã lỗi field dựa vào ghi đè ErrorMessage toàn app
 
 - **Vị trí**: `src/TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore/Validation/FieldErrorMessageProvider.cs`, `FieldValidationErrors.cs`.

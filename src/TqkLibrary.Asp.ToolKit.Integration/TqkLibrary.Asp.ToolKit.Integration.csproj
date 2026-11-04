@@ -25,7 +25,6 @@
 		<PackageReference Include="Microsoft.Extensions.Configuration" />
 		<PackageReference Include="Microsoft.Extensions.Http" />
 		<PackageReference Include="Newtonsoft.Json" />
-		<PackageReference Include="System.Security.Cryptography.Xml" />
 		<PackageReference Include="TqkLibrary.Http" />
 		<PackageReference Include="TqkLibrary.Utils" />
 	</ItemGroup>

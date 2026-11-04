@@ -16,7 +16,6 @@
 				<dependency id="Microsoft.Extensions.Configuration" version="10.0.12" />
 				<dependency id="Microsoft.Extensions.Http" version="10.0.12" />
 				<dependency id="Newtonsoft.Json" version="13.0.4" />
-				<dependency id="System.Security.Cryptography.Xml" version="10.0.12" />
 				<dependency id="TqkLibrary.Http" version="2.0.0" />
 				<dependency id="TqkLibrary.Utils" version="1.0.0" />
 				<dependency id="TqkLibrary.Asp.ToolKit.ViewModels" version="$viewModelsVersion$" />
