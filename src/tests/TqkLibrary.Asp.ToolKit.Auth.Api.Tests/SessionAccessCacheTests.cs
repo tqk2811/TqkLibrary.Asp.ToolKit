@@ -25,16 +25,16 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
             public int Calls { get; private set; }
             public Func<SessionAccessRecord?> Value { get; set; } = value;
 
-            public Task<SessionAccessResult> LoadAsync(CancellationToken _)
+            public Task<SessionAccessRecord?> LoadAsync(CancellationToken _)
             {
                 Calls++;
-                return Task.FromResult(Value() is { } access ? SessionAccessResult.Grant(access) : SessionAccessResult.Reject());
+                return Task.FromResult(Value());
             }
         }
 
         private static async Task<SessionAccessRecord?> GetAccessAsync(SessionAccessCache cache, string sessionId,
-            Func<CancellationToken, Task<SessionAccessResult>> load)
-            => (await cache.GetAsync(sessionId, load)).Access;
+            Func<CancellationToken, Task<SessionAccessRecord?>> load)
+            => await cache.GetAsync(sessionId, load);
 
         [Fact]
         public async Task Hit_WithinLifetime_NoReload()
@@ -109,7 +109,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
         {
             using var cache = NewCache();
             var gate = new TaskCompletionSource<SessionAccessRecord?>(TaskCreationOptions.RunContinuationsAsynchronously);
-            var inFlight = GetAccessAsync(cache, "s-1", async _ => SessionAccessResult.Grant((await gate.Task)!));
+            var inFlight = GetAccessAsync(cache, "s-1", async _ => await gate.Task);
 
             Invalidate(cache, kind);
             gate.SetResult(Access("old"));
@@ -161,32 +161,31 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
         }
 
         [Fact]
-        public async Task LoadReturnsNull_ReturnsNull_AndIsNotCached()
+        public async Task LoadReturnsNull_NotFoundIsCachedForTheLifetime_ThenReloaded()
         {
-            using var cache = NewCache();
+            using var cache = NewCache(TimeSpan.FromSeconds(30));
             var loader = new Loader(() => null);
             Assert.Null(await GetAccessAsync(cache, "s-1", loader.LoadAsync));
             Assert.Null(await GetAccessAsync(cache, "s-1", loader.LoadAsync));
+            Assert.Equal(1, loader.Calls);
+
+            loader.Value = () => Access("created");
+            _clock.Advance(TimeSpan.FromSeconds(31));
+            Assert.Equal(["created"], (await GetAccessAsync(cache, "s-1", loader.LoadAsync))!.Permissions);
             Assert.Equal(2, loader.Calls);
         }
 
         [Fact]
-        public async Task Rejection_ReasonIsReturned_AndNotCached()
+        public async Task InvalidateSession_DropsCachedNotFound()
         {
             using var cache = NewCache();
-            var calls = 0;
-            Task<SessionAccessResult> Load(CancellationToken _)
-            {
-                calls++;
-                return Task.FromResult(SessionAccessResult.Reject(SessionRejectionReasons.UserLocked));
-            }
+            var loader = new Loader(() => null);
+            await GetAccessAsync(cache, "s-1", loader.LoadAsync);
+            loader.Value = () => Access("created");
 
-            var first = await cache.GetAsync("s-1", Load);
-            var second = await cache.GetAsync("s-1", Load);
+            cache.InvalidateSession("s-1");
 
-            Assert.Equal(SessionRejectionReasons.UserLocked, first.Reason);
-            Assert.Equal(SessionRejectionReasons.UserLocked, second.Reason);
-            Assert.Equal(2, calls);
+            Assert.NotNull(await GetAccessAsync(cache, "s-1", loader.LoadAsync));
         }
 
         [Fact]
@@ -195,7 +194,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
             using var cache = NewCache();
             await GetAccessAsync(cache, "s-9", new Loader(() => Access("b", userId: "u-2")).LoadAsync);
             var gate = new TaskCompletionSource<SessionAccessRecord>(TaskCreationOptions.RunContinuationsAsynchronously);
-            var inFlight = GetAccessAsync(cache, "s-1", async _ => SessionAccessResult.Grant(await gate.Task));
+            var inFlight = GetAccessAsync(cache, "s-1", async _ => await gate.Task);
 
             cache.InvalidateUser("u-1");
             gate.SetResult(Access("old"));
@@ -213,7 +212,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
         {
             using var cache = NewCache(TimeSpan.FromSeconds(30));
             var gate = new TaskCompletionSource<SessionAccessRecord>(TaskCreationOptions.RunContinuationsAsynchronously);
-            var inFlight = GetAccessAsync(cache, "s-1", async _ => SessionAccessResult.Grant(await gate.Task));
+            var inFlight = GetAccessAsync(cache, "s-1", async _ => await gate.Task);
             cache.InvalidateSession("s-1");
 
             // Much later another invalidation prunes the stamp of s-1; the hanging load then finishes.

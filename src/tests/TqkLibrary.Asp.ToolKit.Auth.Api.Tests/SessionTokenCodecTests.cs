@@ -13,7 +13,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
             Assert.True(SessionTokenCodec.TryParse(issued.Token, out var sessionId, out var secret));
             Assert.Equal("s-1", sessionId);
             Assert.DoesNotContain('.', secret);
-            Assert.True(secret.Length >= 43); // 32 random bytes, base64url
+            Assert.Equal(SessionTokenCodec.SecretLength, secret.Length); // 32 random bytes, base64url
             Assert.Equal(SessionTokenCodec.Hash(secret), issued.SecretHash);
             Assert.True(SessionTokenCodec.Verify(secret, issued.SecretHash));
         }
@@ -25,6 +25,9 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
         [Theory]
         [InlineData("")]
         [InlineData("a.b")]
+        [InlineData("has space")]
+        [InlineData("s/1")]
+        [InlineData("s+1")]
         public void Create_InvalidSessionId_Throws(string sessionId)
             => Assert.ThrowsAny<ArgumentException>(() => SessionTokenCodec.Create(sessionId));
 
@@ -58,13 +61,50 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
         public void TryParse_TooLong_False()
             => Assert.False(SessionTokenCodec.TryParse("s." + new string('a', SessionTokenCodec.MaxTokenLength), out _, out _));
 
+        private static readonly string ValidSecret = new('a', SessionTokenCodec.SecretLength);
+
         [Fact]
-        public void TryParse_SplitsAtFirstDot()
+        public void TryParse_ValidToken_True()
         {
-            Assert.True(SessionTokenCodec.TryParse("s.a.b", out var sessionId, out var secret));
-            Assert.Equal("s", sessionId);
-            Assert.Equal("a.b", secret);
+            Assert.True(SessionTokenCodec.TryParse("s-1_X." + ValidSecret, out var sessionId, out var secret));
+            Assert.Equal("s-1_X", sessionId);
+            Assert.Equal(ValidSecret, secret);
         }
+
+        [Fact]
+        public void TryParse_SecretWithDot_False()
+            => Assert.False(SessionTokenCodec.TryParse("s." + ValidSecret[..^2] + ".b", out _, out _));
+
+        [Fact]
+        public void TryParse_SessionIdTooLong_False()
+        {
+            Assert.True(SessionTokenCodec.TryParse(new string('s', SessionTokenCodec.MaxSessionIdLength) + "." + ValidSecret, out _, out _));
+            Assert.False(SessionTokenCodec.TryParse(new string('s', SessionTokenCodec.MaxSessionIdLength + 1) + "." + ValidSecret, out _, out _));
+        }
+
+        [Theory]
+        [InlineData("s 1")]
+        [InlineData("s+1")]
+        [InlineData("s/1")]
+        [InlineData("s=1")]
+        [InlineData("s\u00e9")]
+        public void TryParse_SessionIdWithForbiddenChar_False(string sessionId)
+            => Assert.False(SessionTokenCodec.TryParse(sessionId + "." + ValidSecret, out _, out _));
+
+        [Theory]
+        [InlineData(42)]
+        [InlineData(44)]
+        [InlineData(1)]
+        public void TryParse_SecretOfWrongLength_False(int length)
+            => Assert.False(SessionTokenCodec.TryParse("s." + new string('a', length), out _, out _));
+
+        [Theory]
+        [InlineData('+')]
+        [InlineData('/')]
+        [InlineData('=')]
+        [InlineData(' ')]
+        public void TryParse_SecretWithNonBase64UrlChar_False(char bad)
+            => Assert.False(SessionTokenCodec.TryParse("s." + ValidSecret[..^1] + bad, out _, out _));
 
         [Fact]
         public void HashEquals_SameSecretTrue_DifferentOrNullFalse()

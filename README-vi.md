@@ -194,15 +194,15 @@ Về cookie:
 ### Interface app phải cài: `ISessionAccessSource`
 
 `GetAsync(sessionId, ct)` chạy (qua `SessionAccessCache`) cho **mỗi request có token**. Trả về dòng phiên kèm dữ liệu
-hiện tại của user, **kể cả khi phiên đã thu hồi/hết hạn** (thư viện tự kiểm); chỉ trả `SessionAccessResult.Reject(reason)`
-khi phiên không tồn tại hoặc tài khoản không dùng được. `TouchAsync` lưu hạn trượt.
+hiện tại của user, **kể cả khi phiên đã thu hồi/hết hạn** (thư viện tự kiểm); trả `null` khi phiên không tồn tại; tài khoản
+không dùng được thì đặt `UserRejectionReason` (chỉ báo cho người gọi có secret đúng). `TouchAsync` lưu hạn trượt.
 
 ```csharp
 public sealed class SessionAccessSource(AppDbContext db) : ISessionAccessSource
 {
-    public async Task<SessionAccessResult> GetAsync(string sessionId, CancellationToken ct)
+    public async Task<SessionAccessRecord?> GetAsync(string sessionId, CancellationToken ct)
     {
-        // ... đọc dòng phiên + user; không có -> SessionAccessResult.Reject(); khoá -> Reject(SessionRejectionReasons.UserLocked)
+        // ... đọc dòng phiên + user; không có -> null; khoá -> UserRejectionReason = SessionRejectionReasons.UserLocked
         return new SessionAccessRecord
         {
             UserId = user.Id, SecretHash = session.SecretHash,

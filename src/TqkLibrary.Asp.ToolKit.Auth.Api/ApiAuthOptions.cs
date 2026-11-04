@@ -32,8 +32,15 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
         /// </summary>
         public TimeSpan SessionTouchInterval { get; set; } = TimeSpan.FromHours(1);
 
-        /// <summary>How long a session lookup is cached by <see cref="SessionAccessCache"/>.</summary>
+        /// <summary>How long a session lookup is cached by <see cref="SessionAccessCache"/>. Zero disables the cache; negative is invalid.</summary>
         public TimeSpan SessionAccessCacheLifetime { get; set; } = TimeSpan.FromSeconds(30);
+
+        /// <summary>
+        /// Time budget of one <see cref="Interfaces.ISessionAccessSource.TouchAsync"/> call. The touch does not use the
+        /// request's cancellation token (a client disconnect must not abort the write); this timeout bounds it instead.
+        /// A timeout is logged as a warning like any other touch failure. Must be positive. Default 5 seconds.
+        /// </summary>
+        public TimeSpan SessionTouchTimeout { get; set; } = TimeSpan.FromSeconds(5);
 
         private static readonly TimeSpan MaxLifetimeLimit = TimeSpan.FromDays(3650);
 
@@ -57,6 +64,10 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
                 throw new InvalidOperationException("ApiAuthOptions.MaxSessionLifetime must not exceed 3650 days.");
             if (SessionTouchInterval < TimeSpan.Zero)
                 throw new InvalidOperationException("ApiAuthOptions.SessionTouchInterval must not be negative.");
+            if (SessionTouchTimeout <= TimeSpan.Zero)
+                throw new InvalidOperationException("ApiAuthOptions.SessionTouchTimeout must be positive.");
+            if (SessionAccessCacheLifetime < TimeSpan.Zero)
+                throw new InvalidOperationException("ApiAuthOptions.SessionAccessCacheLifetime must not be negative (zero disables the cache).");
             // A session must be touched before it can expire while in use.
             var shortest = SessionLifetimes.Persistent is { } p && p < SessionLifetimes.Normal ? p : SessionLifetimes.Normal;
             if (SessionTouchInterval >= shortest)

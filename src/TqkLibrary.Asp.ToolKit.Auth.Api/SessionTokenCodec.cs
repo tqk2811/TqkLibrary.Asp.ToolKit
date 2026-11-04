@@ -16,17 +16,38 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
         /// <summary>Longest token <see cref="TryParse"/> accepts; longer values are rejected before hashing.</summary>
         public const int MaxTokenLength = 1024;
 
-        /// <summary>Creates a new token for <paramref name="sessionId"/> (which must not contain '.').</summary>
+        /// <summary>Longest session id <see cref="Create"/> and <see cref="TryParse"/> accept.</summary>
+        public const int MaxSessionIdLength = 128;
+
+        /// <summary>Length of a secret: 32 random bytes as unpadded base64url.</summary>
+        public const int SecretLength = 43;
+
+        private const int SecretByteLength = 32;
+
+        /// <summary>
+        /// Hash that no secret produces; the handler verifies against it when the session does not exist, so an unknown
+        /// session id costs the same time as a wrong secret.
+        /// </summary>
+        internal static readonly string DummyHash = Hash("dummy-secret-for-timing-equalisation");
+
+        /// <summary>
+        /// Creates a new token for <paramref name="sessionId"/>, which must be 1 to <see cref="MaxSessionIdLength"/>
+        /// characters of <c>A-Z a-z 0-9 - _</c> (a GUID or base64url id), otherwise <see cref="TryParse"/> would reject its own token.
+        /// </summary>
         public static IssuedSessionToken Create(string sessionId)
         {
             ArgumentException.ThrowIfNullOrEmpty(sessionId);
-            if (sessionId.Contains('.'))
-                throw new ArgumentException("Session id must not contain '.'.", nameof(sessionId));
-            var secret = WebEncoders.Base64UrlEncode(RandomNumberGenerator.GetBytes(32));
+            if (!IsValidSessionId(sessionId))
+                throw new ArgumentException($"Session id must be 1 to {MaxSessionIdLength} characters of A-Z a-z 0-9 - _.", nameof(sessionId));
+            var secret = WebEncoders.Base64UrlEncode(RandomNumberGenerator.GetBytes(SecretByteLength));
             return new IssuedSessionToken($"{sessionId}.{secret}", Hash(secret));
         }
 
-        /// <summary>Splits a token at its first '.'; false when it is not in the expected format.</summary>
+        /// <summary>
+        /// Splits a token at its first '.'; false when it is not in the expected format: a session id of up to
+        /// <see cref="MaxSessionIdLength"/> characters of <c>A-Z a-z 0-9 - _</c> and a secret of exactly
+        /// <see cref="SecretLength"/> base64url characters (what <see cref="Create"/> issues).
+        /// </summary>
         public static bool TryParse(string? token, out string sessionId, out string secret)
         {
             sessionId = secret = string.Empty;
@@ -37,8 +58,19 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
                 return false;
             sessionId = token[..dot];
             secret = token[(dot + 1)..];
+            if (!IsValidSessionId(sessionId) || secret.Length != SecretLength || !secret.All(IsBase64UrlChar))
+            {
+                sessionId = secret = string.Empty;
+                return false;
+            }
             return true;
         }
+
+        private static bool IsValidSessionId(string sessionId)
+            => sessionId.Length is > 0 and <= MaxSessionIdLength && sessionId.All(IsBase64UrlChar);
+
+        private static bool IsBase64UrlChar(char c)
+            => c is (>= 'A' and <= 'Z') or (>= 'a' and <= 'z') or (>= '0' and <= '9') or '-' or '_';
 
         /// <summary>Uppercase hex SHA-256 of <paramref name="secret"/>.</summary>
         public static string Hash(string secret)

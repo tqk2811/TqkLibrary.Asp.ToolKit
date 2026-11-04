@@ -9,14 +9,15 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Interfaces
     public interface ISessionAccessSource
     {
         /// <summary>
-        /// The session row <paramref name="sessionId"/> with its user's current data, as
-        /// <see cref="SessionAccessResult.Grant"/> (or a <see cref="SessionAccessRecord"/>, converted implicitly), even
-        /// when it is revoked or expired: the library checks the secret hash, <see cref="SessionAccessRecord.IsRevoked"/>
-        /// and the expiry itself. Return <see cref="SessionAccessResult.Reject"/> (optional reason) when the session does
-        /// not exist or the account is unusable (locked, deleted). Called through <see cref="SessionAccessCache"/>: a
-        /// granted record is cached for <see cref="ApiAuthOptions.SessionAccessCacheLifetime"/>, a rejection never.
+        /// The session row <paramref name="sessionId"/> with its user's current data, even when it is revoked, expired or
+        /// its user cannot sign in: the library checks the secret hash first, then
+        /// <see cref="SessionAccessRecord.UserRejectionReason"/>, <see cref="SessionAccessRecord.IsRevoked"/> and the
+        /// expiry itself, so none of those states is revealed to a caller who does not hold the secret. Return null only
+        /// when no such session exists. Called through <see cref="SessionAccessCache"/>: the record (or null) is cached
+        /// for <see cref="ApiAuthOptions.SessionAccessCacheLifetime"/>; call
+        /// <see cref="SessionAccessCache.InvalidateSession"/> after creating a session whose id may have been probed.
         /// </summary>
-        Task<SessionAccessResult> GetAsync(string sessionId, CancellationToken cancellationToken);
+        Task<SessionAccessRecord?> GetAsync(string sessionId, CancellationToken cancellationToken);
 
         /// <summary>
         /// Persists the sliding expiry: LastAccessAt = <paramref name="lastAccessAt"/>, ExpiresAt =

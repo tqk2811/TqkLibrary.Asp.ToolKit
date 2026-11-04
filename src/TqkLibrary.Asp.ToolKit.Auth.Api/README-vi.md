@@ -20,14 +20,17 @@ dotnet add package TqkLibrary.Asp.ToolKit.Auth.Api
   `EffectiveAudience`, `CreateSigningKey`, `CreateTokenValidationParameters`, và phụ thuộc
   `Microsoft.AspNetCore.Authentication.JwtBearer`.
 - Đổi tên: `RefreshTokenCodec` → `SessionTokenCodec`, `IssuedRefreshToken` → `IssuedSessionToken`.
-- `ISessionAccessSource.GetAsync(sessionId, ct)` (không còn user id) trả về dòng phiên: user id, hash secret,
-  `CreatedAt`, `LastAccessAt`, `ExpiresAt`, `IsPersistent`, `IsRevoked`, cùng tên/email/role/permission. Thư viện tự
-  kiểm secret, thu hồi và hạn. Thêm `TouchAsync` để lưu hạn trượt.
+- `ISessionAccessSource.GetAsync(sessionId, ct)` (không còn user id) trả về `SessionAccessRecord?` (null = không có
+  phiên): user id, hash secret, `CreatedAt`, `LastAccessAt`, `ExpiresAt`, `IsPersistent`, `IsRevoked`,
+  `RevokedReason`, `UserRejectionReason`, cùng tên/email/role/permission. Mọi thời điểm là UTC. Thư viện kiểm secret
+  trước, rồi mới kiểm user, thu hồi và hạn. Thêm `TouchAsync` để lưu hạn trượt.
 - Scheme xác thực: `AddAuthentication(SessionTokenDefaults.AuthenticationScheme).AddTqkSessionToken(...)`; body 401
   riêng chuyển sang `SessionTokenAuthenticationOptions.OnChallenge`, còn `GetSessionRejection` / `IsSessionRejected`
   thành extension của `HttpContext`.
-- `SessionAccessCache.GetAsync` bỏ tham số user id. `SessionRejectionReasons.NoSession` / `UserMismatch` được thay bằng
-  `InvalidToken`.
+- `SessionAccessCache.GetAsync` bỏ tham số user id và nạp `SessionAccessRecord?`. `SessionRejectionReasons.NoSession` /
+  `UserMismatch` được thay bằng `InvalidToken`; không còn kiểu kết quả grant/reject.
+- Token phải có session id tối đa 128 ký tự `A-Z a-z 0-9 - _` và secret base64url đúng 43 ký tự (đúng thứ
+  `SessionTokenCodec.Create` cấp); `Create` ném exception với session id khác.
 - Bỏ endpoint refresh của API; endpoint login trả session token (xem dưới).
 
 ## Cách dùng
@@ -41,19 +44,20 @@ Cài `ISessionAccessSource`:
 ```csharp
 public sealed class SessionAccessSource(AppDbContext db) : ISessionAccessSource
 {
-    public async Task<SessionAccessResult> GetAsync(string sessionId, CancellationToken ct)
+    public async Task<SessionAccessRecord?> GetAsync(string sessionId, CancellationToken ct)
     {
         var row = await db.Sessions.Where(s => s.Id == sessionId)
             .Select(s => new { Session = s, s.User })
             .SingleOrDefaultAsync(ct);
-        if (row is null) return SessionAccessResult.Reject();                                   // phiên không tồn tại
-        if (row.User.IsLocked) return SessionAccessResult.Reject(SessionRejectionReasons.UserLocked);
-        // Trả cả phiên đã thu hồi/hết hạn: thư viện tự kiểm secret, thu hồi và hạn.
+        if (row is null) return null;                                                           // phiên không tồn tại
+        // Trả cả phiên đã thu hồi/hết hạn/user bị khoá: thư viện kiểm secret trước, rồi mới kiểm phần còn lại.
         return new SessionAccessRecord
         {
             UserId = row.User.Id, SecretHash = row.Session.SecretHash,
             CreatedAt = row.Session.CreatedAt, LastAccessAt = row.Session.LastAccessAt, ExpiresAt = row.Session.ExpiresAt,
             IsPersistent = row.Session.IsPersistent, IsRevoked = row.Session.RevokedAt != null,
+            RevokedReason = row.Session.RevokedReason,                                     // mã riêng của app (tuỳ chọn), vd "password_changed"
+            UserRejectionReason = row.User.IsLocked ? SessionRejectionReasons.UserLocked : null,
             UserName = row.User.UserName, Email = row.User.Email, Roles = roles, Permissions = permissions,
         };
     }
@@ -65,6 +69,11 @@ public sealed class SessionAccessSource(AppDbContext db) : ISessionAccessSource
 }
 ```
 
+Mọi `DateTime` của record là UTC (`Unspecified` coi như UTC, `Local` được đổi sang UTC). `UserRejectionReason` (vd
+`user_locked`) và `RevokedReason` chỉ được báo cho người gọi có secret đúng; secret sai hoặc session id không tồn tại
+luôn trả `invalid_token`, nên endpoint không dùng để dò phiên hay user được. Kết quả "không có phiên" cũng được cache
+như một record; gọi `InvalidateSession(sessionId)` sau khi tạo phiên nếu id đó có thể vừa bị dò.
+
 `GetAsync` ném exception thì không có rejection nào được ghi, request hỏng với exception đó thay vì 401.
 
 Đăng ký:
@@ -75,6 +84,7 @@ builder.Services.AddTqkApiAuth(o =>
     // Phiên thường 7 ngày, phiên "ghi nhớ đăng nhập" 30 ngày (Persistent null = như Normal). Mặc định: 30 ngày.
     o.SessionLifetimes = new SessionLifetimes(TimeSpan.FromDays(7), Persistent: TimeSpan.FromDays(30));
     o.MaxSessionLifetime = TimeSpan.FromDays(90);        // trần tuyệt đối, tuỳ chọn; mặc định không có
+    o.SessionTouchTimeout = TimeSpan.FromSeconds(5);     // mặc định; thời gian tối đa của một TouchAsync (không dùng RequestAborted)
     o.SessionTouchInterval = TimeSpan.FromHours(1);      // mặc định; bao lâu ghi hạn trượt một lần
 });
 builder.Services.AddScoped<ISessionAccessSource, SessionAccessSource>();
@@ -94,12 +104,15 @@ builder.Services.AddAuthentication(SessionTokenDefaults.AuthenticationScheme).Ad
 Ở mỗi request có `Authorization: Bearer {sessionId}.{secret}`, handler:
 
 1. tách token (sai dạng → 401 `invalid_token`, không gọi source);
-2. lấy phiên qua `SessionAccessCache` (mặc định 30 giây) → `ISessionAccessSource.GetAsync`;
-3. so hash secret trong thời gian cố định (`invalid_token`), rồi kiểm `IsRevoked` (`revoked`), `ExpiresAt` và trần
-   tuyệt đối `CreatedAt + MaxSessionLifetime` (`expired`);
+2. lấy phiên qua `SessionAccessCache` (mặc định 30 giây) → `ISessionAccessSource.GetAsync`; không có phiên →
+   `invalid_token` (sau một lần kiểm hash giả, để tốn thời gian ngang với secret sai);
+3. so hash secret trong thời gian cố định (`invalid_token`), rồi kiểm `UserRejectionReason` (trả đúng giá trị đó),
+   `IsRevoked` (`RevokedReason`, null thì `revoked`), `ExpiresAt` và trần tuyệt đối `CreatedAt + MaxSessionLifetime`
+   (`expired`);
 4. lần ghi trước đã cũ hơn `SessionTouchInterval` thì gọi `TouchAsync(sessionId, now, newExpiry)` với
    `newExpiry = min(now + lifetime, CreatedAt + MaxSessionLifetime)` (mỗi phiên chỉ một lượt ghi cùng lúc trong một
-   process; lỗi được log và thử lại sau tối đa một phút) rồi cập nhật bản ghi trong cache;
+   process; lỗi hoặc quá `SessionTouchTimeout` được log mức warning và thử lại sau tối đa một phút; lượt ghi không dùng
+   cancellation token của request) rồi cập nhật bản ghi trong cache;
 5. dựng principal: `ClaimTypes.NameIdentifier` và `UserIdClaimType` (`sub`) = user id, `SessionIdClaimType` (`sid`),
    `ClaimTypes.Name`, `ClaimTypes.Email`, `ClaimTypes.Role`, `PermissionClaimType` (`permission`).
 

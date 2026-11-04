@@ -15,9 +15,12 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
     /// Authenticates <c>Authorization: Bearer {sessionId}.{secret}</c> (see <see cref="SessionTokenCodec"/>) on every
     /// request:
     /// <list type="number">
-    ///   <item>loads the session through <see cref="SessionAccessCache"/> → <see cref="ISessionAccessSource.GetAsync"/>;</item>
-    ///   <item>compares the secret hash in fixed time, then checks <see cref="SessionAccessRecord.IsRevoked"/>,
-    ///   <see cref="SessionAccessRecord.ExpiresAt"/> and the absolute cap (<see cref="SlidingSessionPolicy"/>);</item>
+    ///   <item>loads the session through <see cref="SessionAccessCache"/> → <see cref="ISessionAccessSource.GetAsync"/>
+    ///   (an unknown session is answered as <see cref="SessionRejectionReasons.InvalidToken"/> after a dummy hash check);</item>
+    ///   <item>compares the secret hash in fixed time, and only then checks
+    ///   <see cref="SessionAccessRecord.UserRejectionReason"/>, <see cref="SessionAccessRecord.IsRevoked"/>,
+    ///   <see cref="SessionAccessRecord.ExpiresAt"/> and the absolute cap (<see cref="SlidingSessionPolicy"/>), so a caller
+    ///   without the secret learns nothing about the session or its user;</item>
     ///   <item>slides the expiry at most once per <see cref="ApiAuthOptions.SessionTouchInterval"/>
     ///   (<see cref="ISessionAccessSource.TouchAsync"/>; a failure is only logged);</item>
     ///   <item>builds the principal from CURRENT data: user id (<c>NameIdentifier</c> and
@@ -67,25 +70,32 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
 
             var source = Context.RequestServices.GetRequiredService<ISessionAccessSource>();
             var aborted = Context.RequestAborted;
-            var result = await _cache.GetAsync(sessionId, ct => source.GetAsync(sessionId, ct), aborted).ConfigureAwait(false);
-            if (!result.IsGranted)
-                return Reject(result.Reason, "The session does not exist or its user cannot sign in"
-                    + (result.Reason is null ? "." : " (" + result.Reason + ")."));
-            var access = result.Access;
+            var access = await _cache.GetAsync(sessionId, ct => source.GetAsync(sessionId, ct), aborted).ConfigureAwait(false);
+            if (access is null)
+            {
+                // Unknown session: spend the same hashing time as a wrong secret, answer the same way.
+                SessionTokenCodec.Verify(secret, SessionTokenCodec.DummyHash);
+                return Reject(SessionRejectionReasons.InvalidToken, "The session token is invalid.");
+            }
 
-            // Secret first: a wrong secret must not reveal whether the session is revoked or expired.
+            // Secret first: a wrong secret must not reveal that the user is locked or the session revoked or expired.
             if (!SessionTokenCodec.Verify(secret, access.SecretHash))
                 return Reject(SessionRejectionReasons.InvalidToken, "The session token is invalid.");
+            if (access.UserRejectionReason is { } userReason)
+                return Reject(userReason, "The user cannot sign in (" + userReason + ").");
             if (access.IsRevoked)
-                return Reject(SessionRejectionReasons.Revoked, "The session was revoked.");
+                return Reject(access.RevokedReason ?? SessionRejectionReasons.Revoked, "The session was revoked.");
 
             var now = _clock.GetUtcNow();
             var utcNow = now.UtcDateTime;
-            var nextExpiry = access.ExpiresAt <= utcNow ? null : _policy.GetNextExpiry(access.CreatedAt, utcNow, access.IsPersistent);
+            var createdAt = ToUtc(access.CreatedAt);
+            var expiresAt = ToUtc(access.ExpiresAt);
+            var lastAccessAt = access.LastAccessAt is { } last ? ToUtc(last) : (DateTime?)null;
+            var nextExpiry = expiresAt <= utcNow ? null : _policy.GetNextExpiry(createdAt, utcNow, access.IsPersistent);
             if (nextExpiry is not { } next)
                 return Reject(SessionRejectionReasons.Expired, "The session has expired.");
 
-            await TouchIfDueAsync(source, sessionId, access, now, next, aborted).ConfigureAwait(false);
+            await TouchIfDueAsync(source, sessionId, access, lastAccessAt ?? createdAt, now, next).ConfigureAwait(false);
 
             return AuthenticateResult.Success(new AuthenticationTicket(CreatePrincipal(sessionId, access), Scheme.Name));
         }
@@ -97,9 +107,11 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
             {
                 var challenge = new SessionTokenChallengeContext(Context, Context.Features.Get<SessionRejection>(), properties);
                 await onChallenge(challenge).ConfigureAwait(false);
-                if (challenge.Handled)
+                if (challenge.Handled || Response.HasStarted)
                     return;
             }
+            else if (Response.HasStarted)
+                return;
             Response.StatusCode = StatusCodes.Status401Unauthorized;
             Response.Headers.Append(HeaderNames.WWWAuthenticate, "Bearer");
         }
@@ -109,18 +121,20 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
         /// and no other request of this process is writing it. Never throws for a store failure.
         /// </summary>
         private async Task TouchIfDueAsync(ISessionAccessSource source, string sessionId, SessionAccessRecord access,
-            DateTimeOffset now, DateTime nextExpiry, CancellationToken cancellationToken)
+            DateTime lastAccessAt, DateTimeOffset now, DateTime nextExpiry)
         {
             var interval = _apiOptions.SessionTouchInterval;
             var utcNow = now.UtcDateTime;
-            if (utcNow - (access.LastAccessAt ?? access.CreatedAt) < interval)
+            if (utcNow - lastAccessAt < interval)
                 return;
             var throttle = Context.RequestServices.GetRequiredService<SessionTouchThrottle>();
             if (!throttle.TryBegin(sessionId, now, interval))
                 return;
             try
             {
-                await source.TouchAsync(sessionId, utcNow, nextExpiry, cancellationToken).ConfigureAwait(false);
+                // Not RequestAborted: a client that disconnects right after authenticating must not abort the write.
+                using var timeout = new CancellationTokenSource(_apiOptions.SessionTouchTimeout);
+                await source.TouchAsync(sessionId, utcNow, nextExpiry, timeout.Token).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -131,6 +145,14 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
             }
             _cache.TryUpdate(sessionId, access with { LastAccessAt = utcNow, ExpiresAt = nextExpiry });
         }
+
+        /// <summary>The record's times are UTC by contract: Unspecified is taken as UTC, Local is converted.</summary>
+        private static DateTime ToUtc(DateTime value) => value.Kind switch
+        {
+            DateTimeKind.Unspecified => DateTime.SpecifyKind(value, DateTimeKind.Utc),
+            DateTimeKind.Local => value.ToUniversalTime(),
+            _ => value,
+        };
 
         private ClaimsPrincipal CreatePrincipal(string sessionId, SessionAccessRecord access)
         {

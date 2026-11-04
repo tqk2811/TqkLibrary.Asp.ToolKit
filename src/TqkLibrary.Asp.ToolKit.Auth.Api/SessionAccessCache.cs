@@ -7,7 +7,8 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
 {
     /// <summary>
     /// Short cache (singleton) of the per-request session lookup, keyed by session id, so the API does not query the
-    /// session, roles and permissions on EVERY authenticated request. A rejection is never cached. Name, email, role
+    /// session, roles and permissions on EVERY authenticated request. A record is cached, and so is "no such session"
+    /// (null) for the same time. Name, email, role
     /// and permission changes therefore apply after at most <see cref="ApiAuthOptions.SessionAccessCacheLifetime"/>
     /// unless the app invalidates.
     /// <para>
@@ -40,7 +41,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
     /// </summary>
     public sealed class SessionAccessCache : IDisposable
     {
-        private sealed record Entry(SessionAccessRecord Access, DateTimeOffset ExpiresAt, long Sequence);
+        private sealed record Entry(SessionAccessRecord? Access, DateTimeOffset ExpiresAt, long Sequence);
 
         private readonly record struct Stamp(long Sequence, DateTimeOffset At);
 
@@ -65,11 +66,11 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
 
         /// <summary>
         /// The cached record of <paramref name="sessionId"/> when still valid, otherwise the result of
-        /// <paramref name="load"/> (cached when granted). The caller still checks the secret, revocation and expiry of the
-        /// record on every request.
+        /// <paramref name="load"/> (cached too, a null "no such session" included, for the cache lifetime). The caller
+        /// still checks the secret, user, revocation and expiry of the record on every request.
         /// </summary>
-        public async Task<SessionAccessResult> GetAsync(string sessionId,
-            Func<CancellationToken, Task<SessionAccessResult>> load, CancellationToken cancellationToken = default)
+        public async Task<SessionAccessRecord?> GetAsync(string sessionId,
+            Func<CancellationToken, Task<SessionAccessRecord?>> load, CancellationToken cancellationToken = default)
         {
             ArgumentException.ThrowIfNullOrEmpty(sessionId);
             ArgumentNullException.ThrowIfNull(load);
@@ -81,20 +82,16 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
                 && hit.ExpiresAt > _clock.GetUtcNow()
                 && IsCurrent(hit, sessionId))
             {
-                return SessionAccessResult.Grant(hit.Access);
+                return hit.Access;
             }
 
-            var result = await load(cancellationToken).ConfigureAwait(false) ?? SessionAccessResult.Reject();
-            if (!result.IsGranted)
-            {
-                _cache.Remove(sessionId);
-                return result;
-            }
-
+            var access = await load(cancellationToken).ConfigureAwait(false);
             var lifetime = _options.Value.SessionAccessCacheLifetime;
             if (lifetime > TimeSpan.Zero)
-                _cache.Set(sessionId, new Entry(result.Access, _clock.GetUtcNow().Add(lifetime), sequence), lifetime);
-            return result;
+                _cache.Set(sessionId, new Entry(access, _clock.GetUtcNow().Add(lifetime), sequence), lifetime);
+            else
+                _cache.Remove(sessionId);
+            return access;
         }
 
         /// <summary>
@@ -106,7 +103,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
         {
             ArgumentException.ThrowIfNullOrEmpty(sessionId);
             ArgumentNullException.ThrowIfNull(access);
-            if (!_cache.TryGetValue(sessionId, out Entry? hit) || hit is null
+            if (!_cache.TryGetValue(sessionId, out Entry? hit) || hit?.Access is null
                 || !string.Equals(hit.Access.UserId, access.UserId, StringComparison.Ordinal)
                 || !IsCurrent(hit, sessionId))
                 return;
@@ -152,7 +149,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
         {
             if (_sessionStamps.TryGetValue(sessionId, out var sessionStamp) && entry.Sequence < sessionStamp.Sequence)
                 return false;
-            if (_userStamps.TryGetValue(entry.Access.UserId, out var userStamp) && entry.Sequence < userStamp.Sequence)
+            if (entry.Access is not null && _userStamps.TryGetValue(entry.Access.UserId, out var userStamp) && entry.Sequence < userStamp.Sequence)
                 return false;
             return entry.Sequence >= Interlocked.Read(ref _allStamp) && entry.Sequence >= Interlocked.Read(ref _floor);
         }

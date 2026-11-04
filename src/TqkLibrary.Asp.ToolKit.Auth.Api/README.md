@@ -20,14 +20,17 @@ issued once at login and sent as `Authorization: Bearer {sessionId}.{secret}` on
   `EffectiveAudience`, `CreateSigningKey`, `CreateTokenValidationParameters`, and the
   `Microsoft.AspNetCore.Authentication.JwtBearer` dependency.
 - Renamed: `RefreshTokenCodec` → `SessionTokenCodec`, `IssuedRefreshToken` → `IssuedSessionToken`.
-- `ISessionAccessSource.GetAsync(sessionId, ct)` (no user id) returns the session row: user id, secret hash,
-  `CreatedAt`, `LastAccessAt`, `ExpiresAt`, `IsPersistent`, `IsRevoked`, plus name/email/roles/permissions. The library
-  checks the secret, revocation and expiry itself. New `TouchAsync` persists the sliding expiry.
+- `ISessionAccessSource.GetAsync(sessionId, ct)` (no user id) returns a nullable `SessionAccessRecord` (null = no such
+  session): user id, secret hash, `CreatedAt`, `LastAccessAt`, `ExpiresAt`, `IsPersistent`, `IsRevoked`,
+  `RevokedReason`, `UserRejectionReason`, plus name/email/roles/permissions. All times are UTC. The library checks the
+  secret first, then the user, revocation and expiry. New `TouchAsync` persists the sliding expiry.
 - Authentication scheme: `AddAuthentication(SessionTokenDefaults.AuthenticationScheme).AddTqkSessionToken(...)`; the
   custom 401 body moves to `SessionTokenAuthenticationOptions.OnChallenge`, and `GetSessionRejection` /
   `IsSessionRejected` are `HttpContext` extensions.
-- `SessionAccessCache.GetAsync` has no user id parameter. `SessionRejectionReasons.NoSession` / `UserMismatch` are
-  replaced by `InvalidToken`.
+- `SessionAccessCache.GetAsync` has no user id parameter and loads a `SessionAccessRecord?`. `SessionRejectionReasons.NoSession` /
+  `UserMismatch` are replaced by `InvalidToken`; there is no grant/reject result type any more.
+- A token must now have a session id of up to 128 characters of `A-Z a-z 0-9 - _` and a 43-character base64url secret
+  (what `SessionTokenCodec.Create` issues); `Create` throws for other session ids.
 - Remove the refresh endpoint of the API; the login endpoint returns the session token (see below).
 
 ## Usage
@@ -41,19 +44,20 @@ Implement `ISessionAccessSource`:
 ```csharp
 public sealed class SessionAccessSource(AppDbContext db) : ISessionAccessSource
 {
-    public async Task<SessionAccessResult> GetAsync(string sessionId, CancellationToken ct)
+    public async Task<SessionAccessRecord?> GetAsync(string sessionId, CancellationToken ct)
     {
         var row = await db.Sessions.Where(s => s.Id == sessionId)
             .Select(s => new { Session = s, s.User })
             .SingleOrDefaultAsync(ct);
-        if (row is null) return SessionAccessResult.Reject();                                   // unknown session
-        if (row.User.IsLocked) return SessionAccessResult.Reject(SessionRejectionReasons.UserLocked);
-        // Return the row even when revoked/expired: the library checks secret, revocation and expiry.
+        if (row is null) return null;                                                           // unknown session
+        // Return the row even when revoked/expired/locked: the library checks the secret first, then the rest.
         return new SessionAccessRecord
         {
             UserId = row.User.Id, SecretHash = row.Session.SecretHash,
             CreatedAt = row.Session.CreatedAt, LastAccessAt = row.Session.LastAccessAt, ExpiresAt = row.Session.ExpiresAt,
             IsPersistent = row.Session.IsPersistent, IsRevoked = row.Session.RevokedAt != null,
+            RevokedReason = row.Session.RevokedReason,                                     // optional app code, e.g. "password_changed"
+            UserRejectionReason = row.User.IsLocked ? SessionRejectionReasons.UserLocked : null,
             UserName = row.User.UserName, Email = row.User.Email, Roles = roles, Permissions = permissions,
         };
     }
@@ -64,6 +68,12 @@ public sealed class SessionAccessSource(AppDbContext db) : ISessionAccessSource
             .ExecuteUpdateAsync(u => u.SetProperty(s => s.LastAccessAt, lastAccessAt).SetProperty(s => s.ExpiresAt, expiresAt), ct);
 }
 ```
+
+All `DateTime` values of the record are UTC (`Unspecified` is taken as UTC, `Local` is converted). `UserRejectionReason`
+(for example `user_locked`) and `RevokedReason` are only reported to a caller whose secret is correct; with a wrong secret,
+or an unknown session id, the answer is always `invalid_token`, so the endpoint cannot be used to probe sessions or users.
+The "no such session" answer is cached like a record; call `InvalidateSession(sessionId)` after creating a session if its
+id might have been probed just before.
 
 If `GetAsync` throws, no rejection is recorded and the request fails with that exception instead of a 401.
 
@@ -76,6 +86,7 @@ builder.Services.AddTqkApiAuth(o =>
     o.SessionLifetimes = new SessionLifetimes(TimeSpan.FromDays(7), Persistent: TimeSpan.FromDays(30));
     o.MaxSessionLifetime = TimeSpan.FromDays(90);        // optional absolute cap for both kinds, default: no cap
     o.SessionTouchInterval = TimeSpan.FromHours(1);      // default; how often the sliding expiry is written
+    o.SessionTouchTimeout = TimeSpan.FromSeconds(5);     // default; budget of one TouchAsync (it ignores RequestAborted)
 });
 builder.Services.AddScoped<ISessionAccessSource, SessionAccessSource>();
 builder.Services.AddAuthentication(SessionTokenDefaults.AuthenticationScheme).AddTqkSessionToken(o =>
@@ -94,12 +105,14 @@ builder.Services.AddAuthentication(SessionTokenDefaults.AuthenticationScheme).Ad
 On every request with `Authorization: Bearer {sessionId}.{secret}` the handler:
 
 1. parses the token (malformed → 401 `invalid_token`, the source is not called);
-2. loads the session through `SessionAccessCache` (default 30 s) → `ISessionAccessSource.GetAsync`;
-3. compares the secret hash in fixed time (`invalid_token`), then checks `IsRevoked` (`revoked`), `ExpiresAt` and the
-   absolute cap `CreatedAt + MaxSessionLifetime` (`expired`);
+2. loads the session through `SessionAccessCache` (default 30 s) → `ISessionAccessSource.GetAsync`; no such session →
+   `invalid_token` (after a dummy hash check, so it takes as long as a wrong secret);
+3. compares the secret hash in fixed time (`invalid_token`), then checks `UserRejectionReason` (its value), `IsRevoked`
+   (`RevokedReason`, or `revoked` when null), `ExpiresAt` and the absolute cap `CreatedAt + MaxSessionLifetime` (`expired`);
 4. when the last write is older than `SessionTouchInterval`, calls `TouchAsync(sessionId, now, newExpiry)` with
    `newExpiry = min(now + lifetime, CreatedAt + MaxSessionLifetime)` (one write per session per process at a time; a
-   failure is logged and retried after at most a minute) and updates the cached record;
+   failure or a `SessionTouchTimeout` timeout is logged as a warning and retried after at most a minute; the write does
+   not use the request's cancellation token) and updates the cached record;
 5. builds the principal: `ClaimTypes.NameIdentifier` and `UserIdClaimType` (`sub`) = user id, `SessionIdClaimType`
    (`sid`), `ClaimTypes.Name`, `ClaimTypes.Email`, `ClaimTypes.Role`, `PermissionClaimType` (`permission`).
 

@@ -32,7 +32,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
             public List<(string SessionId, DateTime LastAccessAt, DateTime ExpiresAt)> TouchLog { get; } = new();
 
             /// <summary>When set, wins over <see cref="Sessions"/>.</summary>
-            public Func<string, SessionAccessResult>? Result { get; set; }
+            public Func<string, SessionAccessRecord?>? Result { get; set; }
 
             /// <summary>When set, <see cref="TouchAsync"/> throws it.</summary>
             public Exception? TouchError { get; set; }
@@ -40,12 +40,15 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
             /// <summary>When set, <see cref="TouchAsync"/> waits for it.</summary>
             public TaskCompletionSource? TouchGate { get; set; }
 
-            public Task<SessionAccessResult> GetAsync(string sessionId, CancellationToken cancellationToken)
+            /// <summary>Whether the token handed to <see cref="TouchAsync"/> was cancelled once its gate opened.</summary>
+            public bool? TouchTokenCancelled { get; private set; }
+
+            public Task<SessionAccessRecord?> GetAsync(string sessionId, CancellationToken cancellationToken)
             {
                 Interlocked.Increment(ref _calls);
                 if (Result is not null)
                     return Task.FromResult(Result(sessionId));
-                return Task.FromResult(Sessions.TryGetValue(sessionId, out var record) ? SessionAccessResult.Grant(record) : SessionAccessResult.Reject());
+                return Task.FromResult(Sessions.TryGetValue(sessionId, out var record) ? record : null);
             }
 
             public async Task TouchAsync(string sessionId, DateTime lastAccessAt, DateTime expiresAt, CancellationToken cancellationToken)
@@ -53,6 +56,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
                 Interlocked.Increment(ref _touches);
                 if (TouchGate is { } gate)
                     await gate.Task;
+                TouchTokenCancelled = cancellationToken.IsCancellationRequested;
                 if (TouchError is { } error)
                     throw error;
                 lock (TouchLog)
@@ -286,15 +290,127 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
         }
 
         [Fact]
-        public async Task SourceRejectionReason_IsPassedToOnChallenge()
+        public async Task UserRejectionReason_WithCorrectSecret_IsPassedToOnChallenge()
         {
             await using var app = await App.StartAsync(o => o.OnChallenge = WriteReason);
-            app.Source.Result = _ => SessionAccessResult.Reject(SessionRejectionReasons.UserLocked);
+            var token = app.SignIn();
+            app.Source.Sessions["s-1"] = app.Source.Sessions["s-1"] with { UserRejectionReason = SessionRejectionReasons.UserLocked };
 
-            using var response = await app.GetAsync(SessionTokenCodec.Create("s-1").Token);
+            using var response = await app.GetAsync(token);
 
             Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
             Assert.Equal("reason=" + SessionRejectionReasons.UserLocked, await response.Content.ReadAsStringAsync());
+        }
+
+        [Fact]
+        public async Task UserRejectionReason_WithWrongSecret_IsNotLeaked_InvalidToken()
+        {
+            await using var app = await App.StartAsync(o => o.OnChallenge = WriteReason);
+            var token = app.SignIn();
+            app.Source.Sessions["s-1"] = app.Source.Sessions["s-1"] with { UserRejectionReason = SessionRejectionReasons.UserLocked };
+
+            using var response = await app.GetAsync(WrongSecret(token));
+
+            Assert.Equal("reason=" + SessionRejectionReasons.InvalidToken, await response.Content.ReadAsStringAsync());
+        }
+
+        [Fact]
+        public async Task UnknownSessionId_Returns401_InvalidToken()
+        {
+            await using var app = await App.StartAsync(o => o.OnChallenge = WriteReason);
+
+            using var response = await app.GetAsync(SessionTokenCodec.Create("missing").Token);
+
+            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+            Assert.Equal("reason=" + SessionRejectionReasons.InvalidToken, await response.Content.ReadAsStringAsync());
+            Assert.Equal(1, app.Source.Calls);
+        }
+
+        [Fact]
+        public async Task RevokedReason_WithCorrectSecret_IsPassedToOnChallenge()
+        {
+            await using var app = await App.StartAsync(o => o.OnChallenge = WriteReason);
+            var token = app.SignIn();
+            app.Source.Sessions["s-1"] = app.Source.Sessions["s-1"] with { IsRevoked = true, RevokedReason = "password_changed" };
+
+            using var response = await app.GetAsync(token);
+
+            Assert.Equal("reason=password_changed", await response.Content.ReadAsStringAsync());
+        }
+
+        [Fact]
+        public async Task RevokedReason_WithWrongSecret_IsNotLeaked_InvalidToken()
+        {
+            await using var app = await App.StartAsync(o => o.OnChallenge = WriteReason);
+            var token = app.SignIn();
+            app.Source.Sessions["s-1"] = app.Source.Sessions["s-1"] with { IsRevoked = true, RevokedReason = "password_changed" };
+
+            using var response = await app.GetAsync(WrongSecret(token));
+
+            Assert.Equal("reason=" + SessionRejectionReasons.InvalidToken, await response.Content.ReadAsStringAsync());
+        }
+
+        [Fact]
+        public async Task Touch_DoesNotReceiveTheRequestAbortedToken()
+        {
+            await using var app = await App.StartAsync();
+            var token = app.SignIn();
+            app.Clock.Advance(TimeSpan.FromHours(2));
+            app.Source.TouchGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var cts = new CancellationTokenSource();
+            using var request = new HttpRequestMessage(HttpMethod.Get, "/me");
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+            var send = app.Client.SendAsync(request, cts.Token);
+            while (app.Source.Touches == 0)
+                await Task.Delay(10);
+            cts.Cancel();
+            await Task.Delay(100);
+            app.Source.TouchGate.SetResult();
+            try { (await send).Dispose(); } catch (OperationCanceledException) { }
+            await Task.Delay(100);
+
+            Assert.False(app.Source.TouchTokenCancelled);
+            Assert.Single(app.Source.TouchLog);
+        }
+
+        [Fact]
+        public async Task OnChallenge_ResponseAlreadyStarted_DoesNotThrowOrOverwrite()
+        {
+            await using var app = await App.StartAsync(o => o.OnChallenge = async context =>
+            {
+                await context.HttpContext.Response.WriteAsync("custom");
+                await context.HttpContext.Response.Body.FlushAsync();
+            });
+
+            using var response = await app.GetAsync("nodot");
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal("custom", await response.Content.ReadAsStringAsync());
+            Assert.Empty(response.Headers.WwwAuthenticate);
+        }
+
+        [Fact]
+        public async Task UnspecifiedAndLocalKinds_AreTreatedAsUtc()
+        {
+            await using var app = await App.StartAsync(o => o.OnChallenge = WriteReason);
+            var token = app.SignIn();
+            var expiry = Start.AddDays(7);
+            app.Source.Sessions["s-1"] = app.Source.Sessions["s-1"] with
+            {
+                CreatedAt = DateTime.SpecifyKind(Start, DateTimeKind.Unspecified),
+                ExpiresAt = DateTime.SpecifyKind(expiry, DateTimeKind.Unspecified),
+            };
+            app.Clock.Advance(TimeSpan.FromDays(7) - TimeSpan.FromMinutes(1));
+            using (var before = await app.GetAsync(token))
+                Assert.Equal(HttpStatusCode.OK, before.StatusCode);
+
+            app.Source.Sessions["s-1"] = app.Source.Sessions["s-1"] with { ExpiresAt = expiry.ToLocalTime() };
+            app.Cache.InvalidateAll();
+            app.Clock.Advance(TimeSpan.FromMinutes(2));
+            using var after = await app.GetAsync(token);
+
+            Assert.Equal("reason=" + SessionRejectionReasons.Expired, await after.Content.ReadAsStringAsync());
         }
 
         [Fact]
