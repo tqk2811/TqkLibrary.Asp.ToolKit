@@ -113,6 +113,7 @@ làm phiên web kết thúc); và đặt scheme session-token làm `DefaultChall
 gọi), vì một scheme Bearer khác (ví dụ JwtBearer) challenge cùng request cũng sẽ kết thúc phiên. Upload không bao giờ bị buffer (không
 có gì được gửi lại). Khách, lời gọi trong `AnonymousApiScope`, lời gọi tự đặt `Authorization`, và đường dẫn trong
 `AnonymousPathSuffixes` đi qua nguyên trạng.
+Code gọi API KHÔNG qua `SessionBearerHandler` (reverse proxy/forwarder chuyển tiếp lời gọi của trình duyệt, `HttpClient` tự dựng) dùng `SessionChallenge.EndsSession(response, options.TreatAnyUnauthorizedAsSessionExpired)` để áp đúng luật trên: `true` thì ném `SessionExpiredException` (hoặc tự đăng xuất).
 
 Gọi API ẩn danh qua cùng client: bọc lời gọi trong `AnonymousApiScope.RunAsync(() => api.GetNewsAsync(ct))`. Ca điển
 hình: hàm tải của cache dùng chung cho mọi người, nếu không token của người đầu tiên sẽ quyết định dữ liệu cho tất cả.

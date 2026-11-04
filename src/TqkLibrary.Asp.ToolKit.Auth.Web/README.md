@@ -116,6 +116,7 @@ endpoint the Web calls), because another Bearer scheme (e.g. JwtBearer) that cha
 session too.
 Uploads are never buffered (nothing is ever resent). Guests, calls inside `AnonymousApiScope`, calls that set
 `Authorization` themselves and paths in `AnonymousPathSuffixes` pass through untouched.
+Code that calls the API WITHOUT `SessionBearerHandler` (a reverse proxy/forwarder relaying browser calls, a hand-built `HttpClient`) uses `SessionChallenge.EndsSession(response, options.TreatAnyUnauthorizedAsSessionExpired)` to apply the same rule: `true` means throw `SessionExpiredException` (or sign out).
 
 To call the API anonymously through the same client, wrap the call in
 `AnonymousApiScope.RunAsync(() => api.GetNewsAsync(ct))`. Typical case: the loader of a cache shared by every viewer,
