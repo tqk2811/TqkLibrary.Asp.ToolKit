@@ -1,0 +1,158 @@
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using Microsoft.Net.Http.Headers;
+using System.Security.Claims;
+using System.Text.Encodings.Web;
+using TqkLibrary.Asp.ToolKit.Auth.Api.Interfaces;
+using TqkLibrary.Asp.ToolKit.Auth.Api.Models;
+
+namespace TqkLibrary.Asp.ToolKit.Auth.Api
+{
+    /// <summary>
+    /// Authenticates <c>Authorization: Bearer {sessionId}.{secret}</c> (see <see cref="SessionTokenCodec"/>) on every
+    /// request:
+    /// <list type="number">
+    ///   <item>loads the session through <see cref="SessionAccessCache"/> → <see cref="ISessionAccessSource.GetAsync"/>;</item>
+    ///   <item>compares the secret hash in fixed time, then checks <see cref="SessionAccessRecord.IsRevoked"/>,
+    ///   <see cref="SessionAccessRecord.ExpiresAt"/> and the absolute cap (<see cref="SlidingSessionPolicy"/>);</item>
+    ///   <item>slides the expiry at most once per <see cref="ApiAuthOptions.SessionTouchInterval"/>
+    ///   (<see cref="ISessionAccessSource.TouchAsync"/>; a failure is only logged);</item>
+    ///   <item>builds the principal from CURRENT data: user id (<c>NameIdentifier</c> and
+    ///   <see cref="ApiAuthOptions.UserIdClaimType"/>), session id, name, email, roles, permissions.</item>
+    /// </list>
+    /// A request without a bearer token gets no result (other schemes may run). A rejected token fails with a
+    /// <see cref="SessionRejection"/> stored in <c>HttpContext.Features</c> (see
+    /// <see cref="SessionTokenAuthenticationOptions.OnChallenge"/>). The token is never logged.
+    /// </summary>
+    public sealed class SessionTokenAuthenticationHandler : AuthenticationHandler<SessionTokenAuthenticationOptions>
+    {
+        private const string BearerPrefix = "Bearer ";
+        private static readonly TimeSpan MaxTouchRetryDelay = TimeSpan.FromMinutes(1);
+
+        private readonly ApiAuthOptions _apiOptions;
+        private readonly SessionAccessCache _cache;
+        private readonly SlidingSessionPolicy _policy;
+        private readonly TimeProvider _clock;
+
+        public SessionTokenAuthenticationHandler(
+            IOptionsMonitor<SessionTokenAuthenticationOptions> options,
+            ILoggerFactory logger,
+            UrlEncoder encoder,
+            IOptions<ApiAuthOptions> apiOptions,
+            SessionAccessCache cache,
+            SlidingSessionPolicy policy,
+            TimeProvider clock)
+            : base(options, logger, encoder)
+        {
+            ArgumentNullException.ThrowIfNull(apiOptions);
+            _apiOptions = apiOptions.Value;
+            _cache = cache;
+            _policy = policy;
+            _clock = clock;
+        }
+
+        /// <inheritdoc />
+        protected override async Task<AuthenticateResult> HandleAuthenticateAsync()
+        {
+            string? header = Request.Headers.Authorization;
+            if (string.IsNullOrEmpty(header) || !header.StartsWith(BearerPrefix, StringComparison.OrdinalIgnoreCase))
+                return AuthenticateResult.NoResult();
+
+            var token = header[BearerPrefix.Length..].Trim();
+            if (!SessionTokenCodec.TryParse(token, out var sessionId, out var secret))
+                return Reject(SessionRejectionReasons.InvalidToken, "The session token is malformed.");
+
+            var source = Context.RequestServices.GetRequiredService<ISessionAccessSource>();
+            var aborted = Context.RequestAborted;
+            var result = await _cache.GetAsync(sessionId, ct => source.GetAsync(sessionId, ct), aborted).ConfigureAwait(false);
+            if (!result.IsGranted)
+                return Reject(result.Reason, "The session does not exist or its user cannot sign in"
+                    + (result.Reason is null ? "." : " (" + result.Reason + ")."));
+            var access = result.Access;
+
+            // Secret first: a wrong secret must not reveal whether the session is revoked or expired.
+            if (!SessionTokenCodec.Verify(secret, access.SecretHash))
+                return Reject(SessionRejectionReasons.InvalidToken, "The session token is invalid.");
+            if (access.IsRevoked)
+                return Reject(SessionRejectionReasons.Revoked, "The session was revoked.");
+
+            var now = _clock.GetUtcNow();
+            var utcNow = now.UtcDateTime;
+            var nextExpiry = access.ExpiresAt <= utcNow ? null : _policy.GetNextExpiry(access.CreatedAt, utcNow, access.IsPersistent);
+            if (nextExpiry is not { } next)
+                return Reject(SessionRejectionReasons.Expired, "The session has expired.");
+
+            await TouchIfDueAsync(source, sessionId, access, now, next, aborted).ConfigureAwait(false);
+
+            return AuthenticateResult.Success(new AuthenticationTicket(CreatePrincipal(sessionId, access), Scheme.Name));
+        }
+
+        /// <inheritdoc />
+        protected override async Task HandleChallengeAsync(AuthenticationProperties properties)
+        {
+            if (Options.OnChallenge is { } onChallenge)
+            {
+                var challenge = new SessionTokenChallengeContext(Context, Context.Features.Get<SessionRejection>(), properties);
+                await onChallenge(challenge).ConfigureAwait(false);
+                if (challenge.Handled)
+                    return;
+            }
+            Response.StatusCode = StatusCodes.Status401Unauthorized;
+            Response.Headers.Append(HeaderNames.WWWAuthenticate, "Bearer");
+        }
+
+        /// <summary>
+        /// Writes the sliding expiry when the last write is older than <see cref="ApiAuthOptions.SessionTouchInterval"/>
+        /// and no other request of this process is writing it. Never throws for a store failure.
+        /// </summary>
+        private async Task TouchIfDueAsync(ISessionAccessSource source, string sessionId, SessionAccessRecord access,
+            DateTimeOffset now, DateTime nextExpiry, CancellationToken cancellationToken)
+        {
+            var interval = _apiOptions.SessionTouchInterval;
+            var utcNow = now.UtcDateTime;
+            if (utcNow - (access.LastAccessAt ?? access.CreatedAt) < interval)
+                return;
+            var throttle = Context.RequestServices.GetRequiredService<SessionTouchThrottle>();
+            if (!throttle.TryBegin(sessionId, now, interval))
+                return;
+            try
+            {
+                await source.TouchAsync(sessionId, utcNow, nextExpiry, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                // The session is still valid until its stored expiry: do not fail the request.
+                throttle.Failed(sessionId, now + (interval < MaxTouchRetryDelay ? interval : MaxTouchRetryDelay));
+                Logger.LogWarning(ex, "Could not extend the expiry of session {SessionId}.", sessionId);
+                return;
+            }
+            _cache.TryUpdate(sessionId, access with { LastAccessAt = utcNow, ExpiresAt = nextExpiry });
+        }
+
+        private ClaimsPrincipal CreatePrincipal(string sessionId, SessionAccessRecord access)
+        {
+            var claims = new List<Claim>
+            {
+                new(ClaimTypes.NameIdentifier, access.UserId),
+                new(_apiOptions.SessionIdClaimType, sessionId),
+                new(ClaimTypes.Name, access.UserName),
+            };
+            if (_apiOptions.UserIdClaimType != ClaimTypes.NameIdentifier)
+                claims.Add(new Claim(_apiOptions.UserIdClaimType, access.UserId));
+            if (!string.IsNullOrEmpty(access.Email))
+                claims.Add(new Claim(ClaimTypes.Email, access.Email));
+            claims.AddRange(access.Roles.Select(role => new Claim(ClaimTypes.Role, role)));
+            claims.AddRange(access.Permissions.Select(permission => new Claim(_apiOptions.PermissionClaimType, permission)));
+            return new ClaimsPrincipal(new ClaimsIdentity(claims, Scheme.Name, ClaimTypes.Name, ClaimTypes.Role));
+        }
+
+        private AuthenticateResult Reject(string? reason, string message)
+        {
+            Context.Features.Set(new SessionRejection(reason, message));
+            return AuthenticateResult.Fail(message);
+        }
+    }
+}

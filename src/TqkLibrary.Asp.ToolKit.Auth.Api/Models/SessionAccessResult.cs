@@ -48,19 +48,19 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Models
     /// <summary>Common reason codes for <see cref="SessionAccessResult.Reject"/>; apps may use their own strings.</summary>
     public static class SessionRejectionReasons
     {
-        /// <summary>The token carries no session id or user id (set by the library).</summary>
-        public const string NoSession = "no_session";
+        /// <summary>
+        /// The token is malformed or its secret does not match the session (set by the library). Deliberately the same
+        /// for both, so a caller cannot probe which session ids exist.
+        /// </summary>
+        public const string InvalidToken = "invalid_token";
 
-        /// <summary>The session was signed out / revoked.</summary>
+        /// <summary>The session was signed out / revoked (set by the library from <see cref="SessionAccessRecord.IsRevoked"/>).</summary>
         public const string Revoked = "revoked";
 
-        /// <summary>The session expired.</summary>
+        /// <summary>The session expired or reached its absolute cap (set by the library).</summary>
         public const string Expired = "expired";
 
         /// <summary>The account is locked or disabled.</summary>
         public const string UserLocked = "user_locked";
-
-        /// <summary>The session belongs to another user than the token (set by the library).</summary>
-        public const string UserMismatch = "user_mismatch";
     }
 }

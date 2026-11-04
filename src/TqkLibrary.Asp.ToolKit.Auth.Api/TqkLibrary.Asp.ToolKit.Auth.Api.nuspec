@@ -4,7 +4,7 @@
 	<metadata>
 		<id>$id$</id>
 		<version>$version$</version>
-		<description>ASP.NET Core JWT API helpers for session-bound tokens: compact access tokens (sub/sid/jti/exp), per-request session validation with a short in-memory cache, non-rotating refresh token codec and sliding session expiry.</description>
+		<description>ASP.NET Core API authentication with opaque, non-rotating session tokens ({sessionId}.{secret}, only the SHA-256 of the secret is stored): an authentication handler that checks the session on every request through a short in-memory cache, and a throttled sliding expiry with an absolute cap.</description>
 		<authors>tqk2811</authors>
 		<projectUrl>https://github.com/tqk2811/TqkLibrary.Asp.ToolKit</projectUrl>
 		<repository type="git" url="https://github.com/tqk2811/TqkLibrary.Asp.ToolKit.git"/>
@@ -17,7 +17,6 @@
 		</frameworkReferences>
 		<dependencies>
 			<group targetFramework="net10.0">
-				<dependency id="Microsoft.AspNetCore.Authentication.JwtBearer" version="10.0.12" />
 			</group>
 		</dependencies>
 	</metadata>

@@ -7,7 +7,9 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
 {
     /// <summary>
     /// Short cache (singleton) of the per-request session lookup, keyed by session id, so the API does not query the
-    /// session, roles and permissions on EVERY authenticated request. A rejection is never cached.
+    /// session, roles and permissions on EVERY authenticated request. A rejection is never cached. Name, email, role
+    /// and permission changes therefore apply after at most <see cref="ApiAuthOptions.SessionAccessCacheLifetime"/>
+    /// unless the app invalidates.
     /// <para>
     /// Invalidate right after the write succeeds instead of waiting for
     /// <see cref="ApiAuthOptions.SessionAccessCacheLifetime"/>:
@@ -62,22 +64,20 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
         }
 
         /// <summary>
-        /// The cached access of <paramref name="sessionId"/> when still valid, otherwise the result of
-        /// <paramref name="load"/> (cached when granted to <paramref name="userId"/>). A granted record of another user is
-        /// returned as a rejection with <see cref="SessionRejectionReasons.UserMismatch"/>.
+        /// The cached record of <paramref name="sessionId"/> when still valid, otherwise the result of
+        /// <paramref name="load"/> (cached when granted). The caller still checks the secret, revocation and expiry of the
+        /// record on every request.
         /// </summary>
-        public async Task<SessionAccessResult> GetAsync(string sessionId, string userId,
+        public async Task<SessionAccessResult> GetAsync(string sessionId,
             Func<CancellationToken, Task<SessionAccessResult>> load, CancellationToken cancellationToken = default)
         {
             ArgumentException.ThrowIfNullOrEmpty(sessionId);
-            ArgumentException.ThrowIfNullOrEmpty(userId);
             ArgumentNullException.ThrowIfNull(load);
 
             // Read the sequence BEFORE loading: an invalidation during the load stamps a higher number.
             var sequence = Interlocked.Read(ref _sequence);
 
             if (_cache.TryGetValue(sessionId, out Entry? hit) && hit is not null
-                && string.Equals(hit.Access.UserId, userId, StringComparison.Ordinal)
                 && hit.ExpiresAt > _clock.GetUtcNow()
                 && IsCurrent(hit, sessionId))
             {
@@ -90,16 +90,30 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
                 _cache.Remove(sessionId);
                 return result;
             }
-            if (!string.Equals(result.Access.UserId, userId, StringComparison.Ordinal))
-            {
-                _cache.Remove(sessionId);
-                return SessionAccessResult.Reject(SessionRejectionReasons.UserMismatch);
-            }
 
             var lifetime = _options.Value.SessionAccessCacheLifetime;
             if (lifetime > TimeSpan.Zero)
                 _cache.Set(sessionId, new Entry(result.Access, _clock.GetUtcNow().Add(lifetime), sequence), lifetime);
             return result;
+        }
+
+        /// <summary>
+        /// Replaces the cached record of <paramref name="sessionId"/> with <paramref name="access"/> (same user) after
+        /// the app persisted it (sliding expiry touched), keeping the entry's expiry and load sequence: an entry that is
+        /// missing, expired or invalidated is not recreated, and an invalidation racing with this call still wins.
+        /// </summary>
+        internal void TryUpdate(string sessionId, SessionAccessRecord access)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(sessionId);
+            ArgumentNullException.ThrowIfNull(access);
+            if (!_cache.TryGetValue(sessionId, out Entry? hit) || hit is null
+                || !string.Equals(hit.Access.UserId, access.UserId, StringComparison.Ordinal)
+                || !IsCurrent(hit, sessionId))
+                return;
+            var remaining = hit.ExpiresAt - _clock.GetUtcNow();
+            if (remaining <= TimeSpan.Zero)
+                return;
+            _cache.Set(sessionId, hit with { Access = access }, remaining);
         }
 
         /// <summary>Drops the cached result of one session (session just revoked); other sessions stay cached.</summary>

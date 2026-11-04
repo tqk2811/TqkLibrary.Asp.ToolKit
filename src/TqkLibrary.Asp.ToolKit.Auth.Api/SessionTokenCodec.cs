@@ -6,28 +6,31 @@ using TqkLibrary.Asp.ToolKit.Auth.Api.Models;
 namespace TqkLibrary.Asp.ToolKit.Auth.Api
 {
     /// <summary>
-    /// Refresh token format <c>{sessionId}.{secret}</c>: the first part finds the session, the second is 32 random
-    /// bytes. Only the SHA-256 of the secret is stored, so a leaked session table does not leak usable tokens.
-    /// The token is NOT single-use: refresh returns the same token and only slides the session expiry, so concurrent
-    /// requests that refresh with it all succeed.
+    /// Opaque session token format <c>{sessionId}.{secret}</c>: the first part finds the session, the second is 32
+    /// random bytes (base64url). Only the SHA-256 of the secret is stored, so a leaked session table does not leak usable
+    /// tokens. The token is issued once at sign-in and never rotated: every request of the session carries the same
+    /// token, so concurrent requests need no coordination. Never log it.
     /// </summary>
-    public static class RefreshTokenCodec
+    public static class SessionTokenCodec
     {
+        /// <summary>Longest token <see cref="TryParse"/> accepts; longer values are rejected before hashing.</summary>
+        public const int MaxTokenLength = 1024;
+
         /// <summary>Creates a new token for <paramref name="sessionId"/> (which must not contain '.').</summary>
-        public static IssuedRefreshToken Create(string sessionId)
+        public static IssuedSessionToken Create(string sessionId)
         {
             ArgumentException.ThrowIfNullOrEmpty(sessionId);
             if (sessionId.Contains('.'))
                 throw new ArgumentException("Session id must not contain '.'.", nameof(sessionId));
             var secret = WebEncoders.Base64UrlEncode(RandomNumberGenerator.GetBytes(32));
-            return new IssuedRefreshToken($"{sessionId}.{secret}", Hash(secret));
+            return new IssuedSessionToken($"{sessionId}.{secret}", Hash(secret));
         }
 
-        /// <summary>Splits a token; false when it is not in the expected format.</summary>
+        /// <summary>Splits a token at its first '.'; false when it is not in the expected format.</summary>
         public static bool TryParse(string? token, out string sessionId, out string secret)
         {
             sessionId = secret = string.Empty;
-            if (string.IsNullOrWhiteSpace(token))
+            if (string.IsNullOrWhiteSpace(token) || token.Length > MaxTokenLength)
                 return false;
             var dot = token.IndexOf('.');
             if (dot <= 0 || dot == token.Length - 1)
@@ -49,7 +52,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
             => left is not null && right is not null
                && CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(left), Encoding.UTF8.GetBytes(right));
 
-        /// <summary>True when <paramref name="secret"/> hashes to <paramref name="storedHash"/>.</summary>
+        /// <summary>True when <paramref name="secret"/> hashes to <paramref name="storedHash"/> (fixed-time compare).</summary>
         public static bool Verify(string secret, string? storedHash) => HashEquals(Hash(secret), storedHash);
     }
 }
