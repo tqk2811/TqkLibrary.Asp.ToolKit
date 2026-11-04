@@ -166,6 +166,67 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             AssertCookieDeleted(response, app);
         }
 
+        /// <summary>Regression: an app client that lets a raw 401 <see cref="HttpRequestException"/> escape from <c>me</c> still ends the session.</summary>
+        [Fact]
+        public async Task Me_RawHttp401_ClearsCookie_AndRunsAsAnonymous()
+        {
+            await using var app = await WebAuthTestApp.StartAsync();
+            app.Api.Me = () => throw new InvalidOperationException("wrapped",
+                new HttpRequestException("rejected", null, HttpStatusCode.Unauthorized));
+            await app.SignInAsync(Sid);
+
+            using var response = await app.SendAsync(HttpMethod.Get, "/whoami");
+
+            Assert.StartsWith("auth=false", await response.Content.ReadAsStringAsync());
+            AssertCookieDeleted(response, app);
+        }
+
+        [Fact]
+        public async Task Me_RawHttp403_IsTransient_SessionKept()
+        {
+            await using var app = await WebAuthTestApp.StartAsync();
+            app.Api.Me = () => throw new HttpRequestException("forbidden", null, HttpStatusCode.Forbidden);
+            await app.SignInAsync(Sid);
+
+            Assert.StartsWith("auth=true", await app.WhoAmIAsync());
+            Assert.NotEmpty(app.Cookies);
+        }
+
+        [Fact]
+        public async Task Me_CustomRejectedPredicate_ClearsCookie()
+        {
+            await using var app = await WebAuthTestApp.StartAsync(o => o.IsSessionRejectedException = ex => ex is TimeoutException);
+            app.Api.Me = () => throw new TimeoutException("app-specific 401");
+            await app.SignInAsync(Sid);
+
+            using var response = await app.SendAsync(HttpMethod.Get, "/whoami");
+
+            Assert.StartsWith("auth=false", await response.Content.ReadAsStringAsync());
+            AssertCookieDeleted(response, app);
+        }
+
+        [Fact]
+        public async Task Me_RejectedPredicateThrows_IsTransient_SessionKept()
+        {
+            await using var app = await WebAuthTestApp.StartAsync(o => o.IsSessionRejectedException = _ => throw new InvalidOperationException("bug"));
+            app.Api.Me = () => throw new HttpRequestException("rejected", null, HttpStatusCode.Unauthorized);
+            await app.SignInAsync(Sid);
+
+            Assert.StartsWith("auth=true", await app.WhoAmIAsync());
+            Assert.NotEmpty(app.Cookies);
+        }
+
+        [Fact]
+        public void DefaultIsSessionRejectedException_OnlyHttp401InChain()
+        {
+            Assert.True(CurrentUserMiddleware.DefaultIsSessionRejectedException(new HttpRequestException("x", null, HttpStatusCode.Unauthorized)));
+            Assert.True(CurrentUserMiddleware.DefaultIsSessionRejectedException(
+                new Exception("a", new Exception("b", new HttpRequestException("x", null, HttpStatusCode.Unauthorized)))));
+            Assert.False(CurrentUserMiddleware.DefaultIsSessionRejectedException(new HttpRequestException("x", null, HttpStatusCode.Forbidden)));
+            Assert.False(CurrentUserMiddleware.DefaultIsSessionRejectedException(new HttpRequestException("x")));
+            Assert.False(CurrentUserMiddleware.DefaultIsSessionRejectedException(new InvalidOperationException("x")));
+        }
+
         [Theory]
         [InlineData("http")]
         [InlineData("timeout")]

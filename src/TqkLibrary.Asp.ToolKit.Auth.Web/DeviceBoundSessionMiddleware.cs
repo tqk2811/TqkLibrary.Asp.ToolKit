@@ -229,7 +229,8 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
 
         /// <summary>
         /// The stored device key of <paramref name="sessionId"/> from the API (<c>me</c>, with the session token), recorded
-        /// in <see cref="DeviceBindingCache"/> and the user in <see cref="CurrentUserCache"/>. A dead session is dropped.
+        /// in <see cref="DeviceBindingCache"/> and the user in <see cref="CurrentUserCache"/>. A dead session (<see cref="SessionExpiredException"/>
+        /// or a 401 per <see cref="WebAuthOptions.IsSessionRejectedException"/>) is dropped.
         /// </summary>
         private async Task<(KeyLookupStatus Status, DeviceKey? Key)> LoadKeyAsync(HttpContext context, WebAuthOptions options,
             string sessionId, DateTimeOffset? sessionExpiresUtc)
@@ -243,8 +244,10 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
                 {
                     user = await services.GetRequiredService<IAuthApiClient>().GetCurrentUserAsync(timeout.Token).ConfigureAwait(false);
                 }
-                catch (SessionExpiredException)
+                catch (Exception ex) when (ex is SessionExpiredException
+                    || (!context.RequestAborted.IsCancellationRequested && CurrentUserMiddleware.IsSessionRejected(options, ex, _logger)))
                 {
+                    // Same rule as CurrentUserMiddleware: any 401 from me (WebAuthOptions.IsSessionRejectedException) ends the session.
                     await services.GetRequiredService<WebSessionManager>().DropAsync(context).ConfigureAwait(false);
                     return (KeyLookupStatus.NotBound, null);
                 }

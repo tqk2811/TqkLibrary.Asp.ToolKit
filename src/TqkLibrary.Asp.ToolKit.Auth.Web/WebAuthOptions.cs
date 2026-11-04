@@ -53,6 +53,18 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         public TimeSpan? CurrentUserFailureCacheFor { get; set; }
 
         /// <summary>
+        /// Decides whether an exception thrown by <see cref="Interfaces.IAuthApiClient.GetCurrentUserAsync"/> means "the API
+        /// rejected the session" (HTTP 401), which is then handled exactly like <see cref="SessionExpiredException"/>: the
+        /// web session is dropped and the request continues as a guest. Null (default) =
+        /// <see cref="CurrentUserMiddleware.DefaultIsSessionRejectedException"/>: an <see cref="HttpRequestException"/> with
+        /// status 401 anywhere in the <see cref="Exception.InnerException"/> chain. Set it when the app's HTTP client throws
+        /// its own exception type for a 401 (for example <c>ex =&gt; ex is ApiException { StatusCode: 401 } ||
+        /// CurrentUserMiddleware.DefaultIsSessionRejectedException(ex)</c>). Must return false for 403 and every other
+        /// status: only a 401 ends the session.
+        /// </summary>
+        public Func<Exception, bool>? IsSessionRejectedException { get; set; }
+
+        /// <summary>
         /// Requests for which <see cref="CurrentUserMiddleware"/> does not call <c>me</c> (static files, health checks,
         /// endpoints that need no user data). A cached user is still applied; otherwise the request keeps the
         /// session-only principal. Null (default) = never skip.

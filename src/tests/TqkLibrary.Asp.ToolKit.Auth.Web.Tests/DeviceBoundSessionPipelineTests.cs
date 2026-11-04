@@ -543,6 +543,22 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             Assert.True(h.App.Cookies.ContainsKey(MainCookie));
         }
 
+        /// <summary>Regression: a raw 401 from <c>me</c> during refresh ends the web session (same rule as CurrentUserMiddleware), not a 503.</summary>
+        [Fact]
+        public async Task Refresh_KeyUnknown_MeRaw401_DropsSession_Not503()
+        {
+            await using var h = await StartAsync();
+            h.KeyApi.ThrowAfterStore = true;
+            using var signIn = await h.App.SignInAsync(Sid);
+            using var start = await PostAsync(h.App, "/dbsc/start", h.Device.RegistrationJwt(ChallengeFrom(RegistrationHeader(signIn)!)));
+            h.App.Api.Me = () => throw new HttpRequestException("rejected", null, HttpStatusCode.Unauthorized);
+
+            using var refresh = await PostAsync(h.App, "/dbsc/refresh", sessionId: DeviceBoundSessionMiddleware.SessionIdentifier(Sid));
+
+            Assert.NotEqual(HttpStatusCode.ServiceUnavailable, refresh.StatusCode);
+            Assert.False(h.App.Cookies.ContainsKey(MainCookie));
+        }
+
         [Fact]
         public async Task Refresh_MatchingSession_MeReportsNoKey_ContinueFalse_LoggedAsError()
         {
