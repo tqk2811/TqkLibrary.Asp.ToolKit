@@ -13,6 +13,18 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
         public string PermissionClaimType { get; set; } = "permission";
 
         /// <summary>
+        /// Claim type added with value <c>true</c> when <see cref="Models.SessionAccessRecord.IsDeviceBound"/> (DBSC: the
+        /// session has a registered device key). Absent otherwise.
+        /// </summary>
+        public string DeviceBoundClaimType { get; set; } = "device_bound";
+
+        /// <summary>
+        /// Claim type carrying <see cref="Models.SessionAccessRecord.DeviceBindingMode"/> (the end user's own proof-failure
+        /// mode) when it is set. Absent otherwise.
+        /// </summary>
+        public string DeviceBindingModeClaimType { get; set; } = "device_binding_mode";
+
+        /// <summary>
         /// Sliding lifetimes of a session (normal and "remember me"): each touch moves the expiry to last access + the
         /// lifetime picked by <see cref="SlidingSessionPolicy"/>. Default: 30 days for both.
         /// </summary>
@@ -42,6 +54,14 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
         /// </summary>
         public TimeSpan SessionTouchTimeout { get; set; } = TimeSpan.FromSeconds(5);
 
+        /// <summary>
+        /// A device key (DBSC) can only be registered within this time after the session was created. Null = any time
+        /// during the session (not recommended). Reason: a stolen bearer token must not be able to bind a not-yet-bound
+        /// session to the attacker's device, which would lock the real user out in the Reject / SignOut modes.
+        /// Must be positive when set. Default 10 minutes.
+        /// </summary>
+        public TimeSpan? DeviceKeyRegistrationWindow { get; set; } = TimeSpan.FromMinutes(10);
+
         private static readonly TimeSpan MaxLifetimeLimit = TimeSpan.FromDays(3650);
 
         /// <summary>Throws when the options are not usable.</summary>
@@ -68,11 +88,14 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
                 throw new InvalidOperationException("ApiAuthOptions.SessionTouchTimeout must be positive.");
             if (SessionAccessCacheLifetime < TimeSpan.Zero)
                 throw new InvalidOperationException("ApiAuthOptions.SessionAccessCacheLifetime must not be negative (zero disables the cache).");
+            if (DeviceKeyRegistrationWindow is { } window && window <= TimeSpan.Zero)
+                throw new InvalidOperationException("ApiAuthOptions.DeviceKeyRegistrationWindow must be positive when set.");
             // A session must be touched before it can expire while in use.
             var shortest = SessionLifetimes.Persistent is { } p && p < SessionLifetimes.Normal ? p : SessionLifetimes.Normal;
             if (SessionTouchInterval >= shortest)
                 throw new InvalidOperationException("ApiAuthOptions.SessionTouchInterval must be shorter than every session lifetime.");
-            if (string.IsNullOrEmpty(UserIdClaimType) || string.IsNullOrEmpty(SessionIdClaimType) || string.IsNullOrEmpty(PermissionClaimType))
+            if (string.IsNullOrEmpty(UserIdClaimType) || string.IsNullOrEmpty(SessionIdClaimType) || string.IsNullOrEmpty(PermissionClaimType)
+                || string.IsNullOrEmpty(DeviceBoundClaimType) || string.IsNullOrEmpty(DeviceBindingModeClaimType))
                 throw new InvalidOperationException("ApiAuthOptions claim types must not be empty.");
         }
     }

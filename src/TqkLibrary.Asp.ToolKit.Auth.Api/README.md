@@ -115,7 +115,8 @@ On every request with `Authorization: Bearer {sessionId}.{secret}` the handler:
    failure or a `SessionTouchTimeout` timeout is logged as a warning and retried after at most a minute; the write does
    not use the request's cancellation token) and updates the cached record;
 5. builds the principal: `ClaimTypes.NameIdentifier` and `UserIdClaimType` (`sub`) = user id, `SessionIdClaimType`
-   (`sid`), `ClaimTypes.Name`, `ClaimTypes.Email`, `ClaimTypes.Role`, `PermissionClaimType` (`permission`).
+   (`sid`), `ClaimTypes.Name`, `ClaimTypes.Email`, `ClaimTypes.Role`, `PermissionClaimType` (`permission`), and for device binding `device_bound` /
+   `device_binding_mode` (see [Device binding (DBSC)](#device-binding-dbsc)).
 
 A request without a bearer header gets no result (anonymous endpoints work, `[Authorize]` answers 401). The rejection
 (`SessionRejection(Reason, Message)`) is available in `OnChallenge` and through `HttpContext.GetSessionRejection()`.
@@ -155,6 +156,108 @@ app invalidates right after the write succeeds:
 
 A lookup in flight during an invalidation is never served afterwards. With several API instances an invalidation
 only reaches the instance that handled the write; others lag up to the cache lifetime.
+
+### Device binding (DBSC)
+
+Device Bound Session Credentials bind a session to a key pair kept on the user's device: the web front end
+([TqkLibrary.Asp.ToolKit.Auth.Web](https://www.nuget.org/packages/TqkLibrary.Asp.ToolKit.Auth.Web)) checks the device
+proofs; the API only stores the public key once per session and tells the front end, through claims, whether the session
+is bound. Apps without DBSC need nothing of this section.
+
+Add two nullable columns to the session table: `DevicePublicKey` (the canonical public JWK, text up to 4 KB) and
+`DeviceKeyAlgorithm` (`ES256` or `RS256`). Optionally store a per-user preference `DeviceBindingMode` (for example on
+the user table, set by the END USER on their account settings page): `ReportOnly`, `Reject` or `SignOut`, null = the
+project default. The web front end honours that choice only when its developer enabled the "soft" policy (user choice
+allowed); with the "hard" policy the mode fixed by the developer applies and the user's value is ignored. The API never
+interprets it.
+
+Fill the record in `GetAsync`:
+
+```csharp
+IsDeviceBound = row.Session.DevicePublicKey != null,
+DeviceBindingMode = row.User.DeviceBindingMode,         // null = project default
+```
+
+The principal then carries `DeviceBoundClaimType` (`device_bound`) = `true` when bound, and `DeviceBindingModeClaimType`
+(`device_binding_mode`) when the mode is set; both are absent otherwise. Both claim types are options of `AddTqkApiAuth`.
+
+Implement `IDeviceKeyStore` with ONE atomic statement that writes the key only on a live session (not revoked, not
+expired) that has none yet and was created within the registration window, and returns true iff exactly one row changed
+(a key is registered once per session and never replaced, so a stolen session token cannot rebind the session to
+another device). `false` covers: already bound, revoked, expired, deleted, or registration window closed:
+
+```csharp
+public sealed class DeviceKeyStore(AppDbContext db) : IDeviceKeyStore
+{
+    // UPDATE Sessions SET DevicePublicKey=@key, DeviceKeyAlgorithm=@alg WHERE Id=@id AND RevokedAt IS NULL
+    //   AND DevicePublicKey IS NULL AND ExpiresAt > @now AND (@createdNotBefore IS NULL OR CreatedAt >= @createdNotBefore)
+    public async Task<bool> TrySetDeviceKeyAsync(string sessionId, string publicKeyJwk, string algorithm,
+        DateTimeOffset now, DateTimeOffset? createdNotBefore, CancellationToken ct)
+        => await db.Sessions.Where(s => s.Id == sessionId && s.RevokedAt == null && s.DevicePublicKey == null
+                && s.ExpiresAt > now.UtcDateTime && (createdNotBefore == null || s.CreatedAt >= createdNotBefore.Value.UtcDateTime))
+            .ExecuteUpdateAsync(u => u.SetProperty(s => s.DevicePublicKey, publicKeyJwk)
+                                      .SetProperty(s => s.DeviceKeyAlgorithm, algorithm), ct) == 1;
+}
+
+builder.Services.AddScoped<IDeviceKeyStore, DeviceKeyStore>();
+```
+
+`DeviceKeyRegistrationWindow` (option of `AddTqkApiAuth`, default 10 minutes, null = any time) limits registration to
+that time after the session was created, so a stolen bearer token cannot bind a not-yet-bound session to the attacker's
+device (which would lock the real user out in the `Reject` / `SignOut` modes). A later attempt answers `AlreadyBound`.
+Under SQL Server SNAPSHOT isolation a concurrent UPDATE throws an update-conflict error instead of returning 0 rows;
+READ COMMITTED / RCSI, PostgreSQL, MySQL and SQLite return 0 rows.
+
+`AddTqkApiAuth` registers `DeviceKeyRegistrar` (scoped, resolve it only inside a request scope); it resolves
+`IDeviceKeyStore` only when a key is registered. `RegisterAsync(user, publicKeyJwk, algorithm)` returns:
+
+| Result | When | Suggested HTTP |
+| --- | --- | --- |
+| `Registered` | key stored; the session's cache entry is invalidated, so the next request has `device_bound` | 200 |
+| `AlreadyBound` | the session already has a key, or it is revoked / expired / past the registration window (claim or store returned false) | 409 |
+| `Invalid` | algorithm not `ES256`/`RS256`, or the JWK is not an acceptable public key | 400 |
+| `NoSession` | the caller is not authenticated by the session token scheme with a `sid` claim | 401 |
+
+Accepted keys: EC `P-256` (`x`/`y` 32 bytes each, the point must be on the curve) for `ES256`; RSA with a 2048 to 8192
+bit modulus and `e` = `AQAB` for `RS256`. Any private member (`d`, `p`, `q`, `dp`, `dq`, `qi`, `oth`, `k`), a duplicate
+member, a JWK `alg` other than the given algorithm, a `use` other than `sig`, non-canonical base64url or a JWK longer than
+4096 characters is rejected. The stored text keeps only the public members in a fixed order (`crv`, `kty`, `x`, `y` /
+`e`, `kty`, `n`).
+
+The registrar does NOT check proof of possession: the Web must verify the DBSC registration JWT signed by the new key
+BEFORE calling `RegisterAsync`. It also detects the session token scheme through `ClaimsIdentity.AuthenticationType`, so
+the app must never build identities with that scheme name by hand.
+
+App endpoint (the web front end calls it once after sign-in with the key it generated). The endpoint must require the
+session token scheme explicitly, so an anonymous or other-scheme caller gets 401:
+
+```csharp
+using TqkLibrary.Asp.ToolKit.Auth.Api.Enums;
+
+app.MapPost("/auth/device-key", async (DeviceKeyRequest body, ClaimsPrincipal user, DeviceKeyRegistrar registrar, CancellationToken ct) =>
+    await registrar.RegisterAsync(user, body.PublicKeyJwk, body.Algorithm, ct) switch
+    {
+        DeviceKeyRegistrationResult.Registered => Results.Ok(),
+        DeviceKeyRegistrationResult.AlreadyBound => Results.Conflict(),
+        DeviceKeyRegistrationResult.Invalid => Results.BadRequest(),
+        _ => Results.Unauthorized(),
+    }).RequireAuthorization(p => p.AddAuthenticationSchemes(SessionTokenDefaults.AuthenticationScheme).RequireAuthenticatedUser());
+
+public sealed record DeviceKeyRequest(string PublicKeyJwk, string Algorithm);
+```
+
+Notes:
+
+- Multi-instance: after `Registered`, `InvalidateSession` only reaches the local instance. Other instances keep the
+  cached record without the `device_bound` claim until `SessionAccessCacheLifetime` ends, so the Web should treat
+  `Registered` as bound on its own side. If an app ever removes a device key it must call `InvalidateSession`, because the
+  `AlreadyBound` shortcut trusts the claim.
+- `DeviceBindingMode` is free text and is NOT validated by the API: the Web must whitelist the known modes and fall back
+  to its default.
+
+The app's `me` endpoint must expose `isDeviceBound` and `deviceBindingMode` (from the claims or the record) so the web
+front end knows whether to register a key and which mode the user chose. The account settings page that changes
+`DeviceBindingMode` must call `InvalidateUser(userId)` afterwards.
 
 ### Cleanup job
 

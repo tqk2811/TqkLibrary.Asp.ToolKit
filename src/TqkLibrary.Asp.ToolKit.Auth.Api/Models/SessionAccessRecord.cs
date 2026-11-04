@@ -6,8 +6,8 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Models
     /// requests: do not mutate. Every <see cref="DateTime"/> is UTC: the library treats <see cref="DateTimeKind.Unspecified"/>
     /// as UTC and converts <see cref="DateTimeKind.Local"/>.
     /// <para>
-    /// More per-session data (for example a device-bound public key) can be added later as optional properties
-    /// without changing the token format.
+    /// More per-session data can be added later as optional properties without changing the token format (the
+    /// device binding state <see cref="IsDeviceBound"/> / <see cref="DeviceBindingMode"/> is one).
     /// </para>
     /// </summary>
     public sealed record SessionAccessRecord
@@ -61,5 +61,23 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Models
 
         /// <summary>Current permission names.</summary>
         public IReadOnlyList<string> Permissions { get; init; } = Array.Empty<string>();
+
+        /// <summary>
+        /// True when the session has a stored device public key (DBSC: <c>DevicePublicKey IS NOT NULL</c>, registered
+        /// through <see cref="DeviceKeyRegistrar"/>). Adds the claim <see cref="ApiAuthOptions.DeviceBoundClaimType"/>
+        /// = <c>true</c> so the web front end knows it must require device proofs for this session. Removing a key must
+        /// invalidate the session cache (<see cref="SessionAccessCache.InvalidateSession"/>).
+        /// </summary>
+        public bool IsDeviceBound { get; init; }
+
+        /// <summary>
+        /// The END USER's own choice of what the web front end does when a device proof fails for this user/session
+        /// (<c>ReportOnly</c>, <c>Reject</c> or <c>SignOut</c>), stored by the app (for example from the account
+        /// settings page); null = the project default. Adds the claim <see cref="ApiAuthOptions.DeviceBindingModeClaimType"/>.
+        /// The web front end honours it only when its developer enabled the "soft" policy (user choice allowed); with the
+        /// "hard" policy the mode fixed by the developer applies and this value is ignored. The API does not interpret it:
+        /// free text, not validated by the API; the Web must whitelist known modes and fall back to its default.
+        /// </summary>
+        public string? DeviceBindingMode { get; init; }
     }
 }
