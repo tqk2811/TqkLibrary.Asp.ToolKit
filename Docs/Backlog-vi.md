@@ -16,12 +16,6 @@ Việc còn treo và đề xuất của thư viện. Mỗi mục: vấn đề, v
 - **Đề xuất**: bọc `await _dispatcher` trong try/finally, luôn huỷ vé còn lại rồi dispose hai đối tượng.
 - **Ngày ghi**: 2026-11-03.
 
-### [Thấp] Queue: hai bản code song song với repo gốc
-
-- **Vấn đề**: package Queue được chép từ một repo khác, repo đó vẫn giữ bản riêng. Sửa lỗi ở một bên dễ quên bên kia.
-- **Đề xuất**: cho repo gốc chuyển sang dùng package này rồi xoá bản riêng.
-- **Ngày ghi**: 2026-11-03.
-
 ### [Thấp] ViewModels.AspNetCore: mã lỗi field dựa vào ghi đè ErrorMessage toàn app
 
 - **Vị trí**: `src/TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore/Validation/FieldErrorMessageProvider.cs`, `FieldValidationErrors.cs`.
