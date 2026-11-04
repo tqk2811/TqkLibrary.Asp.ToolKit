@@ -16,7 +16,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
     ///   <item>Session dead (<see cref="SessionExpiredException"/>) → the web session is dropped and the request
     ///   continues as a guest (pages that need login redirect by themselves).</item>
     ///   <item>API unreachable (network, 5xx, timeout <see cref="WebAuthOptions.CurrentUserTimeout"/>) → still
-    ///   authenticated (session id only, no name) but WITHOUT any permission: admin pages answer "forbidden" instead of
+    ///   authenticated (session id and user id only, no name) but WITHOUT any permission: admin pages answer "forbidden" instead of
     ///   opening on stale data. <see cref="WebAuthOptions.CurrentUserFailureMode"/> = <c>Throw</c> fails the request
     ///   with <see cref="CurrentUserUnavailableException"/> instead; <see cref="WebAuthOptions.CurrentUserFailureCacheFor"/>
     ///   remembers the failure per session so an outage does not make every request wait for the timeout.</item>
@@ -53,7 +53,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
                 else if (options.Value.SkipCurrentUser?.Invoke(context) == true)
                 {
                     // Not marked resolved: a re-execution on another path may still load the user.
-                    context.User = principals.CreateSessionOnly(sessionId);
+                    context.User = principals.CreateSessionOnly(sessionId, GetUserId(context));
                 }
                 else
                 {
@@ -113,7 +113,11 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         {
             if (options.CurrentUserFailureMode == CurrentUserFailureMode.Throw)
                 throw new CurrentUserUnavailableException("The current user could not be loaded from the API.", error);
-            context.User = principals.CreateSessionOnly(sessionId);
+            context.User = principals.CreateSessionOnly(sessionId, GetUserId(context));
         }
+
+        /// <summary>User id stored in the cookie at sign-in.</summary>
+        private static string? GetUserId(HttpContext context)
+            => context.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
     }
 }

@@ -16,14 +16,16 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         }
 
         /// <summary>
-        /// Principal carrying only the API session id (plus <see cref="WebAuthOptions.StableIdentityClaimType"/> with the
-        /// same value): the content of the cookie, and the request principal when the API could not be asked
-        /// (authenticated, but no name and no permission).
+        /// Principal carrying only the API session id and the user id (<c>ClaimTypes.NameIdentifier</c>, omitted when
+        /// null), plus <see cref="WebAuthOptions.StableIdentityClaimType"/> with the session id: the content of the cookie,
+        /// and the request principal when the API could not be asked (authenticated, but no name and no permission).
         /// </summary>
-        public ClaimsPrincipal CreateSessionOnly(string sessionId)
+        public ClaimsPrincipal CreateSessionOnly(string sessionId, string? userId)
         {
             ArgumentException.ThrowIfNullOrEmpty(sessionId);
             var claims = new List<Claim> { new(_options.SessionIdClaimType, sessionId) };
+            if (!string.IsNullOrEmpty(userId))
+                claims.Add(new Claim(ClaimTypes.NameIdentifier, userId));
             AddStableIdentity(claims, sessionId);
             return new(new ClaimsIdentity(claims, _options.Scheme, ClaimTypes.Name, ClaimTypes.Role));
         }

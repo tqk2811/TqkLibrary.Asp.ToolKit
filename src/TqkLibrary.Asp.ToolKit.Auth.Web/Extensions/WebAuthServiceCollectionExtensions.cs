@@ -12,7 +12,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Extensions
     public static class WebAuthServiceCollectionExtensions
     {
         /// <summary>
-        /// Cookie authentication whose encrypted ticket carries the API tokens (see <see cref="WebSessionManager"/>),
+        /// Cookie authentication whose encrypted ticket carries the API session token (see <see cref="WebSessionManager"/>),
         /// plus the services of this package. The app must also register its <see cref="IAuthApiClient"/>
         /// implementation, add <see cref="AddTqkSessionBearer"/> to its API client, and call
         /// <c>UseAuthentication()</c> → <see cref="WebAuthApplicationBuilderExtensions.UseTqkWebSession"/> →
@@ -24,8 +24,9 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Extensions
         /// <param name="configureCookie">
         /// Cookie options of the app (name, login path, expiry...). The library sets <c>HttpOnly</c>, <c>SameSite=Lax</c>
         /// and <c>SlidingExpiration = false</c> first, so this delegate can override them. Sliding is off because the
-        /// ticket already slides with the API session when tokens are refreshed (never beyond the refresh token
-        /// expiry); the cookie handler would otherwise extend the ticket past the refresh token.
+        /// API slides the session itself; the ticket expires at the <see cref="Models.AuthSession.ExpiresAt"/> given at
+        /// sign-in (the session's absolute cap) and is never reissued. <c>ExpireTimeSpan</c> only applies when that
+        /// value is null.
         /// </param>
         /// <param name="configure">
         /// Optional <see cref="WebAuthOptions"/> overrides. <see cref="WebAuthOptions.Scheme"/> can ONLY be set here

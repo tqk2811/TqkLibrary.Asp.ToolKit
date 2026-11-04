@@ -15,6 +15,9 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
     /// </summary>
     public class WebSessionOptionsTests
     {
+        /// <summary>Session-only principal: exactly the cookie content (session id, user id, stable identity).</summary>
+        private static readonly string SessionOnly = "auth=true\ntqk_sid=s-1\n" + System.Security.Claims.ClaimTypes.NameIdentifier + "=u-1\nsub=s-1";
+
         private const string Sid = "s-1";
 
         // ---------- CurrentUserInfo.ExtraClaims ----------
@@ -89,7 +92,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             var first = await app.WhoAmIAsync();
             var second = await app.WhoAmIAsync();
 
-            Assert.Equal("auth=true\ntqk_sid=" + Sid + "\nsub=" + Sid, first);
+            Assert.Equal(SessionOnly, first);
             Assert.Equal(first, second);
             Assert.Equal(1, app.Api.MeCalls);
 
@@ -109,7 +112,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             var first = await app.WhoAmIAsync();
             var second = await app.WhoAmIAsync();
 
-            Assert.Equal("auth=true\ntqk_sid=" + Sid + "\nsub=" + Sid, first);
+            Assert.Equal(SessionOnly, first);
             Assert.Equal(first, second);
             Assert.Equal(2, app.Api.MeCalls);
         }
@@ -152,7 +155,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             await app.SignInAsync(Sid);
 
             using (var skipped = await app.SendAsync(HttpMethod.Get, "/whoami?skip=1"))
-                Assert.Equal("auth=true\ntqk_sid=" + Sid + "\nsub=" + Sid, await skipped.Content.ReadAsStringAsync());
+                Assert.Equal(SessionOnly, await skipped.Content.ReadAsStringAsync());
             Assert.Equal(0, app.Api.MeCalls);
 
             Assert.Contains("=editor", await app.WhoAmIAsync());
@@ -207,7 +210,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
                 using var client = new HttpClient(handler);
                 try
                 {
-                    // Stream body: not replayable, so the 401 is a SessionExpiredException without any refresh.
+                    // The 401 of the API is a SessionExpiredException.
                     using var content = new StreamContent(new MemoryStream([1, 2, 3]));
                     await client.PostAsync("http://api/upload", content);
                     return Results.Text("sent");
@@ -240,14 +243,11 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             await using var app = await WebAuthTestApp.StartAsync(mapEndpoints: endpoints => endpoints.MapGet("/relogin", async (HttpContext context, WebSessionManager sessions) =>
             {
                 await TriggerExpiredCaughtAsync(context);
-                var now = DateTime.UtcNow;
-                await sessions.SignInAsync(context, new TqkLibrary.Asp.ToolKit.Auth.Web.Models.AuthTokenPair
+                await sessions.SignInAsync(context, new TqkLibrary.Asp.ToolKit.Auth.Web.Models.AuthSession
                 {
-                    SessionId = "s-2",
-                    AccessToken = "access-s-2",
-                    AccessTokenExpiresAt = now.AddMinutes(15),
-                    RefreshToken = "s-2.secret",
-                    RefreshTokenExpiresAt = now.AddDays(7),
+                    SessionToken = "s-2.secret",
+                    UserId = "u-1",
+                    ExpiresAt = DateTime.UtcNow.AddDays(7),
                 }, persistent: false);
                 return Results.Text("ok");
             }));

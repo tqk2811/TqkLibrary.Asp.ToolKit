@@ -1,3 +1,5 @@
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using System.Net;
 using System.Security.Claims;
@@ -152,9 +154,86 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             var first = await app.WhoAmIAsync();
             await app.WhoAmIAsync();
 
-            Assert.Equal("auth=true\ntqk_sid=" + Sid + "\nsub=" + Sid, first);
+            // Session-only principal = exactly the cookie content: session id, user id, stable identity. No name/role.
+            Assert.Equal("auth=true\ntqk_sid=" + Sid + "\n" + ClaimTypes.NameIdentifier + "=u-1\nsub=" + Sid, first);
             Assert.NotEmpty(app.Cookies); // the session is kept
             Assert.Equal(2, app.Api.MeCalls);
+        }
+
+        [Fact]
+        public async Task ApiCall_CarriesSessionTokenFromCookie()
+        {
+            await using var app = await WebAuthTestApp.StartAsync();
+            await app.SignInAsync(Sid);
+
+            using var response = await app.SendAsync(HttpMethod.Get, "/api-call");
+
+            Assert.Equal("Bearer " + Sid + ".secret", await response.Content.ReadAsStringAsync());
+        }
+
+        [Fact]
+        public async Task ApiCall_InSignInRequest_UsesNewToken()
+        {
+            await using var app = await WebAuthTestApp.StartAsync(mapEndpoints: endpoints => endpoints.MapGet("/sign-in-and-call",
+                async (HttpContext context, WebSessionManager sessions) =>
+                {
+                    await sessions.SignInAsync(context, new AuthSession { SessionToken = "s-9.fresh", UserId = "u-9" }, persistent: false);
+                    // The request principal is still the guest one; the handler needs the session claim to attach the token.
+                    context.User = context.RequestServices.GetRequiredService<WebSessionPrincipalFactory>().CreateSessionOnly("s-9", "u-9");
+                    var handler = context.RequestServices.GetRequiredService<SessionBearerHandler>();
+                    var inner = new BearerEcho();
+                    handler.InnerHandler = inner;
+                    using var client = new HttpClient(handler);
+                    (await client.GetAsync("http://api/items")).Dispose();
+                    return Results.Text(inner.LastAuthorization ?? "none");
+                }));
+
+            using var response = await app.SendAsync(HttpMethod.Get, "/sign-in-and-call");
+
+            Assert.Equal("Bearer s-9.fresh", await response.Content.ReadAsStringAsync());
+        }
+
+        [Fact]
+        public async Task SignIn_PersistentCookie_ExpiresAtGivenAbsoluteExpiry()
+        {
+            await using var app = await WebAuthTestApp.StartAsync();
+
+            using var response = await app.SignInAsync(Sid, persistent: true, expiresInDays: 90);
+
+            var cookie = Assert.Single(WebAuthTestApp.SetCookies(response), c => c.StartsWith(".AspNetCore.Cookies=", StringComparison.Ordinal));
+            var expires = DateTimeOffset.Parse(cookie.Split("expires=", 2)[1].Split(';', 2)[0], System.Globalization.CultureInfo.InvariantCulture);
+            Assert.InRange(expires, DateTimeOffset.UtcNow.AddDays(89), DateTimeOffset.UtcNow.AddDays(91));
+        }
+
+        [Fact]
+        public async Task SignIn_NotPersistent_SessionCookie()
+        {
+            await using var app = await WebAuthTestApp.StartAsync();
+
+            using var response = await app.SignInAsync(Sid, persistent: false, expiresInDays: 90);
+
+            var cookie = Assert.Single(WebAuthTestApp.SetCookies(response), c => c.StartsWith(".AspNetCore.Cookies=", StringComparison.Ordinal));
+            Assert.DoesNotContain("expires=", cookie, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Theory]
+        [InlineData("nodot")]
+        [InlineData(".secret")]
+        [InlineData("s-1.")]
+        public async Task SignIn_MalformedToken_Throws(string token)
+        {
+            await using var app = await WebAuthTestApp.StartAsync(mapEndpoints: endpoints => endpoints.MapGet("/bad-sign-in",
+                async (HttpContext context, WebSessionManager sessions) =>
+                {
+                    var ex = await Assert.ThrowsAsync<ArgumentException>(()
+                        => sessions.SignInAsync(context, new AuthSession { SessionToken = token, UserId = "u-1" }, persistent: false));
+                    return Results.Text(ex.ParamName ?? "");
+                }));
+
+            using var response = await app.SendAsync(HttpMethod.Get, "/bad-sign-in");
+
+            Assert.Equal("session", await response.Content.ReadAsStringAsync());
+            Assert.Empty(app.Cookies);
         }
 
         [Fact]

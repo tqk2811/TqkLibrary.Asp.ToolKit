@@ -63,18 +63,25 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
                         app.UseTqkWebSession();
                         app.UseEndpoints(endpoints =>
                         {
-                            endpoints.MapGet("/sign-in", async (HttpContext context, WebSessionManager sessions, string sid) =>
+                            endpoints.MapGet("/sign-in", async (HttpContext context, WebSessionManager sessions, string sid,
+                                bool? persistent, int? expiresInDays) =>
                             {
-                                var now = DateTime.UtcNow;
-                                await sessions.SignInAsync(context, new AuthTokenPair
+                                await sessions.SignInAsync(context, new AuthSession
                                 {
-                                    SessionId = sid,
-                                    AccessToken = "access-" + sid,
-                                    AccessTokenExpiresAt = now.AddMinutes(15),
-                                    RefreshToken = sid + ".secret",
-                                    RefreshTokenExpiresAt = now.AddDays(7),
-                                }, persistent: false);
+                                    SessionToken = sid + ".secret",
+                                    UserId = "u-1",
+                                    ExpiresAt = expiresInDays is { } days ? DateTime.UtcNow.AddDays(days) : null,
+                                }, persistent: persistent == true);
                                 return Results.Ok();
+                            });
+                            endpoints.MapGet("/api-call", async (HttpContext context) =>
+                            {
+                                var handler = context.RequestServices.GetRequiredService<SessionBearerHandler>();
+                                var inner = new BearerEcho();
+                                handler.InnerHandler = inner;
+                                using var client = new HttpClient(handler);
+                                using var response = await client.GetAsync("http://api/items");
+                                return Results.Text(inner.LastAuthorization ?? "none");
                             });
                             endpoints.MapGet("/whoami", (HttpContext context) => Results.Text(Describe(context.User)));
                             endpoints.MapGet("/expired", (HttpContext context) =>
@@ -95,10 +102,13 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             => "auth=" + (user.Identity?.IsAuthenticated == true).ToString().ToLowerInvariant() + "\n"
                + string.Join("\n", user.Claims.Select(c => c.Type + "=" + c.Value));
 
-        public async Task SignInAsync(string sessionId)
+        public async Task<HttpResponseMessage> SignInAsync(string sessionId, bool persistent = false, int? expiresInDays = null)
         {
-            using var response = await SendAsync(HttpMethod.Get, "/sign-in?sid=" + sessionId);
+            var url = "/sign-in?sid=" + sessionId + "&persistent=" + (persistent ? "true" : "false")
+                + (expiresInDays is { } days ? "&expiresInDays=" + days : string.Empty);
+            var response = await SendAsync(HttpMethod.Get, url);
             response.EnsureSuccessStatusCode();
+            return response;
         }
 
         public async Task<string> WhoAmIAsync()
@@ -141,6 +151,18 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
         }
     }
 
+    /// <summary>Records the Authorization header the bearer handler attached.</summary>
+    internal sealed class BearerEcho : HttpMessageHandler
+    {
+        public string? LastAuthorization { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            LastAuthorization = request.Headers.Authorization?.ToString();
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK));
+        }
+    }
+
     /// <summary>Scripted <see cref="IAuthApiClient"/>: <see cref="Me"/> decides each <c>me</c> call.</summary>
     internal sealed class FakeAuthApi : IAuthApiClient
     {
@@ -154,7 +176,6 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             return Task.FromResult(Me());
         }
 
-        public Task<AuthTokenPair> RefreshAsync(string refreshToken, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task LogoutAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     }
 }

@@ -10,12 +10,13 @@ using TqkLibrary.Asp.ToolKit.Auth.Web.Models;
 namespace TqkLibrary.Asp.ToolKit.Auth.Web
 {
     /// <summary>
-    /// Opens and closes the web session (scoped). The encrypted cookie ticket holds:
+    /// Opens and closes the web session (scoped). The encrypted cookie ticket holds only immutable data:
     /// <list type="bullet">
-    ///   <item>a principal with ONE claim, <see cref="WebAuthOptions.SessionIdClaimType"/> = API session id;</item>
-    ///   <item>the API tokens (<see cref="WebSessionTokens"/>) in <see cref="AuthenticationProperties"/>.</item>
+    ///   <item>a principal with the API session id (<see cref="WebAuthOptions.SessionIdClaimType"/>) and the user id
+    ///   (<c>ClaimTypes.NameIdentifier</c>);</item>
+    ///   <item>the API session token <c>{sessionId}.{secret}</c> in <see cref="AuthenticationProperties"/>.</item>
     /// </list>
-    /// Id, name, email, roles and permissions are NOT in the cookie (they would go stale);
+    /// Name, email, roles and permissions are NOT in the cookie (they would go stale);
     /// <see cref="CurrentUserMiddleware"/> asks the API (short <see cref="CurrentUserCache"/>). Nothing is stored
     /// server side, so only the Data Protection key ring must be persisted (and shared by every instance).
     /// </summary>
@@ -48,28 +49,37 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         }
 
         /// <summary>
-        /// Stores the tokens in the ticket and issues the cookie. <paramref name="persistent"/> = "remember me": the
-        /// cookie survives closing the browser; otherwise it is a session cookie. The ticket expires at
-        /// min(now + cookie ExpireTimeSpan, refresh token expiry).
+        /// Stores the session token in the ticket and issues the cookie. <paramref name="persistent"/> = "remember me":
+        /// the cookie survives closing the browser; otherwise it is a session cookie. The ticket expires at
+        /// <see cref="AuthSession.ExpiresAt"/> (or now + cookie <c>ExpireTimeSpan</c> when null) and is never reissued;
+        /// the API decides on every call whether the session is still alive.
         /// </summary>
-        public async Task SignInAsync(HttpContext context, AuthTokenPair tokens, bool persistent)
+        /// <exception cref="ArgumentException">The token is not <c>{sessionId}.{secret}</c> or the user id is empty.</exception>
+        public async Task SignInAsync(HttpContext context, AuthSession session, bool persistent)
         {
             ArgumentNullException.ThrowIfNull(context);
-            ArgumentNullException.ThrowIfNull(tokens);
-            ArgumentException.ThrowIfNullOrEmpty(tokens.SessionId);
+            ArgumentNullException.ThrowIfNull(session);
+            ArgumentException.ThrowIfNullOrEmpty(session.UserId);
+            var sessionId = GetSessionId(session.SessionToken)
+                ?? throw new ArgumentException("The session token must have the form {sessionId}.{secret}.", nameof(session));
 
-            var sessionTokens = WebSessionTokens.From(tokens);
-            var properties = new AuthenticationProperties { IsPersistent = persistent };
-            sessionTokens.WriteTo(properties, _options);
-            WebSessionTicket.ApplyLifetime(properties, sessionTokens, _clock.GetUtcNow(),
-                _cookieOptions.Get(_options.Scheme).ExpireTimeSpan);
+            var now = _clock.GetUtcNow();
+            var properties = new AuthenticationProperties
+            {
+                IsPersistent = persistent,
+                IssuedUtc = now,
+                ExpiresUtc = session.ExpiresAt is { } expires
+                    ? new DateTimeOffset(DateTime.SpecifyKind(expires, DateTimeKind.Utc))
+                    : now.Add(_cookieOptions.Get(_options.Scheme).ExpireTimeSpan),
+            };
+            properties.StoreTokens([new AuthenticationToken { Name = WebSessionTicket.SessionTokenName, Value = session.SessionToken }]);
 
-            _currentUserCache.Remove(tokens.SessionId);
-            await context.SignInAsync(_options.Scheme, _principals.CreateSessionOnly(tokens.SessionId), properties).ConfigureAwait(false);
-            WebSessionTicket.For(context).Replace(tokens.SessionId, sessionTokens, properties);
+            _currentUserCache.Remove(sessionId);
+            await context.SignInAsync(_options.Scheme, _principals.CreateSessionOnly(sessionId, session.UserId), properties).ConfigureAwait(false);
+            WebSessionTicket.For(context).Replace(session.SessionToken);
         }
 
-        /// <summary>Revokes the session on the API with the cookie tokens (best effort, never throws for API errors), then clears the cookie.</summary>
+        /// <summary>Revokes the session on the API with the cookie token (best effort, never throws for API errors), then clears the cookie.</summary>
         public async Task SignOutAsync(HttpContext context)
         {
             ArgumentNullException.ThrowIfNull(context);
@@ -102,5 +112,14 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         }
 
         private string? GetSessionId(ClaimsPrincipal user) => user.FindFirst(_options.SessionIdClaimType)?.Value;
+
+        /// <summary>The part before the first '.' of a well-formed <c>{sessionId}.{secret}</c> token, otherwise null.</summary>
+        private static string? GetSessionId(string? sessionToken)
+        {
+            if (string.IsNullOrWhiteSpace(sessionToken))
+                return null;
+            var dot = sessionToken.IndexOf('.');
+            return dot <= 0 || dot == sessionToken.Length - 1 ? null : sessionToken[..dot];
+        }
     }
 }

@@ -2,197 +2,227 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
-using Microsoft.Extensions.Time.Testing;
 using System.Net;
 using System.Security.Claims;
-using TqkLibrary.Asp.ToolKit.Auth.Web.Interfaces;
-using TqkLibrary.Asp.ToolKit.Auth.Web.Models;
 using Xunit;
 
 namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
 {
+    /// <summary>
+    /// <see cref="SessionBearerHandler"/>: attaches the session token from the cookie, sends exactly once, and turns a
+    /// 401 into <see cref="SessionExpiredException"/>. There is no refresh any more.
+    /// </summary>
     public class SessionBearerHandlerTests
     {
-        private static readonly DateTimeOffset Start = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
-
-        // ---------- DefaultIsTransientRefreshFailure ----------
+        private const string Token = "sid.secret-value";
 
         [Fact]
-        public void Default_HttpRequestExceptionWithoutStatus_IsTransient()
-            => Assert.True(SessionBearerHandler.DefaultIsTransientRefreshFailure(new HttpRequestException("net"), default));
-
-        [Fact]
-        public void Default_Http503_IsTransient()
-            => Assert.True(SessionBearerHandler.DefaultIsTransientRefreshFailure(
-                new HttpRequestException("x", null, HttpStatusCode.ServiceUnavailable), default));
-
-        [Theory]
-        [InlineData(HttpStatusCode.BadRequest)]
-        [InlineData(HttpStatusCode.NotFound)]
-        public void Default_Http4xx_IsNotTransient(HttpStatusCode status)
-            => Assert.False(SessionBearerHandler.DefaultIsTransientRefreshFailure(new HttpRequestException("x", null, status), default));
-
-        [Fact]
-        public void Default_CancellationNotRequestedByCaller_IsTransient()
-            => Assert.True(SessionBearerHandler.DefaultIsTransientRefreshFailure(new OperationCanceledException(), CancellationToken.None));
-
-        [Fact]
-        public void Default_CancellationRequestedByCaller_IsNotTransient()
+        public async Task AttachesSessionTokenAsBearer()
         {
-            using var cts = new CancellationTokenSource();
-            cts.Cancel();
-            Assert.False(SessionBearerHandler.DefaultIsTransientRefreshFailure(new OperationCanceledException(), cts.Token));
+            var h = new Harness();
+
+            using var response = await h.Client.GetAsync("http://api/items");
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal([Token], h.Inner.Bearers);
+            Assert.Equal("Bearer", h.Inner.LastScheme);
         }
 
         [Fact]
-        public void Default_Timeout_IsTransient()
-            => Assert.True(SessionBearerHandler.DefaultIsTransientRefreshFailure(new TimeoutException(), default));
-
-        [Fact]
-        public void Default_InvalidOperation_IsNotTransient()
-            => Assert.False(SessionBearerHandler.DefaultIsTransientRefreshFailure(new InvalidOperationException(), default));
-
-        // ---------- Handler behaviour ----------
-
-        [Fact]
-        public async Task ProactiveRefresh_Transient503_FallsBackToOldToken()
+        public async Task Unauthorized_ThrowsSessionExpired_AfterExactlyOneSend()
         {
-            var h = new Harness(accessLifetime: TimeSpan.FromSeconds(20),
-                refreshThrows: new HttpRequestException("x", null, HttpStatusCode.ServiceUnavailable));
-            using var response = await h.Client.GetAsync("http://api/x");
-            Assert.Equal(1, h.RefreshCalls);
-            Assert.Equal("old-access", h.Inner.LastBearer);
+            var h = new Harness();
+            h.Inner.Respond = _ => HttpStatusCode.Unauthorized;
+
+            await Assert.ThrowsAsync<SessionExpiredException>(() => h.Client.PostAsync("http://api/items", new StringContent("{}")));
+
+            Assert.Equal(1, h.Inner.Calls);
+        }
+
+        /// <summary>
+        /// Regression: the old handler refreshed proactively and waited for the auth API (up to its refresh timeout)
+        /// before every call once the access token was about to expire. Now a call is one send, whatever the API does.
+        /// </summary>
+        [Fact]
+        public async Task SlowApi_OneSendPerCall_NoOtherApiCall()
+        {
+            var h = new Harness();
+            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            h.Inner.RespondAsync = async _ =>
+            {
+                await release.Task;
+                return HttpStatusCode.OK;
+            };
+
+            var calls = Enumerable.Range(0, 3).Select(i => h.Client.GetAsync("http://api/slow/" + i)).ToArray();
+            while (h.Inner.Calls < 3)
+                await Task.Delay(10);
+            Assert.All(calls, c => Assert.False(c.IsCompleted));
+            release.SetResult();
+            foreach (var response in await Task.WhenAll(calls))
+                response.Dispose();
+
+            Assert.Equal(3, h.Inner.Calls);
+            Assert.Equal(1, h.Auth.AuthenticateCount); // the cookie is read once per request
+        }
+
+        [Theory]
+        [InlineData(HttpStatusCode.Forbidden)]
+        [InlineData(HttpStatusCode.InternalServerError)]
+        public async Task OtherErrorStatus_ReturnedAsIs(HttpStatusCode status)
+        {
+            var h = new Harness();
+            h.Inner.Respond = _ => status;
+
+            using var response = await h.Client.GetAsync("http://api/items");
+
+            Assert.Equal(status, response.StatusCode);
+            Assert.Equal(1, h.Inner.Calls);
+            Assert.False(h.Context.Response.HasStarted);
+        }
+
+        [Fact]
+        public async Task UploadBody_SentOnceUnbuffered_401IsSessionExpired()
+        {
+            var h = new Harness();
+            h.Inner.Respond = _ => HttpStatusCode.Unauthorized;
+            using var content = new StreamContent(new MemoryStream([1, 2, 3]));
+
+            await Assert.ThrowsAsync<SessionExpiredException>(() => h.Client.PostAsync("http://api/upload", content));
+
             Assert.Equal(1, h.Inner.Calls);
         }
 
         [Fact]
-        public async Task ProactiveRefresh_Http400_Propagates_NoRequestSent()
+        public async Task CookieWithoutToken_ThrowsSessionExpired_NothingSent()
         {
-            var h = new Harness(accessLifetime: TimeSpan.FromSeconds(20),
-                refreshThrows: new HttpRequestException("x", null, HttpStatusCode.BadRequest));
-            await Assert.ThrowsAsync<HttpRequestException>(() => h.Client.GetAsync("http://api/x"));
+            var h = new Harness(storeToken: false);
+
+            await Assert.ThrowsAsync<SessionExpiredException>(() => h.Client.GetAsync("http://api/items"));
+
             Assert.Equal(0, h.Inner.Calls);
         }
 
         [Fact]
-        public async Task ProactiveRefresh_TransientButOldTokenBelowMargin_Propagates()
+        public async Task Guest_PassesThrough_401NotSessionExpired()
         {
-            var h = new Harness(accessLifetime: TimeSpan.FromSeconds(3),
-                refreshThrows: new HttpRequestException("x", null, HttpStatusCode.ServiceUnavailable));
-            await Assert.ThrowsAsync<HttpRequestException>(() => h.Client.GetAsync("http://api/x"));
-            Assert.Equal(0, h.Inner.Calls);
+            var h = new Harness(guest: true);
+            h.Inner.Respond = _ => HttpStatusCode.Unauthorized;
+
+            using var response = await h.Client.GetAsync("http://api/items");
+
+            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+            Assert.Equal(new string?[] { null }, h.Inner.Bearers);
+            Assert.Equal(0, h.Auth.AuthenticateCount);
         }
 
         [Fact]
-        public async Task ProactiveRefresh_MarginMeasuredAfterRefreshAttempt()
+        public async Task AnonymousPathSuffix_NoBearer_401ReturnedAsIs()
         {
-            // 20s left before the attempt; the refresh takes 18s, so only 2s remain (< 5s margin).
-            var h = new Harness(accessLifetime: TimeSpan.FromSeconds(20),
-                refreshThrows: new HttpRequestException("x", null, HttpStatusCode.ServiceUnavailable),
-                refreshDuration: TimeSpan.FromSeconds(18));
-            await Assert.ThrowsAsync<HttpRequestException>(() => h.Client.GetAsync("http://api/x"));
-            Assert.Equal(0, h.Inner.Calls);
+            var h = new Harness(configure: o => o.AnonymousPathSuffixes.Add("/auth/login"));
+            h.Inner.Respond = _ => HttpStatusCode.Unauthorized;
+
+            using var response = await h.Client.PostAsync("http://api/auth/login?x=1", new StringContent("{}"));
+
+            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+            Assert.Equal(new string?[] { null }, h.Inner.Bearers);
         }
 
         [Fact]
-        public async Task CustomPredicate_ReplacesDefault()
+        public async Task InsideAnonymousApiScope_NoBearer()
         {
-            var calls = 0;
-            // A 400 is "transient" for the custom predicate, so it falls back; the default would have thrown.
-            var h = new Harness(accessLifetime: TimeSpan.FromSeconds(20),
-                refreshThrows: new HttpRequestException("x", null, HttpStatusCode.BadRequest),
-                configure: o => o.IsTransientRefreshFailure = (_, _) => { calls++; return true; });
-            using var response = await h.Client.GetAsync("http://api/x");
-            Assert.Equal(1, calls);
-            Assert.Equal("old-access", h.Inner.LastBearer);
+            var h = new Harness();
+            h.Inner.Respond = _ => HttpStatusCode.Unauthorized;
+
+            using var response = await AnonymousApiScope.RunAsync(() => h.Client.GetAsync("http://api/public"));
+
+            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+            Assert.Equal(new string?[] { null }, h.Inner.Bearers);
         }
 
         [Fact]
-        public async Task CustomPredicate_False_PropagatesEvenForTransientDefault()
+        public async Task ExplicitAuthorizationHeader_IsLeftUntouched()
         {
-            var h = new Harness(accessLifetime: TimeSpan.FromSeconds(20),
-                refreshThrows: new HttpRequestException("net"),
-                configure: o => o.IsTransientRefreshFailure = (_, _) => false);
-            await Assert.ThrowsAsync<HttpRequestException>(() => h.Client.GetAsync("http://api/x"));
-            Assert.Equal(0, h.Inner.Calls);
+            var h = new Harness();
+            using var request = new HttpRequestMessage(HttpMethod.Get, "http://api/items");
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "explicit");
+
+            using var response = await h.Client.SendAsync(request);
+
+            Assert.Equal(["explicit"], h.Inner.Bearers);
         }
 
         // ---------- Test infrastructure ----------
 
         private sealed class Harness
         {
-            public FakeTimeProvider Clock { get; } = new(Start);
+            public WebAuthOptions Options { get; } = new();
             public RecordingHandler Inner { get; } = new();
-            public int RefreshCalls => _auth.RefreshCalls;
+            public FakeAuthenticationService Auth { get; }
+            public DefaultHttpContext Context { get; }
             public HttpClient Client { get; }
-            private readonly FakeAuthApiClient _auth;
 
-            public Harness(TimeSpan accessLifetime, Exception refreshThrows, TimeSpan? refreshDuration = null,
-                Action<WebAuthOptions>? configure = null)
+            public Harness(bool storeToken = true, bool guest = false, Action<WebAuthOptions>? configure = null)
             {
-                var options = new WebAuthOptions();
-                configure?.Invoke(options);
-                var tokens = new WebSessionTokens("old-access", Start.UtcDateTime + accessLifetime, "refresh", Start.UtcDateTime.AddDays(1));
+                configure?.Invoke(Options);
                 var properties = new AuthenticationProperties();
-                tokens.WriteTo(properties, options);
+                if (storeToken)
+                    properties.StoreTokens([new AuthenticationToken { Name = WebSessionTicket.SessionTokenName, Value = Token }]);
 
-                _auth = new FakeAuthApiClient(refreshThrows, () => Clock.Advance(refreshDuration ?? TimeSpan.Zero));
+                Auth = new FakeAuthenticationService(properties, Options.Scheme, Options.SessionIdClaimType);
                 var services = new ServiceCollection();
-                services.AddSingleton<IOptions<WebAuthOptions>>(Options.Create(options));
-                services.AddSingleton<TimeProvider>(Clock);
-                services.AddSingleton<IAuthApiClient>(_auth);
-                services.AddSingleton<IAuthenticationService>(new FakeAuthenticationService(properties, options.Scheme, options.SessionIdClaimType));
+                services.AddSingleton<IOptions<WebAuthOptions>>(Microsoft.Extensions.Options.Options.Create(Options));
+                services.AddSingleton<IAuthenticationService>(Auth);
                 var provider = services.BuildServiceProvider();
 
-                var context = new DefaultHttpContext { RequestServices = provider };
-                context.User = new ClaimsPrincipal(new ClaimsIdentity([new Claim(options.SessionIdClaimType, "sid")], "test"));
-                var accessor = new HttpContextAccessor { HttpContext = context };
+                Context = new DefaultHttpContext { RequestServices = provider };
+                Context.User = guest
+                    ? new ClaimsPrincipal(new ClaimsIdentity())
+                    : new ClaimsPrincipal(new ClaimsIdentity([new Claim(Options.SessionIdClaimType, "sid")], "test"));
+                var accessor = new HttpContextAccessor { HttpContext = Context };
 
-                var handler = new SessionBearerHandler(accessor, Clock, Options.Create(options)) { InnerHandler = Inner };
+                var handler = new SessionBearerHandler(accessor, Microsoft.Extensions.Options.Options.Create(Options)) { InnerHandler = Inner };
                 Client = new HttpClient(handler);
             }
         }
 
         private sealed class RecordingHandler : HttpMessageHandler
         {
-            public int Calls { get; private set; }
-            public string? LastBearer { get; private set; }
+            private int _calls;
+            public int Calls => _calls;
+            public List<string?> Bearers { get; } = new();
+            public string? LastScheme { get; private set; }
+            public Func<string?, HttpStatusCode> Respond { get; set; } = _ => HttpStatusCode.OK;
+            public Func<string?, Task<HttpStatusCode>>? RespondAsync { get; set; }
 
-            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             {
-                Calls++;
-                LastBearer = request.Headers.Authorization?.Parameter;
-                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+                Interlocked.Increment(ref _calls);
+                var bearer = request.Headers.Authorization?.Parameter;
+                LastScheme = request.Headers.Authorization?.Scheme;
+                lock (Bearers)
+                    Bearers.Add(bearer);
+                var status = RespondAsync is null ? Respond(bearer) : await RespondAsync(bearer);
+                return new HttpResponseMessage(status);
             }
-        }
-
-        private sealed class FakeAuthApiClient(Exception refreshThrows, Action onRefresh) : IAuthApiClient
-        {
-            public int RefreshCalls { get; private set; }
-
-            public Task<AuthTokenPair> RefreshAsync(string refreshToken, CancellationToken cancellationToken)
-            {
-                RefreshCalls++;
-                onRefresh();
-                throw refreshThrows;
-            }
-
-            public Task<CurrentUserInfo> GetCurrentUserAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
-            public Task LogoutAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
         }
 
         private sealed class FakeAuthenticationService(AuthenticationProperties properties, string scheme, string sidClaim) : IAuthenticationService
         {
+            private int _authenticateCount;
+            public int AuthenticateCount => _authenticateCount;
+
             public Task<AuthenticateResult> AuthenticateAsync(HttpContext context, string? scheme1)
             {
+                Interlocked.Increment(ref _authenticateCount);
                 var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim(sidClaim, "sid")], "test"));
                 return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(principal, properties, scheme)));
             }
 
-            public Task ChallengeAsync(HttpContext context, string? scheme, AuthenticationProperties? properties) => Task.CompletedTask;
-            public Task ForbidAsync(HttpContext context, string? scheme, AuthenticationProperties? properties) => Task.CompletedTask;
-            public Task SignInAsync(HttpContext context, string? scheme, ClaimsPrincipal principal, AuthenticationProperties? properties) => Task.CompletedTask;
-            public Task SignOutAsync(HttpContext context, string? scheme, AuthenticationProperties? properties) => Task.CompletedTask;
+            public Task ChallengeAsync(HttpContext context, string? scheme1, AuthenticationProperties? properties1) => Task.CompletedTask;
+            public Task ForbidAsync(HttpContext context, string? scheme1, AuthenticationProperties? properties1) => Task.CompletedTask;
+            public Task SignInAsync(HttpContext context, string? scheme1, ClaimsPrincipal principal, AuthenticationProperties? properties1) => Task.CompletedTask;
+            public Task SignOutAsync(HttpContext context, string? scheme1, AuthenticationProperties? properties1) => Task.CompletedTask;
         }
     }
 }

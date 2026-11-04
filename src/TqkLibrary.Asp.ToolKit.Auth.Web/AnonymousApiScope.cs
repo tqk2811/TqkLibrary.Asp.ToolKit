@@ -3,12 +3,9 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
     /// <summary>
     /// Sends API calls anonymously through a client wired with <see cref="SessionBearerHandler"/>: inside
     /// <see cref="RunAsync{T}"/> / <see cref="RunAsync"/> the handler passes requests through untouched (no viewer
-    /// bearer, no refresh, no retry on 401).
-    /// <para>Uses:</para>
+    /// session token, and a 401 is returned as it is instead of <see cref="SessionExpiredException"/>).
+    /// <para>Use:</para>
     /// <list type="bullet">
-    ///   <item>The library runs <see cref="Interfaces.IAuthApiClient.RefreshAsync"/> inside it. That call usually goes
-    ///   through the same client; without the scope the handler would wait for the ticket lock the refresh already
-    ///   holds (deadlock until <see cref="WebAuthOptions.RefreshTimeout"/>) and attach the old access token.</item>
     ///   <item>The app calls an endpoint anonymously only SOMETIMES, for example the loader of a cache shared by every
     ///   viewer: a shared load (and its error) is handed to every waiting caller, so a load carrying ONE viewer's
     ///   bearer could cache that viewer's private data or hand that viewer's <see cref="SessionExpiredException"/> to

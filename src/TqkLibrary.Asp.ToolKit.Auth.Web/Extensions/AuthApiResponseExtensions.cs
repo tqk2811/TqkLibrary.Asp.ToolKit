@@ -5,7 +5,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Extensions
     {
         /// <summary>
         /// Throws <see cref="SessionExpiredException"/> when the API rejected the session (HTTP 401 or 403); does
-        /// nothing for any other status. Call it on the response of <c>RefreshAsync</c> / <c>GetCurrentUserAsync</c>
+        /// nothing for any other status. Call it on the response of <c>GetCurrentUserAsync</c>
         /// before <c>EnsureSuccessStatusCode</c>, so a dead session signs the user out while a 5xx stays a transient
         /// failure.
         /// </summary>

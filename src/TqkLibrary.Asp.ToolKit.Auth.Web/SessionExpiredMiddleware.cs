@@ -31,12 +31,12 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
                 await _next(context).ConfigureAwait(false);
             }
             // Once the response has started the cookie cannot be cleared (no more headers); the next request that hits
-            // a 401 during refresh lands here and clears it.
+            // gets a 401 from the API again and lands here.
             catch (SessionExpiredException ex) when (!context.Response.HasStarted)
             {
                 // Clear the partial response FIRST, then drop the session: the sign-out writes the Set-Cookie header
                 // that deletes the cookie, and Clear() afterwards would erase that header (the browser would keep the
-                // dead cookie and every following request would fail the refresh again).
+                // dead cookie and every following request would be rejected by the API again).
                 context.Response.Clear();
                 var sessions = context.RequestServices.GetService(typeof(WebSessionManager)) as WebSessionManager;
                 if (sessions is not null)
