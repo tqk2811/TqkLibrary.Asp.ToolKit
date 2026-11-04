@@ -177,9 +177,11 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             await using var app = await WebAuthTestApp.StartAsync(mapEndpoints: endpoints => endpoints.MapGet("/sign-in-and-call",
                 async (HttpContext context, WebSessionManager sessions) =>
                 {
-                    await sessions.SignInAsync(context, new AuthSession { SessionToken = "s-9.fresh", UserId = "u-9" }, persistent: false);
-                    // The request principal is still the guest one; the handler needs the session claim to attach the token.
-                    context.User = context.RequestServices.GetRequiredService<WebSessionPrincipalFactory>().CreateSessionOnly("s-9", "u-9");
+                    await sessions.SignInAsync(context, new AuthSession
+                    {
+                        SessionToken = "s-9.fresh", UserId = "u-9", ExpiresAt = DateTimeOffset.UtcNow.AddDays(1),
+                    }, persistent: false);
+                    // No manual context.User here: SignInAsync must make the new session visible to the bearer handler.
                     var handler = context.RequestServices.GetRequiredService<SessionBearerHandler>();
                     var inner = new BearerEcho();
                     handler.InnerHandler = inner;
@@ -226,7 +228,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
                 async (HttpContext context, WebSessionManager sessions) =>
                 {
                     var ex = await Assert.ThrowsAsync<ArgumentException>(()
-                        => sessions.SignInAsync(context, new AuthSession { SessionToken = token, UserId = "u-1" }, persistent: false));
+                        => sessions.SignInAsync(context, new AuthSession { SessionToken = token, UserId = "u-1", ExpiresAt = DateTimeOffset.UtcNow.AddDays(1) }, persistent: false));
                     return Results.Text(ex.ParamName ?? "");
                 }));
 
@@ -234,6 +236,36 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
 
             Assert.Equal("session", await response.Content.ReadAsStringAsync());
             Assert.Empty(app.Cookies);
+        }
+
+        [Fact]
+        public async Task CookieWithoutSessionToken_IsRejectedAtOnce_EvenWithoutApiCall()
+        {
+            await using var app = await WebAuthTestApp.StartAsync();
+            using (await app.SendAsync(HttpMethod.Get, "/sign-in-legacy?sid=" + Sid))
+                Assert.NotEmpty(app.Cookies);
+
+            using var response = await app.SendAsync(HttpMethod.Get, "/whoami");
+
+            Assert.StartsWith("auth=false", await response.Content.ReadAsStringAsync());
+            Assert.Equal(0, app.Api.MeCalls);
+            AssertCookieDeleted(response, app);
+        }
+
+        [Fact]
+        public async Task UserOnValidatePrincipal_StillRuns_ForValidCookie()
+        {
+            var calls = 0;
+            await using var app = await WebAuthTestApp.StartAsync(configureCookie: o =>
+                o.Events.OnValidatePrincipal = _ =>
+                {
+                    calls++;
+                    return Task.CompletedTask;
+                });
+            await app.SignInAsync(Sid);
+
+            Assert.StartsWith("auth=true", await app.WhoAmIAsync());
+            Assert.True(calls > 0);
         }
 
         [Fact]

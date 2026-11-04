@@ -13,11 +13,10 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Models
         public required string UserId { get; init; }
 
         /// <summary>
-        /// Cookie expiry (UTC): give the session's ABSOLUTE cap (sign-in + the API's maximum session lifetime), not its
+        /// Cookie expiry: give the session's ABSOLUTE cap (sign-in + the API's maximum session lifetime), not its
         /// sliding expiry, because the cookie is not reissued while the API slides the session. Until then the API
-        /// alone decides whether the session is alive (a 401 drops the cookie). Null = now + the cookie
-        /// <c>ExpireTimeSpan</c>.
+        /// alone decides whether the session is alive (a 401 drops the cookie).
         /// </summary>
-        public DateTime? ExpiresAt { get; init; }
+        public required DateTimeOffset ExpiresAt { get; init; }
     }
 }

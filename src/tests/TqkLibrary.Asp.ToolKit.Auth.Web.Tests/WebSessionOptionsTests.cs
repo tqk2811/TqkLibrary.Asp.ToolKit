@@ -247,7 +247,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
                 {
                     SessionToken = "s-2.secret",
                     UserId = "u-1",
-                    ExpiresAt = DateTime.UtcNow.AddDays(7),
+                    ExpiresAt = DateTimeOffset.UtcNow.AddDays(7),
                 }, persistent: false);
                 return Results.Text("ok");
             }));

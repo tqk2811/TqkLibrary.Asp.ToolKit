@@ -25,8 +25,9 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Extensions
         /// Cookie options of the app (name, login path, expiry...). The library sets <c>HttpOnly</c>, <c>SameSite=Lax</c>
         /// and <c>SlidingExpiration = false</c> first, so this delegate can override them. Sliding is off because the
         /// API slides the session itself; the ticket expires at the <see cref="Models.AuthSession.ExpiresAt"/> given at
-        /// sign-in (the session's absolute cap) and is never reissued. <c>ExpireTimeSpan</c> only applies when that
-        /// value is null.
+        /// sign-in (the session's absolute cap) and is never reissued. A cookie without a session token (issued by an
+        /// older version) is rejected and signed out on its first request; <c>Events.OnValidatePrincipal</c> set by the
+        /// app still runs afterwards.
         /// </param>
         /// <param name="configure">
         /// Optional <see cref="WebAuthOptions"/> overrides. <see cref="WebAuthOptions.Scheme"/> can ONLY be set here
@@ -68,7 +69,29 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Extensions
                     options.Cookie.SameSite = SameSiteMode.Lax;
                     options.SlidingExpiration = false;
                     configureCookie(options);
+                    ChainTokenCheck(options);
                 });
+        }
+
+        /// <summary>
+        /// Rejects (and signs out) a ticket without the API session token, e.g. a cookie issued by 1.x, right when the
+        /// cookie is validated, whether or not the request calls the API. The app's own
+        /// <c>OnValidatePrincipal</c> (if any) runs afterwards.
+        /// </summary>
+        private static void ChainTokenCheck(CookieAuthenticationOptions options)
+        {
+            var events = options.Events ??= new CookieAuthenticationEvents();
+            var inner = events.OnValidatePrincipal;
+            events.OnValidatePrincipal = async context =>
+            {
+                if (string.IsNullOrEmpty(context.Properties.GetTokenValue(WebSessionTicket.SessionTokenName)))
+                {
+                    context.RejectPrincipal();
+                    await context.HttpContext.SignOutAsync(context.Scheme.Name).ConfigureAwait(false);
+                    return;
+                }
+                await inner(context).ConfigureAwait(false);
+            };
         }
 
         /// <summary>Adds <see cref="SessionBearerHandler"/> to an API client.</summary>

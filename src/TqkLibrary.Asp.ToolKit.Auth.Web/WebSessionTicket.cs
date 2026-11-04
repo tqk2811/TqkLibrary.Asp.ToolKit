@@ -21,8 +21,10 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         private readonly HttpContext _context;
         private readonly WebAuthOptions _options;
         private readonly SemaphoreSlim _gate = new(1, 1);
-        private bool _loaded;
-        private string? _sessionToken;
+        // volatile: Replace/Clear write these outside _gate (they run on the request thread right after sign-in/drop,
+        // while a parallel API call may be reading under the gate); the token is written before _loaded is published.
+        private volatile bool _loaded;
+        private volatile string? _sessionToken;
         private volatile bool _dropPending;
         private int _dropHooked;
 

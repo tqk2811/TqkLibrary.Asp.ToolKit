@@ -125,7 +125,7 @@ await sessionManager.SignInAsync(HttpContext, new AuthSession                   
 {
     SessionToken = login.SessionToken,     // {sessionId}.{secret}
     UserId = login.UserId,
-    ExpiresAt = login.ExpiresAt,           // trần tuyệt đối của phiên (UTC); null = now + ExpireTimeSpan của cookie
+    ExpiresAt = login.ExpiresAt,           // trần tuyệt đối của phiên (DateTimeOffset, bắt buộc)
 }, persistent: model.RememberMe);
 await sessionManager.SignOutAsync(HttpContext);                                  // gọi API logout rồi xoá cookie
 ```
@@ -163,8 +163,7 @@ Cách hoạt động và nhiều người dùng cùng lúc:
 Về cookie:
 
 - Thư viện đặt sẵn `HttpOnly`, `SameSite=Lax` và **`SlidingExpiration = false`**: ticket hết hạn ở `AuthSession.ExpiresAt`
-  (trần tuyệt đối của phiên) và không bao giờ được cấp lại, vì API tự trượt phiên. `ExpireTimeSpan` chỉ dùng khi
-  `ExpiresAt` là null. Vẫn ghi đè được trong delegate `cookie => ...`.
+  (trần tuyệt đối của phiên, bắt buộc) và không bao giờ được cấp lại, vì API tự trượt phiên. Vẫn ghi đè được trong delegate `cookie => ...`.
 - Ngoài môi trường Development, cookie chỉ đi qua HTTPS (`SecurePolicy = Always`).
 - `WebAuthOptions.Scheme` **chỉ** đặt được qua tham số `configure` của `AddTqkWebAuth` (cần biết lúc đăng ký). Delegate `configure` được gọi **hai lần**
   (một lần trên bản snapshot lúc đăng ký, một lần qua options), nên không được có side-effect ngoài đối tượng options.

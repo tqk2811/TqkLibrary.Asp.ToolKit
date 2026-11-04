@@ -22,8 +22,9 @@ login, never rotated) and sends it as bearer; there is no refresh at all.
   options `AccessTokenName`, `AccessTokenExpiresName`, `RefreshTokenName`, `RefreshTokenExpiresName`, `RefreshSkew`,
   `RefreshFallbackMargin`, `RefreshTimeout`, `IsTransientRefreshFailure`.
 - `WebSessionTicket` only exposes `GetSessionTokenAsync`. `WebSessionPrincipalFactory.CreateSessionOnly` takes the user id.
-- Cookies issued by 1.x carry no session token: those users are treated as signed out (`SessionExpiredException` on
-  the first API call) and must sign in again.
+- `AuthSession.ExpiresAt` is a required `DateTimeOffset` (it was an optional `DateTime`); there is no fallback to the cookie `ExpireTimeSpan` any more.
+- `SignInAsync` sets `HttpContext.User` to the new session principal, so API calls made later in the same request carry the bearer token.
+- Cookies issued by 1.x carry no session token: those users are signed out on their first request and must sign in again.
 
 ## Usage
 
@@ -76,11 +77,19 @@ await sessionManager.SignInAsync(HttpContext, new AuthSession
 {
     SessionToken = login.SessionToken,     // {sessionId}.{secret}
     UserId = login.UserId,
-    ExpiresAt = login.ExpiresAt,           // absolute cap of the session (UTC); null = now + cookie ExpireTimeSpan
+    ExpiresAt = login.ExpiresAt,           // absolute cap of the session (DateTimeOffset, required)
 }, persistent: model.RememberMe);
 // Logout action
 await sessionManager.SignOutAsync(HttpContext);
 ```
+
+A cookie without a session token (issued by 1.x) is rejected and signed out when it is validated, on its first request,
+whether or not that request calls the API. Your own `Events.OnValidatePrincipal` still runs after this check.
+
+A session that died on the API (revoked, expired, user locked) is only detected when a request calls the API: the `me`
+call of `CurrentUserMiddleware` counts, as does any call through `SessionBearerHandler`. A page that calls no API (for
+example one with `SkipCurrentUser`, or a cached `me`) keeps showing the user as signed in until the cookie expires or
+the next API call answers 401.
 
 Cookie lifetime: the ticket expires at `AuthSession.ExpiresAt` and is never reissued (`SlidingExpiration = false`).
 Give the session's ABSOLUTE cap there (`SlidingSessionPolicy.GetAbsoluteExpiry` on the API), not its sliding expiry:

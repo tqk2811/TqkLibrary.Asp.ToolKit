@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting;
@@ -41,7 +42,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
 
         public static async Task<WebAuthTestApp> StartAsync(Action<WebAuthOptions>? configure = null,
             Action<IServiceCollection>? configureServices = null, Action<IEndpointRouteBuilder>? mapEndpoints = null,
-            Action<IApplicationBuilder>? beforeWebSession = null)
+            Action<IApplicationBuilder>? beforeWebSession = null, Action<Microsoft.AspNetCore.Authentication.Cookies.CookieAuthenticationOptions>? configureCookie = null)
         {
             var api = new FakeAuthApi();
             var host = new HostBuilder()
@@ -50,7 +51,11 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
                     .ConfigureServices(services =>
                     {
                         services.AddDataProtection().UseEphemeralDataProtectionProvider();
-                        services.AddTqkWebAuth(cookie => cookie.LoginPath = LoginPath, configure);
+                        services.AddTqkWebAuth(cookie =>
+                        {
+                            cookie.LoginPath = LoginPath;
+                            configureCookie?.Invoke(cookie);
+                        }, configure);
                         services.Replace(ServiceDescriptor.Singleton<IAuthApiClient>(api));
                         services.AddRouting();
                         configureServices?.Invoke(services);
@@ -70,18 +75,20 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
                                 {
                                     SessionToken = sid + ".secret",
                                     UserId = "u-1",
-                                    ExpiresAt = expiresInDays is { } days ? DateTime.UtcNow.AddDays(days) : null,
+                                    ExpiresAt = DateTimeOffset.UtcNow.AddDays(expiresInDays ?? 14),
                                 }, persistent: persistent == true);
                                 return Results.Ok();
                             });
                             endpoints.MapGet("/api-call", async (HttpContext context) =>
                             {
-                                var handler = context.RequestServices.GetRequiredService<SessionBearerHandler>();
-                                var inner = new BearerEcho();
-                                handler.InnerHandler = inner;
-                                using var client = new HttpClient(handler);
-                                using var response = await client.GetAsync("http://api/items");
-                                return Results.Text(inner.LastAuthorization ?? "none");
+                                var authorization = await CallApiAsync(context);
+                                return Results.Text(authorization);
+                            });
+                            // A cookie the way 1.x issued it: principal only, no session token in the ticket.
+                            endpoints.MapGet("/sign-in-legacy", async (HttpContext context, WebSessionPrincipalFactory principals, string sid) =>
+                            {
+                                await context.SignInAsync(TqkScheme(context), principals.CreateSessionOnly(sid, "u-1"));
+                                return Results.Ok();
                             });
                             endpoints.MapGet("/whoami", (HttpContext context) => Results.Text(Describe(context.User)));
                             endpoints.MapGet("/expired", (HttpContext context) =>
@@ -95,6 +102,20 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
                 .Build();
             await host.StartAsync();
             return new WebAuthTestApp(host, api);
+        }
+
+        private static string TqkScheme(HttpContext context)
+            => context.RequestServices.GetRequiredService<Microsoft.Extensions.Options.IOptions<WebAuthOptions>>().Value.Scheme;
+
+        /// <summary>One API call through <see cref="SessionBearerHandler"/>; returns the Authorization header it sent.</summary>
+        private static async Task<string> CallApiAsync(HttpContext context)
+        {
+            var handler = context.RequestServices.GetRequiredService<SessionBearerHandler>();
+            var inner = new BearerEcho();
+            handler.InnerHandler = inner;
+            using var client = new HttpClient(handler);
+            using var response = await client.GetAsync("http://api/items");
+            return inner.LastAuthorization ?? "none";
         }
 
         /// <summary>One line per claim "type=value", first line "auth=true|false".</summary>

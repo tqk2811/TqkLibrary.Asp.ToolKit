@@ -51,8 +51,9 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         /// <summary>
         /// Stores the session token in the ticket and issues the cookie. <paramref name="persistent"/> = "remember me":
         /// the cookie survives closing the browser; otherwise it is a session cookie. The ticket expires at
-        /// <see cref="AuthSession.ExpiresAt"/> (or now + cookie <c>ExpireTimeSpan</c> when null) and is never reissued;
-        /// the API decides on every call whether the session is still alive.
+        /// <see cref="AuthSession.ExpiresAt"/> and is never reissued; the API decides on every call whether the
+        /// session is still alive. <c>context.User</c> is set to the new session principal, so API calls made later in
+        /// the same request already carry the bearer token.
         /// </summary>
         /// <exception cref="ArgumentException">The token is not <c>{sessionId}.{secret}</c> or the user id is empty.</exception>
         public async Task SignInAsync(HttpContext context, AuthSession session, bool persistent)
@@ -68,14 +69,15 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
             {
                 IsPersistent = persistent,
                 IssuedUtc = now,
-                ExpiresUtc = session.ExpiresAt is { } expires
-                    ? new DateTimeOffset(DateTime.SpecifyKind(expires, DateTimeKind.Utc))
-                    : now.Add(_cookieOptions.Get(_options.Scheme).ExpireTimeSpan),
+                ExpiresUtc = session.ExpiresAt,
             };
             properties.StoreTokens([new AuthenticationToken { Name = WebSessionTicket.SessionTokenName, Value = session.SessionToken }]);
 
             _currentUserCache.Remove(sessionId);
-            await context.SignInAsync(_options.Scheme, _principals.CreateSessionOnly(sessionId, session.UserId), properties).ConfigureAwait(false);
+            var principal = _principals.CreateSessionOnly(sessionId, session.UserId);
+            await context.SignInAsync(_options.Scheme, principal, properties).ConfigureAwait(false);
+            // SessionBearerHandler finds the session through context.User, which SignInAsync does not touch.
+            context.User = principal;
             WebSessionTicket.For(context).Replace(session.SessionToken);
         }
 

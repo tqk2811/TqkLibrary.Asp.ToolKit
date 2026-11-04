@@ -22,8 +22,9 @@ không xoay vòng) và gửi nó làm bearer; không còn refresh nào cả.
   `AccessTokenName`, `AccessTokenExpiresName`, `RefreshTokenName`, `RefreshTokenExpiresName`, `RefreshSkew`,
   `RefreshFallbackMargin`, `RefreshTimeout`, `IsTransientRefreshFailure`.
 - `WebSessionTicket` chỉ còn `GetSessionTokenAsync`. `WebSessionPrincipalFactory.CreateSessionOnly` nhận thêm user id.
-- Cookie do bản 1.x cấp không có session token: user đó bị coi như đã đăng xuất (`SessionExpiredException` ở lời gọi
-  API đầu tiên) và phải đăng nhập lại.
+- `AuthSession.ExpiresAt` giờ là `DateTimeOffset` bắt buộc (trước là `DateTime` tuỳ chọn); không còn fallback về `ExpireTimeSpan` của cookie.
+- `SignInAsync` gán `HttpContext.User` bằng principal của phiên mới, nên lời gọi API sau đó trong cùng request đã mang bearer token.
+- Cookie do bản 1.x cấp không có session token: user đó bị đăng xuất ngay ở request đầu tiên và phải đăng nhập lại.
 
 ## Cách dùng
 
@@ -76,11 +77,18 @@ await sessionManager.SignInAsync(HttpContext, new AuthSession
 {
     SessionToken = login.SessionToken,     // {sessionId}.{secret}
     UserId = login.UserId,
-    ExpiresAt = login.ExpiresAt,           // trần tuyệt đối của phiên (UTC); null = now + ExpireTimeSpan của cookie
+    ExpiresAt = login.ExpiresAt,           // trần tuyệt đối của phiên (DateTimeOffset, bắt buộc)
 }, persistent: model.RememberMe);
 // Action đăng xuất
 await sessionManager.SignOutAsync(HttpContext);
 ```
+
+Cookie không có session token (do bản 1.x cấp) bị từ chối và đăng xuất ngay khi cookie được kiểm tra, ở request đầu tiên,
+dù request đó có gọi API hay không. `Events.OnValidatePrincipal` của app vẫn chạy sau bước kiểm này.
+
+Phiên đã chết bên API (bị thu hồi, hết hạn, user bị khoá) chỉ được phát hiện khi request gọi API: lời gọi `me` của
+`CurrentUserMiddleware` cũng tính, và mọi lời gọi qua `SessionBearerHandler`. Trang không gọi API nào (vd dùng
+`SkipCurrentUser`, hoặc `me` lấy từ cache) vẫn hiện là đã đăng nhập cho tới khi cookie hết hạn hoặc lời gọi API kế tiếp trả 401.
 
 Hạn cookie: ticket hết hạn tại `AuthSession.ExpiresAt` và không bao giờ được cấp lại (`SlidingExpiration = false`).
 Truyền vào đó trần TUYỆT ĐỐI của phiên (`SlidingSessionPolicy.GetAbsoluteExpiry` ở API), không phải hạn trượt: API tự
