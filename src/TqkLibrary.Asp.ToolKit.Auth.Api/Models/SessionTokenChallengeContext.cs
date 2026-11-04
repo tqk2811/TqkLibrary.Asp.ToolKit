@@ -3,7 +3,11 @@ using Microsoft.AspNetCore.Http;
 
 namespace TqkLibrary.Asp.ToolKit.Auth.Api.Models
 {
-    /// <summary>Argument of <see cref="SessionTokenAuthenticationOptions.OnChallenge"/>.</summary>
+    /// <summary>
+    /// Argument of <see cref="SessionTokenAuthenticationOptions.OnChallenge"/>. The response status (401) and the
+    /// <c>WWW-Authenticate: Bearer</c> header are already set: the hook may write a body but MUST NOT remove that
+    /// header, because the web side relies on it to tell an ended session from a business 401.
+    /// </summary>
     public sealed class SessionTokenChallengeContext
     {
         internal SessionTokenChallengeContext(HttpContext httpContext, SessionRejection? rejection, AuthenticationProperties properties)
@@ -25,7 +29,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Models
         /// <summary>True after <see cref="HandleResponse"/>.</summary>
         public bool Handled { get; private set; }
 
-        /// <summary>The hook wrote the response itself: the default 401 is skipped.</summary>
+        /// <summary>Marks that the hook wrote the response body itself (status and challenge header stay set).</summary>
         public void HandleResponse() => Handled = true;
     }
 }

@@ -15,6 +15,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
     public class SessionBearerHandlerTests
     {
         private const string Token = "sid.secret-value";
+        private const string Challenge = "Bearer error=\"invalid_token\"";
 
         [Fact]
         public async Task AttachesSessionTokenAsBearer()
@@ -33,10 +34,77 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
         {
             var h = new Harness();
             h.Inner.Respond = _ => HttpStatusCode.Unauthorized;
+            h.Inner.WwwAuthenticate = Challenge;
 
             await Assert.ThrowsAsync<SessionExpiredException>(() => h.Client.PostAsync("http://api/items", new StringContent("{}")));
 
             Assert.Equal(1, h.Inner.Calls);
+            Assert.True(WebSessionTicket.For(h.Context).DropPending);
+        }
+
+        /// <summary>
+        /// Regression: a business 401 (e.g. a wrong 2FA code on an [Authorize] page) carries no Bearer challenge and
+        /// must not end the session.
+        /// </summary>
+        [Fact]
+        public async Task Unauthorized_WithoutChallenge_ReturnedAsIs_SessionNotExpired()
+        {
+            var h = new Harness();
+            h.Inner.Respond = _ => HttpStatusCode.Unauthorized;
+
+            using var response = await h.Client.PostAsync("http://api/items", new StringContent("{}"));
+
+            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+            Assert.Equal(1, h.Inner.Calls);
+            Assert.False(h.Context.Response.HasStarted);
+            Assert.False(WebSessionTicket.For(h.Context).DropPending);
+        }
+
+        [Fact]
+        public async Task Unauthorized_WithBearerChallenge_ThrowsAndMarksSessionExpired()
+        {
+            var h = new Harness();
+            h.Inner.Respond = _ => HttpStatusCode.Unauthorized;
+            h.Inner.WwwAuthenticate = Challenge;
+
+            await Assert.ThrowsAsync<SessionExpiredException>(() => h.Client.GetAsync("http://api/items"));
+
+            Assert.True(WebSessionTicket.For(h.Context).DropPending);
+        }
+
+        [Fact]
+        public async Task Unauthorized_WithNonBearerChallenge_ReturnedAsIs()
+        {
+            var h = new Harness();
+            h.Inner.Respond = _ => HttpStatusCode.Unauthorized;
+            h.Inner.WwwAuthenticate = "Basic realm=\"x\"";
+
+            using var response = await h.Client.GetAsync("http://api/items");
+
+            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        }
+
+        [Fact]
+        public async Task TreatAnyUnauthorized_True_Unauthorized_WithoutChallenge_Throws()
+        {
+            var h = new Harness(configure: o => o.TreatAnyUnauthorizedAsSessionExpired = true);
+            h.Inner.Respond = _ => HttpStatusCode.Unauthorized;
+
+            await Assert.ThrowsAsync<SessionExpiredException>(() => h.Client.GetAsync("http://api/items"));
+
+            Assert.True(WebSessionTicket.For(h.Context).DropPending);
+        }
+
+        [Fact]
+        public async Task BearerChallenge_OnNon401_DoesNotExpire()
+        {
+            var h = new Harness();
+            h.Inner.Respond = _ => HttpStatusCode.Forbidden;
+            h.Inner.WwwAuthenticate = Challenge;
+
+            using var response = await h.Client.GetAsync("http://api/items");
+
+            Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
         }
 
         /// <summary>
@@ -86,6 +154,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
         {
             var h = new Harness();
             h.Inner.Respond = _ => HttpStatusCode.Unauthorized;
+            h.Inner.WwwAuthenticate = Challenge;
             using var content = new StreamContent(new MemoryStream([1, 2, 3]));
 
             await Assert.ThrowsAsync<SessionExpiredException>(() => h.Client.PostAsync("http://api/upload", content));
@@ -192,6 +261,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             public int Calls => _calls;
             public List<string?> Bearers { get; } = new();
             public string? LastScheme { get; private set; }
+            public string? WwwAuthenticate { get; set; }
             public Func<string?, HttpStatusCode> Respond { get; set; } = _ => HttpStatusCode.OK;
             public Func<string?, Task<HttpStatusCode>>? RespondAsync { get; set; }
 
@@ -203,7 +273,10 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
                 lock (Bearers)
                     Bearers.Add(bearer);
                 var status = RespondAsync is null ? Respond(bearer) : await RespondAsync(bearer);
-                return new HttpResponseMessage(status);
+                var response = new HttpResponseMessage(status);
+                if (WwwAuthenticate is not null)
+                    response.Headers.TryAddWithoutValidation("WWW-Authenticate", WwwAuthenticate);
+                return response;
             }
         }
 

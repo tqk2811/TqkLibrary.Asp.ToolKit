@@ -7,10 +7,10 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
     public sealed class SessionTokenAuthenticationOptions : AuthenticationSchemeOptions
     {
         /// <summary>
-        /// Optional hook run on a challenge (401) before the default response. Read
-        /// <see cref="SessionTokenChallengeContext.Rejection"/> to write an own body and call
-        /// <see cref="SessionTokenChallengeContext.HandleResponse"/> to skip the default (bare 401 with
-        /// <c>WWW-Authenticate: Bearer</c>).
+        /// Optional hook run on a challenge. The status (401) and the <c>WWW-Authenticate: Bearer</c> header are ALREADY
+        /// set when it runs. Read <see cref="SessionTokenChallengeContext.Rejection"/> to write an own body.
+        /// The hook may change the body but MUST NOT remove the <c>WWW-Authenticate</c> header: the web side
+        /// (<c>SessionBearerHandler</c>) relies on it to tell an ended session from a business 401.
         /// </summary>
         public Func<SessionTokenChallengeContext, Task>? OnChallenge { get; set; }
     }

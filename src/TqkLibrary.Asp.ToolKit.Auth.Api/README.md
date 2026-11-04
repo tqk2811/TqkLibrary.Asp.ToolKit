@@ -92,12 +92,12 @@ builder.Services.AddTqkApiAuth(o =>
 builder.Services.AddScoped<ISessionAccessSource, SessionAccessSource>();
 builder.Services.AddAuthentication(SessionTokenDefaults.AuthenticationScheme).AddTqkSessionToken(o =>
 {
-    // Optional: own 401 body with the rejection reason.
+    // Optional: own 401 body with the rejection reason. Status 401 and WWW-Authenticate are already set;
+    // keep the header (the Web package relies on it).
     o.OnChallenge = async context =>
     {
-        if (context.Rejection is not { } rejection) return;     // no token at all: keep the default 401
+        if (context.Rejection is not { } rejection) return;     // no token at all: keep the default bare 401
         context.HandleResponse();
-        context.HttpContext.Response.StatusCode = StatusCodes.Status401Unauthorized;
         await context.HttpContext.Response.WriteAsJsonAsync(new { code = "session_rejected", reason = rejection.Reason });
     };
 });
@@ -120,6 +120,11 @@ On every request with `Authorization: Bearer {sessionId}.{secret}` the handler:
 A request without a bearer header gets no result (anonymous endpoints work, `[Authorize]` answers 401). The rejection
 (`SessionRejection(Reason, Message)`) is available in `OnChallenge` and through `HttpContext.GetSessionRejection()`.
 The token is never logged.
+
+A challenge always answers 401 with `WWW-Authenticate: Bearer error="invalid_token"` (plain `Bearer` when the request
+carried no token, per RFC 6750). Both are set BEFORE `OnChallenge` runs, so the hook may write its own body but MUST
+NOT remove the `WWW-Authenticate` header: `Auth.Web` ends the user's session only on a 401 that carries this Bearer
+challenge, which is how it tells a dead session from a business 401 of your endpoint (e.g. a wrong 2FA code).
 
 Login and logout (inside the app's auth service):
 

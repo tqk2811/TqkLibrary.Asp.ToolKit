@@ -103,17 +103,19 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
         /// <inheritdoc />
         protected override async Task HandleChallengeAsync(AuthenticationProperties properties)
         {
+            if (Response.HasStarted)
+                return;
+            // Status and challenge header are set BEFORE the hook: the web side tells an ended session from a business
+            // 401 by this header, so it must be present even when the hook writes its own body and handles the response.
+            // RFC 6750: no error parameter when the request carried no token.
+            var rejection = Context.Features.Get<SessionRejection>();
+            Response.StatusCode = StatusCodes.Status401Unauthorized;
+            Response.Headers[HeaderNames.WWWAuthenticate] = rejection is null ? "Bearer" : "Bearer error=\"invalid_token\"";
             if (Options.OnChallenge is { } onChallenge)
             {
-                var challenge = new SessionTokenChallengeContext(Context, Context.Features.Get<SessionRejection>(), properties);
+                var challenge = new SessionTokenChallengeContext(Context, rejection, properties);
                 await onChallenge(challenge).ConfigureAwait(false);
-                if (challenge.Handled || Response.HasStarted)
-                    return;
             }
-            else if (Response.HasStarted)
-                return;
-            Response.StatusCode = StatusCodes.Status401Unauthorized;
-            Response.Headers.Append(HeaderNames.WWWAuthenticate, "Bearer");
         }
 
         /// <summary>

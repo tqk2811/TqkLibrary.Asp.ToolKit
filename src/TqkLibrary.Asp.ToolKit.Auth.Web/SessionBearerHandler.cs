@@ -11,9 +11,12 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
     /// client it is added to. Exactly one send per call: there is no token refresh and no retry.
     /// <list type="bullet">
     ///   <item>Cookie without a session token → <see cref="SessionExpiredException"/> before anything is sent.</item>
-    ///   <item>API answers 401 → <see cref="SessionExpiredException"/> (<see cref="SessionExpiredMiddleware"/> signs out
-    ///   and redirects to login). The web session cookie is dropped before the response starts even when app code
-    ///   catches the exception (<c>Response.OnStarting</c>).</item>
+    ///   <item>API answers 401 WITH a <c>WWW-Authenticate: Bearer</c> challenge (what Auth.Api sends for a dead session)
+    ///   → <see cref="SessionExpiredException"/> (<see cref="SessionExpiredMiddleware"/> signs out and redirects to
+    ///   login). The web session cookie is dropped before the response starts even when app code catches the
+    ///   exception (<c>Response.OnStarting</c>). With <see cref="WebAuthOptions.TreatAnyUnauthorizedAsSessionExpired"/>
+    ///   any 401 counts.</item>
+    ///   <item>A 401 WITHOUT the challenge is a business 401 of the endpoint (e.g. a wrong 2FA code): returned as is.</item>
     ///   <item>Every other response (including 403 and 5xx) and every transport error is returned / propagated as is.</item>
     /// </list>
     /// <para>
@@ -54,9 +57,9 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
                     ?? throw new SessionExpiredException(options.SessionExpiredMessage);
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                 var response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
-                if (response.StatusCode != HttpStatusCode.Unauthorized)
+                if (!SessionChallenge.EndsSession(response, options.TreatAnyUnauthorizedAsSessionExpired))
                     return response;
-                // The API is the authority: the session is revoked, expired or unknown.
+                // The API is the authority: its Bearer challenge means the session is revoked, expired or unknown.
                 response.Dispose();
                 throw new SessionExpiredException(options.SessionExpiredMessage);
             }
