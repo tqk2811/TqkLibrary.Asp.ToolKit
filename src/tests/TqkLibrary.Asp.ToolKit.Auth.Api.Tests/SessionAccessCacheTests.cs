@@ -161,31 +161,15 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
         }
 
         [Fact]
-        public async Task LoadReturnsNull_NotFoundIsCachedForTheLifetime_ThenReloaded()
+        public async Task LoadReturnsNull_NotFoundIsNotCached_NextCallSeesTheCreatedRecord()
         {
             using var cache = NewCache(TimeSpan.FromSeconds(30));
             var loader = new Loader(() => null);
             Assert.Null(await GetAccessAsync(cache, "s-1", loader.LoadAsync));
-            Assert.Null(await GetAccessAsync(cache, "s-1", loader.LoadAsync));
-            Assert.Equal(1, loader.Calls);
 
             loader.Value = () => Access("created");
-            _clock.Advance(TimeSpan.FromSeconds(31));
             Assert.Equal(["created"], (await GetAccessAsync(cache, "s-1", loader.LoadAsync))!.Permissions);
             Assert.Equal(2, loader.Calls);
-        }
-
-        [Fact]
-        public async Task InvalidateSession_DropsCachedNotFound()
-        {
-            using var cache = NewCache();
-            var loader = new Loader(() => null);
-            await GetAccessAsync(cache, "s-1", loader.LoadAsync);
-            loader.Value = () => Access("created");
-
-            cache.InvalidateSession("s-1");
-
-            Assert.NotNull(await GetAccessAsync(cache, "s-1", loader.LoadAsync));
         }
 
         [Fact]

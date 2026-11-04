@@ -362,16 +362,46 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
             var send = app.Client.SendAsync(request, cts.Token);
+            var deadline = DateTime.UtcNow.AddSeconds(5);
             while (app.Source.Touches == 0)
+            {
+                Assert.True(DateTime.UtcNow < deadline, "TouchAsync was never called.");
                 await Task.Delay(10);
+            }
             cts.Cancel();
-            await Task.Delay(100);
+            await Task.Delay(100); // give a (wrongly) linked token time to propagate before the gate opens
             app.Source.TouchGate.SetResult();
             try { (await send).Dispose(); } catch (OperationCanceledException) { }
-            await Task.Delay(100);
+            while (app.Source.TouchTokenCancelled is null)
+            {
+                Assert.True(DateTime.UtcNow < deadline, "TouchAsync did not finish.");
+                await Task.Delay(10);
+            }
 
             Assert.False(app.Source.TouchTokenCancelled);
-            Assert.Single(app.Source.TouchLog);
+        }
+
+        [Fact]
+        public async Task Touch_TokenIsCancelledAfterTheTimeout_OnTheTimeProvider_AndRequestStillSucceeds()
+        {
+            await using var app = await App.StartAsync(configureApi: o => o.SessionTouchTimeout = TimeSpan.FromSeconds(5));
+            var token = app.SignIn();
+            app.Clock.Advance(TimeSpan.FromHours(2));
+            app.Source.TouchGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            var send = app.GetAsync(token);
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (app.Source.Touches == 0)
+            {
+                Assert.True(DateTime.UtcNow < deadline, "TouchAsync was never called.");
+                await Task.Delay(10);
+            }
+            app.Clock.Advance(TimeSpan.FromSeconds(6)); // fake clock only: no real waiting
+            app.Source.TouchGate.SetResult();
+            using var response = await send;
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.True(app.Source.TouchTokenCancelled);
         }
 
         [Fact]

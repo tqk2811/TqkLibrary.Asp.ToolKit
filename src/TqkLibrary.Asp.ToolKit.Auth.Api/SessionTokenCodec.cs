@@ -33,6 +33,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
         /// <summary>
         /// Creates a new token for <paramref name="sessionId"/>, which must be 1 to <see cref="MaxSessionIdLength"/>
         /// characters of <c>A-Z a-z 0-9 - _</c> (a GUID or base64url id), otherwise <see cref="TryParse"/> would reject its own token.
+        /// The id MUST be unguessable (random GUID or random bytes), never a sequential or predictable id.
         /// </summary>
         public static IssuedSessionToken Create(string sessionId)
         {

@@ -72,8 +72,9 @@ public sealed class SessionAccessSource(AppDbContext db) : ISessionAccessSource
 All `DateTime` values of the record are UTC (`Unspecified` is taken as UTC, `Local` is converted). `UserRejectionReason`
 (for example `user_locked`) and `RevokedReason` are only reported to a caller whose secret is correct; with a wrong secret,
 or an unknown session id, the answer is always `invalid_token`, so the endpoint cannot be used to probe sessions or users.
-The "no such session" answer is cached like a record; call `InvalidateSession(sessionId)` after creating a session if its
-id might have been probed just before.
+Only a found record is cached; the "no such session" answer (null) is never cached, so a session created a moment ago is
+visible on the next request on every instance. Session ids MUST be unguessable (a random GUID or random bytes), never
+sequential ids.
 
 If `GetAsync` throws, no rejection is recorded and the request fails with that exception instead of a 401.
 
@@ -148,7 +149,8 @@ of the user's name, email, roles or permissions, or a revocation, therefore take
 app invalidates right after the write succeeds:
 
 - `InvalidateSession(sessionId)`: sign-out / one session revoked;
-- `InvalidateUser(userId)`: password change, account locked/deleted, role or name/email change;
+- `InvalidateUser(userId)`: password change, account locked/deleted, role or name/email change, and also after
+  UNLOCKING or enabling a user (the locked state is cached);
 - `InvalidateAll()`: permissions of a role changed, role renamed/deleted.
 
 A lookup in flight during an invalidation is never served afterwards. With several API instances an invalidation

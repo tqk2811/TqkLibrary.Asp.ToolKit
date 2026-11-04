@@ -7,8 +7,9 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
 {
     /// <summary>
     /// Short cache (singleton) of the per-request session lookup, keyed by session id, so the API does not query the
-    /// session, roles and permissions on EVERY authenticated request. A record is cached, and so is "no such session"
-    /// (null) for the same time. Name, email, role
+    /// session, roles and permissions on EVERY authenticated request. Only a FOUND record is cached; "no such session"
+    /// (null) is never cached, so a session created a moment ago is visible on the next request on every instance and
+    /// random-id floods cannot grow the cache. Name, email, role
     /// and permission changes therefore apply after at most <see cref="ApiAuthOptions.SessionAccessCacheLifetime"/>
     /// unless the app invalidates.
     /// <para>
@@ -66,7 +67,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
 
         /// <summary>
         /// The cached record of <paramref name="sessionId"/> when still valid, otherwise the result of
-        /// <paramref name="load"/> (cached too, a null "no such session" included, for the cache lifetime). The caller
+        /// <paramref name="load"/> (cached for the cache lifetime; a null "no such session" is NOT cached). The caller
         /// still checks the secret, user, revocation and expiry of the record on every request.
         /// </summary>
         public async Task<SessionAccessRecord?> GetAsync(string sessionId,
@@ -87,7 +88,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
 
             var access = await load(cancellationToken).ConfigureAwait(false);
             var lifetime = _options.Value.SessionAccessCacheLifetime;
-            if (lifetime > TimeSpan.Zero)
+            if (access is not null && lifetime > TimeSpan.Zero)
                 _cache.Set(sessionId, new Entry(access, _clock.GetUtcNow().Add(lifetime), sequence), lifetime);
             else
                 _cache.Remove(sessionId);
@@ -121,7 +122,11 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
             _cache.Remove(sessionId);
         }
 
-        /// <summary>Drops the cached results of every session of a user; other users stay cached.</summary>
+        /// <summary>
+        /// Drops the cached results of every session of a user; other users stay cached. Call it after any change of the
+        /// user that the handler reads from the cache: password change, role/name/email change, and also after
+        /// UNLOCKING or enabling a user (the locked state is cached too, so the user stays locked out until the lifetime ends).
+        /// </summary>
         public void InvalidateUser(string userId)
         {
             ArgumentException.ThrowIfNullOrEmpty(userId);

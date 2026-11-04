@@ -13,9 +13,10 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Interfaces
         /// its user cannot sign in: the library checks the secret hash first, then
         /// <see cref="SessionAccessRecord.UserRejectionReason"/>, <see cref="SessionAccessRecord.IsRevoked"/> and the
         /// expiry itself, so none of those states is revealed to a caller who does not hold the secret. Return null only
-        /// when no such session exists. Called through <see cref="SessionAccessCache"/>: the record (or null) is cached
-        /// for <see cref="ApiAuthOptions.SessionAccessCacheLifetime"/>; call
-        /// <see cref="SessionAccessCache.InvalidateSession"/> after creating a session whose id may have been probed.
+        /// when no such session exists. Called through <see cref="SessionAccessCache"/>: a found record is cached
+        /// for <see cref="ApiAuthOptions.SessionAccessCacheLifetime"/>, null is never cached (a new session is visible
+        /// at once). Session ids MUST be unguessable (a random GUID or random base64url), never sequential or otherwise
+        /// predictable ids: the id is half of the credential and the first thing an attacker can probe.
         /// </summary>
         Task<SessionAccessRecord?> GetAsync(string sessionId, CancellationToken cancellationToken);
 

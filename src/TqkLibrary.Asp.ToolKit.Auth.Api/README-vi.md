@@ -71,8 +71,9 @@ public sealed class SessionAccessSource(AppDbContext db) : ISessionAccessSource
 
 Mọi `DateTime` của record là UTC (`Unspecified` coi như UTC, `Local` được đổi sang UTC). `UserRejectionReason` (vd
 `user_locked`) và `RevokedReason` chỉ được báo cho người gọi có secret đúng; secret sai hoặc session id không tồn tại
-luôn trả `invalid_token`, nên endpoint không dùng để dò phiên hay user được. Kết quả "không có phiên" cũng được cache
-như một record; gọi `InvalidateSession(sessionId)` sau khi tạo phiên nếu id đó có thể vừa bị dò.
+luôn trả `invalid_token`, nên endpoint không dùng để dò phiên hay user được. Chỉ record tìm thấy mới được cache; kết quả
+"không có phiên" (null) không bao giờ được cache, nên phiên vừa tạo thấy được ngay ở request kế tiếp trên mọi instance.
+Session id PHẢI không đoán được (GUID ngẫu nhiên hoặc byte ngẫu nhiên), không dùng id tăng dần.
 
 `GetAsync` ném exception thì không có rejection nào được ghi, request hỏng với exception đó thay vì 401.
 
@@ -148,7 +149,8 @@ vậy đổi tên, email, role, permission của user, hoặc thu hồi phiên, 
 invalidate ngay sau khi ghi thành công:
 
 - `InvalidateSession(sessionId)`: đăng xuất / thu hồi một phiên;
-- `InvalidateUser(userId)`: đổi mật khẩu, khoá/xoá tài khoản, đổi role hoặc tên/email;
+- `InvalidateUser(userId)`: đổi mật khẩu, khoá/xoá tài khoản, đổi role hoặc tên/email, và cả khi MỞ KHOÁ/bật lại user
+  (trạng thái khoá cũng bị cache);
 - `InvalidateAll()`: permission của role đổi, role bị đổi tên/xoá.
 
 Lượt tra cứu đang chạy dở lúc invalidate không được dùng lại. Nhiều instance API thì invalidate chỉ tới instance xử

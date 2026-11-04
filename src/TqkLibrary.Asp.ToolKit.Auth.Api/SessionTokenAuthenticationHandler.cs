@@ -133,7 +133,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
             try
             {
                 // Not RequestAborted: a client that disconnects right after authenticating must not abort the write.
-                using var timeout = new CancellationTokenSource(_apiOptions.SessionTouchTimeout);
+                using var timeout = new CancellationTokenSource(_apiOptions.SessionTouchTimeout, _clock);
                 await source.TouchAsync(sessionId, utcNow, nextExpiry, timeout.Token).ConfigureAwait(false);
             }
             catch (Exception ex)
