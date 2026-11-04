@@ -116,7 +116,7 @@ On every request with `Authorization: Bearer {sessionId}.{secret}` the handler:
    not use the request's cancellation token) and updates the cached record;
 5. builds the principal: `ClaimTypes.NameIdentifier` and `UserIdClaimType` (`sub`) = user id, `SessionIdClaimType`
    (`sid`), `ClaimTypes.Name`, `ClaimTypes.Email`, `ClaimTypes.Role`, `PermissionClaimType` (`permission`), and for device binding `device_bound` /
-   `device_binding_mode` (see [Device binding (DBSC)](#device-binding-dbsc)).
+   `device_key_jwk` / `device_key_alg` / `device_binding_mode` (see [Device binding (DBSC)](#device-binding-dbsc)).
 
 A request without a bearer header gets no result (anonymous endpoints work, `[Authorize]` answers 401). The rejection
 (`SessionRejection(Reason, Message)`) is available in `OnChallenge` and through `HttpContext.GetSessionRejection()`.
@@ -190,12 +190,18 @@ interprets it.
 Fill the record in `GetAsync`:
 
 ```csharp
-IsDeviceBound = row.Session.DevicePublicKey != null,
+DevicePublicKeyJwk = row.Session.DevicePublicKey,      // null = not bound (IsDeviceBound is derived from it)
+DeviceKeyAlgorithm = row.Session.DeviceKeyAlgorithm,
 DeviceBindingMode = row.User.DeviceBindingMode,         // null = project default
 ```
 
-The principal then carries `DeviceBoundClaimType` (`device_bound`) = `true` when bound, and `DeviceBindingModeClaimType`
-(`device_binding_mode`) when the mode is set; both are absent otherwise. Both claim types are options of `AddTqkApiAuth`.
+When bound, the principal carries `DeviceBoundClaimType` (`device_bound`) = `true`, `DeviceKeyJwkClaimType`
+(`device_key_jwk`, the stored JWK) and `DeviceKeyAlgorithmClaimType` (`device_key_alg`); `DeviceBindingModeClaimType`
+(`device_binding_mode`) is added when the mode is set. They are absent otherwise. All claim types are options of
+`AddTqkApiAuth` (validated non-empty).
+
+The API is the single source of truth for the device key: the web front end does not keep the key in its cookie, it
+reads it from `me` (cached in memory) whenever it needs it.
 
 Implement `IDeviceKeyStore` with ONE atomic statement that writes the key only on a live session (not revoked, not
 expired) that has none yet and was created within the registration window, and returns true iff exactly one row changed
@@ -265,14 +271,36 @@ public sealed record DeviceKeyRequest(string PublicKeyJwk, string Algorithm);
 Notes:
 
 - Multi-instance: after `Registered`, `InvalidateSession` only reaches the local instance. Other instances keep the
-  cached record without the `device_bound` claim until `SessionAccessCacheLifetime` ends, so the Web should treat
-  `Registered` as bound on its own side. If an app ever removes a device key it must call `InvalidateSession`, because the
+  cached record without the `device_bound` claim until `SessionAccessCacheLifetime` ends; the Web treats `Registered`
+  as bound on its own side (in memory) and asks `me` again later. If an app ever removes a device key it must call `InvalidateSession`, because the
   `AlreadyBound` shortcut trusts the claim.
 - `DeviceBindingMode` is free text and is NOT validated by the API: the Web must whitelist the known modes and fall back
   to its default.
 
-The app's `me` endpoint must expose `isDeviceBound` and `deviceBindingMode` (from the claims or the record) so the web
-front end knows whether to register a key and which mode the user chose. The account settings page that changes
+The app's `me` endpoint must return `isDeviceBound`, `deviceKeyJwk`, `deviceKeyAlgorithm` and `deviceBindingMode`, so
+the web front end knows whether the session is bound, with which key it verifies the device proofs, and which mode the
+user chose. `GetDeviceBinding` reads them from the principal:
+
+```csharp
+using TqkLibrary.Asp.ToolKit.Auth.Api.Extensions;
+
+app.MapGet("/auth/me", (ClaimsPrincipal user, IOptions<ApiAuthOptions> api) =>
+{
+    var binding = user.GetDeviceBinding(api.Value);            // null = not bound
+    return Results.Ok(new
+    {
+        id = user.FindFirstValue(ClaimTypes.NameIdentifier),
+        userName = user.Identity!.Name,
+        // ... email, roles, permissions
+        isDeviceBound = binding is not null,
+        deviceKeyJwk = binding?.Jwk,
+        deviceKeyAlgorithm = binding?.Algorithm,
+        deviceBindingMode = binding?.Mode,
+    });
+}).RequireAuthorization(p => p.AddAuthenticationSchemes(SessionTokenDefaults.AuthenticationScheme).RequireAuthenticatedUser());
+```
+
+ The account settings page that changes
 `DeviceBindingMode` must call `InvalidateUser(userId)` afterwards.
 
 ### Cleanup job

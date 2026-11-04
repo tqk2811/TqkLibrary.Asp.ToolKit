@@ -116,7 +116,7 @@ builder.Services.AddAuthentication(SessionTokenDefaults.AuthenticationScheme).Ad
    cancellation token của request) rồi cập nhật bản ghi trong cache;
 5. dựng principal: `ClaimTypes.NameIdentifier` và `UserIdClaimType` (`sub`) = user id, `SessionIdClaimType` (`sid`),
    `ClaimTypes.Name`, `ClaimTypes.Email`, `ClaimTypes.Role`, `PermissionClaimType` (`permission`), và khi gắn thiết bị
-   `device_bound` / `device_binding_mode` (xem [Gắn phiên với thiết bị (DBSC)](#gắn-phiên-với-thiết-bị-dbsc)).
+   `device_bound` / `device_key_jwk` / `device_key_alg` / `device_binding_mode` (xem [Gắn phiên với thiết bị (DBSC)](#gắn-phiên-với-thiết-bị-dbsc)).
 
 Request không có header bearer thì không có kết quả (endpoint ẩn danh vẫn chạy, `[Authorize]` trả 401). Lý do từ chối
 (`SessionRejection(Reason, Message)`) đọc được trong `OnChallenge` và qua `HttpContext.GetSessionRejection()`. Token
@@ -188,12 +188,18 @@ project. Web front end chỉ theo lựa chọn này khi developer bật chính s
 Điền bản ghi trong `GetAsync`:
 
 ```csharp
-IsDeviceBound = row.Session.DevicePublicKey != null,
+DevicePublicKeyJwk = row.Session.DevicePublicKey,      // null = chưa gắn (IsDeviceBound suy ra từ đây)
+DeviceKeyAlgorithm = row.Session.DeviceKeyAlgorithm,
 DeviceBindingMode = row.User.DeviceBindingMode,         // null = mặc định của project
 ```
 
-Principal khi đó có `DeviceBoundClaimType` (`device_bound`) = `true` khi đã gắn, và `DeviceBindingModeClaimType`
-(`device_binding_mode`) khi có mode; không có thì không thêm claim. Hai claim type là option của `AddTqkApiAuth`.
+Khi đã gắn, principal có `DeviceBoundClaimType` (`device_bound`) = `true`, `DeviceKeyJwkClaimType` (`device_key_jwk`,
+JWK đã lưu) và `DeviceKeyAlgorithmClaimType` (`device_key_alg`); `DeviceBindingModeClaimType` (`device_binding_mode`)
+được thêm khi có mode. Chưa gắn thì không có các claim này. Mọi claim type là option của `AddTqkApiAuth` (bắt buộc khác
+rỗng).
+
+API là nguồn sự thật duy nhất của khoá thiết bị: Web front end KHÔNG giữ khoá trong cookie, nó đọc khoá qua `me` (cache
+trong bộ nhớ) khi cần.
 
 Viết `IDeviceKeyStore` bằng MỘT câu lệnh nguyên tử, chỉ ghi khoá vào phiên còn sống (chưa revoke, chưa hết hạn), chưa
 có khoá và được tạo trong cửa sổ đăng ký, trả true khi và chỉ khi đúng một dòng bị đổi (mỗi phiên đăng ký khoá một lần
@@ -263,14 +269,36 @@ public sealed record DeviceKeyRequest(string PublicKeyJwk, string Algorithm);
 Lưu ý:
 
 - Nhiều instance: sau `Registered`, `InvalidateSession` chỉ tác động tới instance cục bộ. Các instance khác vẫn giữ bản
-  ghi trong cache không có claim `device_bound` cho tới khi hết `SessionAccessCacheLifetime`, nên Web nên tự coi
-  `Registered` là đã gắn ở phía nó. Nếu app có lúc nào xoá khoá thiết bị thì phải gọi `InvalidateSession`, vì đường tắt
+  ghi trong cache không có claim `device_bound` cho tới khi hết `SessionAccessCacheLifetime`; Web tự coi `Registered`
+  là đã gắn ở phía nó (trong bộ nhớ) và hỏi lại `me` sau. Nếu app có lúc nào xoá khoá thiết bị thì phải gọi `InvalidateSession`, vì đường tắt
   `AlreadyBound` tin vào claim.
 - `DeviceBindingMode` là text tự do và API KHÔNG validate: Web phải whitelist các mode đã biết và quay về mặc định của nó
   nếu giá trị lạ.
 
-Endpoint `me` của app phải trả `isDeviceBound` và `deviceBindingMode` (lấy từ claim hoặc bản ghi) để Web front end biết
-có cần đăng ký khoá không và user đã chọn mode nào. Trang cài đặt tài khoản đổi `DeviceBindingMode` phải gọi
+Endpoint `me` của app phải trả `isDeviceBound`, `deviceKeyJwk`, `deviceKeyAlgorithm` và `deviceBindingMode`, để Web
+front end biết phiên đã gắn chưa, dùng khoá nào để kiểm bằng chứng của thiết bị, và user đã chọn mode nào.
+`GetDeviceBinding` đọc chúng từ principal:
+
+```csharp
+using TqkLibrary.Asp.ToolKit.Auth.Api.Extensions;
+
+app.MapGet("/auth/me", (ClaimsPrincipal user, IOptions<ApiAuthOptions> api) =>
+{
+    var binding = user.GetDeviceBinding(api.Value);            // null = chưa gắn
+    return Results.Ok(new
+    {
+        id = user.FindFirstValue(ClaimTypes.NameIdentifier),
+        userName = user.Identity!.Name,
+        // ... email, roles, permissions
+        isDeviceBound = binding is not null,
+        deviceKeyJwk = binding?.Jwk,
+        deviceKeyAlgorithm = binding?.Algorithm,
+        deviceBindingMode = binding?.Mode,
+    });
+}).RequireAuthorization(p => p.AddAuthenticationSchemes(SessionTokenDefaults.AuthenticationScheme).RequireAuthenticatedUser());
+```
+
+ Trang cài đặt tài khoản đổi `DeviceBindingMode` phải gọi
 `InvalidateUser(userId)` sau khi ghi.
 
 ### Job dọn dẹp

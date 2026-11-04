@@ -25,7 +25,8 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
     ///   (<see cref="ISessionAccessSource.TouchAsync"/>; a failure is only logged);</item>
     ///   <item>builds the principal from CURRENT data: user id (<c>NameIdentifier</c> and
     ///   <see cref="ApiAuthOptions.UserIdClaimType"/>), session id, name, email, roles, permissions, and the device
-    ///   binding state (<see cref="ApiAuthOptions.DeviceBoundClaimType"/>, <see cref="ApiAuthOptions.DeviceBindingModeClaimType"/>).</item>
+    ///   binding state (<see cref="ApiAuthOptions.DeviceBoundClaimType"/>, <see cref="ApiAuthOptions.DeviceKeyJwkClaimType"/>,
+    ///   <see cref="ApiAuthOptions.DeviceKeyAlgorithmClaimType"/>, <see cref="ApiAuthOptions.DeviceBindingModeClaimType"/>).</item>
     /// </list>
     /// A request without a bearer token gets no result (other schemes may run). A rejected token fails with a
     /// <see cref="SessionRejection"/> stored in <c>HttpContext.Features</c> (see
@@ -173,7 +174,12 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
             claims.AddRange(access.Roles.Select(role => new Claim(ClaimTypes.Role, role)));
             claims.AddRange(access.Permissions.Select(permission => new Claim(_apiOptions.PermissionClaimType, permission)));
             if (access.IsDeviceBound)
+            {
                 claims.Add(new Claim(_apiOptions.DeviceBoundClaimType, "true", ClaimValueTypes.Boolean));
+                claims.Add(new Claim(_apiOptions.DeviceKeyJwkClaimType, access.DevicePublicKeyJwk!));
+                if (!string.IsNullOrEmpty(access.DeviceKeyAlgorithm))
+                    claims.Add(new Claim(_apiOptions.DeviceKeyAlgorithmClaimType, access.DeviceKeyAlgorithm));
+            }
             if (!string.IsNullOrEmpty(access.DeviceBindingMode))
                 claims.Add(new Claim(_apiOptions.DeviceBindingModeClaimType, access.DeviceBindingMode));
             return new ClaimsPrincipal(new ClaimsIdentity(claims, Scheme.Name, ClaimTypes.Name, ClaimTypes.Role));

@@ -21,6 +21,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
     {
         private const string RejectedHeader = "X-Session-Rejected";
         private static readonly DateTime Start = new(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        private const string DeviceJwk = "{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"AAAA\",\"y\":\"BBBB\"}";
 
         private sealed class FakeSessionSource : ISessionAccessSource
         {
@@ -124,6 +125,9 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
                             app.UseEndpoints(e =>
                             {
                                 e.MapGet("/me", (ClaimsPrincipal user) => string.Join("\n", user.Claims.Select(c => c.Type + "=" + c.Value)))
+                                    .RequireAuthorization();
+                                e.MapGet("/binding", (ClaimsPrincipal user, Microsoft.Extensions.Options.IOptions<ApiAuthOptions> options) =>
+                                    user.GetDeviceBinding(options.Value) is { } b ? "jwk=" + b.Jwk + "|alg=" + b.Algorithm + "|mode=" + b.Mode : "unbound")
                                     .RequireAuthorization();
                                 e.MapGet("/public", (HttpContext context) => context.User.Identity?.IsAuthenticated == true ? "user" : "guest");
                             });
@@ -717,7 +721,47 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
 
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
             Assert.DoesNotContain("device_bound=", body);
+            Assert.DoesNotContain("device_key_jwk=", body);
+            Assert.DoesNotContain("device_key_alg=", body);
             Assert.DoesNotContain("device_binding_mode=", body);
+        }
+
+        [Fact]
+        public async Task NotDeviceBound_GetDeviceBinding_Null()
+        {
+            await using var app = await App.StartAsync();
+            var token = app.SignIn();
+            // A mode alone (user preference) does not make the session bound.
+            app.Source.Sessions["s-1"] = app.Source.Sessions["s-1"] with { DeviceBindingMode = "Reject", DeviceKeyAlgorithm = "ES256" };
+
+            using var response = await app.GetAsync(token, "/binding");
+
+            Assert.Equal("unbound", await response.Content.ReadAsStringAsync());
+        }
+
+        [Fact]
+        public async Task DeviceBound_GetDeviceBinding_ReturnsStoredKeyAlgorithmAndMode()
+        {
+            await using var app = await App.StartAsync();
+            var token = app.SignIn();
+            app.Source.Sessions["s-1"] = app.Source.Sessions["s-1"] with { DevicePublicKeyJwk = DeviceJwk, DeviceKeyAlgorithm = "ES256", DeviceBindingMode = "SignOut" };
+
+            using var response = await app.GetAsync(token, "/binding");
+
+            Assert.Equal("jwk=" + DeviceJwk + "|alg=ES256|mode=SignOut", await response.Content.ReadAsStringAsync());
+        }
+
+        [Fact]
+        public void IsDeviceBound_IsDerivedFromTheStoredKey()
+        {
+            var record = new SessionAccessRecord
+            {
+                UserId = "u", SecretHash = "h", CreatedAt = Start, ExpiresAt = Start.AddDays(1), UserName = "n",
+            };
+
+            Assert.False(record.IsDeviceBound);
+            Assert.False((record with { DevicePublicKeyJwk = "" }).IsDeviceBound);
+            Assert.True((record with { DevicePublicKeyJwk = DeviceJwk }).IsDeviceBound);
         }
 
         [Fact]
@@ -725,13 +769,15 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
         {
             await using var app = await App.StartAsync();
             var token = app.SignIn();
-            app.Source.Sessions["s-1"] = app.Source.Sessions["s-1"] with { IsDeviceBound = true, DeviceBindingMode = "SignOut" };
+            app.Source.Sessions["s-1"] = app.Source.Sessions["s-1"] with { DevicePublicKeyJwk = DeviceJwk, DeviceKeyAlgorithm = "ES256", DeviceBindingMode = "SignOut" };
 
             using var response = await app.GetAsync(token);
             var body = await response.Content.ReadAsStringAsync();
 
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
             Assert.Contains("device_bound=true", body);
+            Assert.Contains("device_key_jwk=" + DeviceJwk, body);
+            Assert.Contains("device_key_alg=ES256", body);
             Assert.Contains("device_binding_mode=SignOut", body);
         }
 
@@ -740,7 +786,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
         {
             await using var app = await App.StartAsync();
             var token = app.SignIn();
-            app.Source.Sessions["s-1"] = app.Source.Sessions["s-1"] with { IsDeviceBound = true };
+            app.Source.Sessions["s-1"] = app.Source.Sessions["s-1"] with { DevicePublicKeyJwk = DeviceJwk, DeviceKeyAlgorithm = "ES256" };
 
             using var response = await app.GetAsync(token);
             var body = await response.Content.ReadAsStringAsync();
@@ -756,15 +802,20 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
             {
                 o.DeviceBoundClaimType = "dbsc";
                 o.DeviceBindingModeClaimType = "dbsc_mode";
+                o.DeviceKeyJwkClaimType = "dbsc_jwk";
+                o.DeviceKeyAlgorithmClaimType = "dbsc_alg";
             });
             var token = app.SignIn();
-            app.Source.Sessions["s-1"] = app.Source.Sessions["s-1"] with { IsDeviceBound = true, DeviceBindingMode = "Reject" };
+            app.Source.Sessions["s-1"] = app.Source.Sessions["s-1"] with { DevicePublicKeyJwk = DeviceJwk, DeviceKeyAlgorithm = "ES256", DeviceBindingMode = "Reject" };
 
             using var response = await app.GetAsync(token);
             var body = await response.Content.ReadAsStringAsync();
 
             Assert.Contains("dbsc=true", body);
             Assert.Contains("dbsc_mode=Reject", body);
+            Assert.Contains("dbsc_jwk=" + DeviceJwk, body);
+            Assert.Contains("dbsc_alg=ES256", body);
+            Assert.DoesNotContain("device_key_jwk=", body);
         }
 
         private static async Task WriteReason(SessionTokenChallengeContext context)

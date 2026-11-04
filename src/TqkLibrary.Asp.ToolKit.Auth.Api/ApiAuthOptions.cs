@@ -25,6 +25,18 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
         public string DeviceBindingModeClaimType { get; set; } = "device_binding_mode";
 
         /// <summary>
+        /// Claim type carrying <see cref="Models.SessionAccessRecord.DevicePublicKeyJwk"/> (the stored device public key,
+        /// canonical JWK) when the session is bound. Absent otherwise.
+        /// </summary>
+        public string DeviceKeyJwkClaimType { get; set; } = "device_key_jwk";
+
+        /// <summary>
+        /// Claim type carrying <see cref="Models.SessionAccessRecord.DeviceKeyAlgorithm"/> when the session is bound and the
+        /// algorithm is set. Absent otherwise.
+        /// </summary>
+        public string DeviceKeyAlgorithmClaimType { get; set; } = "device_key_alg";
+
+        /// <summary>
         /// Sliding lifetimes of a session (normal and "remember me"): each touch moves the expiry to last access + the
         /// lifetime picked by <see cref="SlidingSessionPolicy"/>. Default: 30 days for both.
         /// </summary>
@@ -95,7 +107,8 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
             if (SessionTouchInterval >= shortest)
                 throw new InvalidOperationException("ApiAuthOptions.SessionTouchInterval must be shorter than every session lifetime.");
             if (string.IsNullOrEmpty(UserIdClaimType) || string.IsNullOrEmpty(SessionIdClaimType) || string.IsNullOrEmpty(PermissionClaimType)
-                || string.IsNullOrEmpty(DeviceBoundClaimType) || string.IsNullOrEmpty(DeviceBindingModeClaimType))
+                || string.IsNullOrEmpty(DeviceBoundClaimType) || string.IsNullOrEmpty(DeviceBindingModeClaimType)
+                || string.IsNullOrEmpty(DeviceKeyJwkClaimType) || string.IsNullOrEmpty(DeviceKeyAlgorithmClaimType))
                 throw new InvalidOperationException("ApiAuthOptions claim types must not be empty.");
         }
     }

@@ -44,5 +44,25 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
         [InlineData("")]
         public void EmptyDeviceBindingModeClaimType_Throws(string? value)
             => Assert.Throws<InvalidOperationException>(() => new ApiAuthOptions { DeviceBindingModeClaimType = value! }.Validate());
+
+        [Theory]
+        [InlineData(null)]
+        [InlineData("")]
+        public void EmptyDeviceKeyJwkClaimType_Throws(string? value)
+            => Assert.Throws<InvalidOperationException>(() => new ApiAuthOptions { DeviceKeyJwkClaimType = value! }.Validate());
+
+        [Theory]
+        [InlineData(null)]
+        [InlineData("")]
+        public void EmptyDeviceKeyAlgorithmClaimType_Throws(string? value)
+            => Assert.Throws<InvalidOperationException>(() => new ApiAuthOptions { DeviceKeyAlgorithmClaimType = value! }.Validate());
+
+        [Fact]
+        public void DeviceKeyClaimTypes_Defaults()
+        {
+            var options = new ApiAuthOptions();
+            Assert.Equal("device_key_jwk", options.DeviceKeyJwkClaimType);
+            Assert.Equal("device_key_alg", options.DeviceKeyAlgorithmClaimType);
+        }
     }
 }

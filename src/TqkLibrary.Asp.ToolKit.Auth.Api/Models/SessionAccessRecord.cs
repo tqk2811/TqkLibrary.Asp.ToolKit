@@ -7,7 +7,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Models
     /// as UTC and converts <see cref="DateTimeKind.Local"/>.
     /// <para>
     /// More per-session data can be added later as optional properties without changing the token format (the
-    /// device binding state <see cref="IsDeviceBound"/> / <see cref="DeviceBindingMode"/> is one).
+    /// device binding state <see cref="DevicePublicKeyJwk"/> / <see cref="DeviceBindingMode"/> is one).
     /// </para>
     /// </summary>
     public sealed record SessionAccessRecord
@@ -63,12 +63,27 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Models
         public IReadOnlyList<string> Permissions { get; init; } = Array.Empty<string>();
 
         /// <summary>
-        /// True when the session has a stored device public key (DBSC: <c>DevicePublicKey IS NOT NULL</c>, registered
-        /// through <see cref="DeviceKeyRegistrar"/>). Adds the claim <see cref="ApiAuthOptions.DeviceBoundClaimType"/>
-        /// = <c>true</c> so the web front end knows it must require device proofs for this session. Removing a key must
-        /// invalidate the session cache (<see cref="SessionAccessCache.InvalidateSession"/>).
+        /// The device public key stored on the session (DBSC: the canonical public JWK written by
+        /// <see cref="Interfaces.IDeviceKeyStore.TrySetDeviceKeyAsync"/>, column <c>DevicePublicKey</c>); null = not bound.
+        /// Adds the claim <see cref="ApiAuthOptions.DeviceKeyJwkClaimType"/>, so the app's <c>me</c> endpoint can return it
+        /// (see <see cref="Extensions.DeviceBindingClaimsPrincipalExtensions.GetDeviceBinding"/>): the API is the single
+        /// source of truth for the key, the web front end does not keep it in its cookie. Removing a key must invalidate the
+        /// session cache (<see cref="SessionAccessCache.InvalidateSession"/>).
         /// </summary>
-        public bool IsDeviceBound { get; init; }
+        public string? DevicePublicKeyJwk { get; init; }
+
+        /// <summary>
+        /// Algorithm of <see cref="DevicePublicKeyJwk"/> (<c>ES256</c> or <c>RS256</c>, column <c>DeviceKeyAlgorithm</c>).
+        /// Adds the claim <see cref="ApiAuthOptions.DeviceKeyAlgorithmClaimType"/> when the session is bound.
+        /// </summary>
+        public string? DeviceKeyAlgorithm { get; init; }
+
+        /// <summary>
+        /// True when the session has a stored device public key (derived: <see cref="DevicePublicKeyJwk"/> is not empty).
+        /// Adds the claim <see cref="ApiAuthOptions.DeviceBoundClaimType"/> = <c>true</c> so the web front end knows it
+        /// must require device proofs for this session.
+        /// </summary>
+        public bool IsDeviceBound => !string.IsNullOrEmpty(DevicePublicKeyJwk);
 
         /// <summary>
         /// The END USER's own choice of what the web front end does when a device proof fails for this user/session
