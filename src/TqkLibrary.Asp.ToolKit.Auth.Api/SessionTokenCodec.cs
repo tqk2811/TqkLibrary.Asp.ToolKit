@@ -7,7 +7,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
 {
     /// <summary>
     /// Opaque session token format <c>{sessionId}.{secret}</c>: the first part finds the session, the second is 32
-    /// random bytes (base64url). Only the SHA-256 of the secret is stored, so a leaked session table does not leak usable
+    /// random bytes (base64url). Only a domain-separated SHA-256 of the secret is stored (see <see cref="Hash"/>), so a leaked session table does not leak usable
     /// tokens. The token is issued once at sign-in and never rotated: every request of the session carries the same
     /// token, so concurrent requests need no coordination. Never log it.
     /// </summary>
@@ -23,6 +23,13 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
         public const int SecretLength = 43;
 
         private const int SecretByteLength = 32;
+
+        /// <summary>
+        /// Domain-separation prefix hashed in front of the secret (<see cref="Hash"/>), so a session hash never equals
+        /// the hash of another token of the same shape (for example a pre-2.0.0 refresh token hashed as plain SHA-256).
+        /// Changing it invalidates every stored session hash.
+        /// </summary>
+        public const string HashPrefix = "tqk-session:v1:";
 
         /// <summary>
         /// Hash that no secret produces; the handler verifies against it when the session does not exist, so an unknown
@@ -73,11 +80,15 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
         private static bool IsBase64UrlChar(char c)
             => c is (>= 'A' and <= 'Z') or (>= 'a' and <= 'z') or (>= '0' and <= '9') or '-' or '_';
 
-        /// <summary>Uppercase hex SHA-256 of <paramref name="secret"/>.</summary>
+        /// <summary>
+        /// Uppercase hex <c>SHA-256(UTF-8(<see cref="HashPrefix"/> + <paramref name="secret"/>))</c>; issued secrets
+        /// are base64url, so this is the ASCII bytes of the concatenation. Use it to seed sessions in tests or data
+        /// migrations; a plain SHA-256 of the secret (the 1.x format) does not verify.
+        /// </summary>
         public static string Hash(string secret)
         {
             ArgumentNullException.ThrowIfNull(secret);
-            return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(secret)));
+            return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(HashPrefix + secret)));
         }
 
         /// <summary>Compares two hashes in time independent of the first differing character.</summary>

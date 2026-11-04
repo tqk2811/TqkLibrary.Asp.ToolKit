@@ -2,7 +2,7 @@
 
 **English** · [Tiếng Việt](https://github.com/tqk2811/TqkLibrary.Asp.ToolKit/blob/master/src/TqkLibrary.Asp.ToolKit.Auth.Api/README-vi.md)
 
-ASP.NET Core API authentication with opaque, non-rotating session tokens (`{sessionId}.{secret}`, only the SHA-256 of the secret is stored): an authentication handler that checks the session on every request through a short in-memory cache, and a throttled sliding expiry with an absolute cap.
+ASP.NET Core API authentication with opaque, non-rotating session tokens (`{sessionId}.{secret}`, only a domain-separated SHA-256 of the secret is stored): an authentication handler that checks the session on every request through a short in-memory cache, and a throttled sliding expiry with an absolute cap.
 
 ## Install
 
@@ -33,6 +33,11 @@ issued once at login and sent as `Authorization: Bearer {sessionId}.{secret}` on
   `UserMismatch` are replaced by `InvalidToken`; there is no grant/reject result type any more.
 - A token must now have a session id of up to 128 characters of `A-Z a-z 0-9 - _` and a 43-character base64url secret
   (what `SessionTokenCodec.Create` issues); `Create` throws for other session ids.
+- Hash format changed: `SessionTokenCodec.Hash` is now `SHA-256(ASCII("tqk-session:v1:" + secret))` (prefix exposed
+  as `SessionTokenCodec.HashPrefix`) instead of `SHA-256(secret)`, so a session hash never equals the hash of an old
+  refresh token or another token of the same shape. Every hash stored in the old format no longer verifies: all
+  existing sessions become invalid (`invalid_token`), and users must sign in again. Revoke or delete old rows in the
+  migration that moves to 2.0.0; test or seed data must compute hashes with `SessionTokenCodec.Hash`, never a plain SHA-256.
 - Remove the refresh endpoint of the API; the login endpoint returns the session token (see below).
 
 ## Usage
