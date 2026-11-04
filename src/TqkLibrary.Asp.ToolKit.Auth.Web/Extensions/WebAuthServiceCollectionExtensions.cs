@@ -34,7 +34,8 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Extensions
         /// </param>
         /// <param name="configure">
         /// Optional <see cref="WebAuthOptions"/> overrides. <see cref="WebAuthOptions.Scheme"/> can ONLY be set here
-        /// (it is needed at registration time). This delegate is invoked twice (once on a snapshot at registration,
+        /// (it is needed at registration time), and so must <c>DeviceBound.Enabled</c> (its startup validation and
+        /// middleware are wired from this value). This delegate is invoked twice (once on a snapshot at registration,
         /// once by the options system), so it must have no side effects outside the options object.
         /// </param>
         public static AuthenticationBuilder AddTqkWebAuth(this IServiceCollection services,
@@ -49,6 +50,22 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Extensions
             var optionsBuilder = services.AddOptions<WebAuthOptions>();
             if (configure is not null)
                 optionsBuilder.Configure(configure);
+            // DBSC: validated at startup (and its API client required) only when enabled; off keeps the previous behaviour.
+            if (snapshot.DeviceBound.Enabled)
+            {
+                optionsBuilder
+                    .Validate<IServiceProviderIsService>((options, isService) =>
+                    {
+                        if (!options.DeviceBound.Enabled)
+                            return true;
+                        options.DeviceBound.Validate();
+                        if (!isService.IsService(typeof(IDeviceKeyApiClient)))
+                            throw new InvalidOperationException(
+                                "WebAuthOptions.DeviceBound.Enabled requires an IDeviceKeyApiClient registration.");
+                        return true;
+                    })
+                    .ValidateOnStart();
+            }
 
             services.AddHttpContextAccessor();
             services.AddMemoryCache();
@@ -57,6 +74,12 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Extensions
             services.TryAddSingleton<CurrentUserCache>();
             services.TryAddTransient<SessionBearerHandler>();
             services.TryAddScoped<WebSessionManager>();
+            services.AddMetrics();
+            services.TryAddSingleton<DeviceBoundMetrics>();
+            services.TryAddSingleton<DeviceChallengeService>();
+            services.TryAddSingleton<DeviceProofCookie>();
+            services.TryAddSingleton<DeviceProofJwtVerifier>();
+            services.TryAddSingleton<DeviceProofEnforcer>();
 
             // Outside Development the cookie only travels over HTTPS. Registered BEFORE AddCookie so configureCookie wins.
             services.AddOptions<CookieAuthenticationOptions>(snapshot.Scheme)

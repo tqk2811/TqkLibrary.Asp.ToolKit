@@ -31,11 +31,13 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
         private readonly IHost _host;
         private readonly Dictionary<string, string> _cookies = new(StringComparer.Ordinal);
 
-        private WebAuthTestApp(IHost host, FakeAuthApi api)
+        private WebAuthTestApp(IHost host, FakeAuthApi api, bool https)
         {
             _host = host;
             Api = api;
             Client = host.GetTestClient();
+            if (https)
+                Client.BaseAddress = new Uri("https://localhost/");
         }
 
         public FakeAuthApi Api { get; }
@@ -45,7 +47,8 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
 
         public static async Task<WebAuthTestApp> StartAsync(Action<WebAuthOptions>? configure = null,
             Action<IServiceCollection>? configureServices = null, Action<IEndpointRouteBuilder>? mapEndpoints = null,
-            Action<IApplicationBuilder>? beforeWebSession = null, Action<Microsoft.AspNetCore.Authentication.Cookies.CookieAuthenticationOptions>? configureCookie = null)
+            Action<IApplicationBuilder>? beforeWebSession = null, Action<Microsoft.AspNetCore.Authentication.Cookies.CookieAuthenticationOptions>? configureCookie = null,
+            bool https = false)
         {
             var api = new FakeAuthApi();
             var host = new HostBuilder()
@@ -104,7 +107,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
                     }))
                 .Build();
             await host.StartAsync();
-            return new WebAuthTestApp(host, api);
+            return new WebAuthTestApp(host, api, https);
         }
 
         private static string TqkScheme(HttpContext context)
@@ -164,6 +167,12 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             return response;
         }
 
+        /// <summary>Replaces (or adds) a cookie in the jar.</summary>
+        public void SetCookie(string name, string value) => _cookies[name] = value;
+
+        /// <summary>Removes a cookie from the jar.</summary>
+        public void RemoveCookie(string name) => _cookies.Remove(name);
+
         public static IReadOnlyList<string> SetCookies(HttpResponseMessage response)
             => response.Headers.TryGetValues("Set-Cookie", out var values) ? values.ToList() : [];
 
@@ -200,6 +209,13 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             return Task.FromResult(Me());
         }
 
-        public Task LogoutAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        private int _logoutCalls;
+        public int LogoutCalls => _logoutCalls;
+
+        public Task LogoutAsync(CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _logoutCalls);
+            return Task.CompletedTask;
+        }
     }
 }

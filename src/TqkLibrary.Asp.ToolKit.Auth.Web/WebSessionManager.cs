@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Security.Claims;
@@ -54,6 +55,9 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         /// <see cref="AuthSession.ExpiresAt"/> and is never reissued; the API decides on every call whether the
         /// session is still alive. <c>context.User</c> is set to the new session principal, so API calls made later in
         /// the same request already carry the bearer token.
+        /// <para>With <see cref="DeviceBoundSessionOptions.Enabled"/> and an HTTPS request, the response also carries
+        /// <c>Secure-Session-Registration</c>, so a DBSC browser binds the new session to a device key right away (the API
+        /// accepts a key only shortly after the session was created).</para>
         /// </summary>
         /// <exception cref="ArgumentException">The token is not a valid <c>{sessionId}.{secret}</c> (same rules as the API
         /// <c>SessionTokenCodec</c>), the user id is empty, or <see cref="AuthSession.ExpiresAt"/> is not in the future.</exception>
@@ -82,6 +86,45 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
             // SessionBearerHandler finds the session through context.User, which SignInAsync does not touch.
             context.User = principal;
             WebSessionTicket.For(context).Replace(session.SessionToken);
+            if (_options.DeviceBound.Enabled)
+                OfferDeviceBinding(context, sessionId);
+        }
+
+        /// <summary>
+        /// DBSC: asks the browser to bind the new session (<c>Secure-Session-Registration</c>, HTTPS only) and deletes a
+        /// proof cookie left by a previous session.
+        /// </summary>
+        private void OfferDeviceBinding(HttpContext context, string sessionId)
+        {
+            var proofCookie = _services.GetRequiredService<DeviceProofCookie>();
+            if (context.Request.Cookies.ContainsKey(proofCookie.Name))
+                proofCookie.Delete(context);
+            if (!context.Request.IsHttps)
+                return;
+            var challenge = _services.GetRequiredService<DeviceChallengeService>().Issue(DeviceChallengeKind.Registration, sessionId);
+            var options = _options.DeviceBound;
+            var path = context.Request.PathBase.Add(options.RegistrationPath).ToUriComponent();
+            context.Response.Headers[DeviceBoundSessionMiddleware.RegistrationHeader] =
+                "(" + string.Join(' ', options.Algorithms) + ");path=" + DeviceBoundSessionMiddleware.SfString(path)
+                + ";challenge=" + DeviceBoundSessionMiddleware.SfString(challenge);
+        }
+
+        /// <summary>
+        /// DBSC: reissues the main cookie ONCE with the device key added to the ticket, keeping its principal, tokens,
+        /// <c>IssuedUtc</c>, <c>ExpiresUtc</c> and <c>IsPersistent</c>; the user cache of the session is dropped so the
+        /// next <c>me</c> reports the binding.
+        /// </summary>
+        internal async Task BindDeviceKeyAsync(HttpContext context, AuthenticateResult ticket, string sessionId, DeviceKey key)
+        {
+            var properties = new AuthenticationProperties(new Dictionary<string, string?>(ticket.Properties!.Items));
+            var tokens = ticket.Properties.GetTokens()
+                .Where(t => t.Name != WebSessionTicket.DeviceJwkName && t.Name != WebSessionTicket.DeviceAlgorithmName)
+                .ToList();
+            tokens.Add(new AuthenticationToken { Name = WebSessionTicket.DeviceJwkName, Value = key.Jwk });
+            tokens.Add(new AuthenticationToken { Name = WebSessionTicket.DeviceAlgorithmName, Value = key.Algorithm });
+            properties.StoreTokens(tokens);
+            await context.SignInAsync(_options.Scheme, ticket.Principal!, properties).ConfigureAwait(false);
+            _currentUserCache.Remove(sessionId);
         }
 
         /// <summary>Revokes the session on the API with the cookie token (best effort, never throws for API errors), then clears the cookie.</summary>
@@ -106,13 +149,23 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
             await DropAsync(context).ConfigureAwait(false);
         }
 
-        /// <summary>Drops the web session after the API reported it dead (does not call the API).</summary>
+        /// <summary>
+        /// Drops the web session after the API reported it dead (does not call the API). With DBSC enabled the proof
+        /// cookie is deleted too (and <c>Clear-Site-Data: "cookies"</c> sent when
+        /// <see cref="DeviceBoundSessionOptions.ClearSiteDataOnSignOut"/>).
+        /// </summary>
         public async Task DropAsync(HttpContext context)
         {
             ArgumentNullException.ThrowIfNull(context);
             _currentUserCache.Remove(GetSessionId(context.User));
             WebSessionTicket.For(context).Clear();
             await context.SignOutAsync(_options.Scheme).ConfigureAwait(false);
+            if (_options.DeviceBound.Enabled && !context.Response.HasStarted)
+            {
+                _services.GetRequiredService<DeviceProofCookie>().Delete(context);
+                if (_options.DeviceBound.ClearSiteDataOnSignOut)
+                    context.Response.Headers["Clear-Site-Data"] = "\"cookies\"";
+            }
             context.User = new ClaimsPrincipal(new ClaimsIdentity());
         }
 

@@ -16,6 +16,12 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         /// <summary>Name of the session token inside the ticket's authentication properties.</summary>
         internal const string SessionTokenName = "tqk_session_token";
 
+        /// <summary>DBSC: canonical public JWK of the device key, in the ticket's authentication properties.</summary>
+        internal const string DeviceJwkName = "tqk_device_jwk";
+
+        /// <summary>DBSC: algorithm (<c>ES256</c>/<c>RS256</c>) of <see cref="DeviceJwkName"/>.</summary>
+        internal const string DeviceAlgorithmName = "tqk_device_alg";
+
         private static readonly object ItemKey = new();
 
         private readonly HttpContext _context;
