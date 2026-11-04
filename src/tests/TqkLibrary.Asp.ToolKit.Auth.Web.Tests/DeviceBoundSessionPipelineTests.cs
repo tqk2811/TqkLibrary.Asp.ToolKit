@@ -709,6 +709,99 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             Assert.Single(h.Handler.Calls);
         }
 
+        /// <summary>Signs in a session that is bound at the API but unknown to this instance (cold instance).</summary>
+        private static async Task SignInBoundAtApiOnlyAsync(Harness h)
+        {
+            h.KeyApi.ThrowAfterStore = true; // the API stores the key, the web never learns it
+            using var signIn = await h.App.SignInAsync(Sid);
+            using var start = await PostAsync(h.App, "/dbsc/start", h.Device.RegistrationJwt(ChallengeFrom(RegistrationHeader(signIn)!)));
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, start.StatusCode);
+            Assert.Null(h.App.Services.GetRequiredService<DeviceBindingCache>().Get(Sid));
+            Assert.Null(h.App.Services.GetRequiredService<CurrentUserCache>().Get(Sid));
+        }
+
+        [Fact]
+        public async Task SkipCurrentUser_ColdInstance_BoundAtApi_LearnsBindingFromMe_Enforced()
+        {
+            await using var h = await StartAsync(configureWeb: o => o.SkipCurrentUser = context => context.Request.Path.StartsWithSegments("/call"));
+            await SignInBoundAtApiOnlyAsync(h);
+            var meCalls = h.App.Api.MeCalls;
+
+            using var response = await h.App.SendAsync(HttpMethod.Get, "/call");
+
+            // The skipped path still asks `me` for the unknown binding: no token without proof.
+            Assert.Equal("none", await response.Content.ReadAsStringAsync());
+            Assert.Equal(meCalls + 1, h.App.Api.MeCalls);
+            Assert.Equal(DeviceProofFailureReason.Missing, Assert.Single(h.Handler.Calls).Reason);
+            // Now known: the next skipped request is enforced without `me`.
+            using var again = await h.App.SendAsync(HttpMethod.Get, "/call");
+            Assert.Equal("none", await again.Content.ReadAsStringAsync());
+            Assert.Equal(meCalls + 1, h.App.Api.MeCalls);
+        }
+
+        [Fact]
+        public async Task SkipCurrentUser_UnboundSession_MeAskedOncePerRecheckInterval()
+        {
+            await using var h = await StartAsync(configureWeb: o =>
+            {
+                o.SkipCurrentUser = context => context.Request.Path.StartsWithSegments("/whoami");
+                o.CurrentUserCacheLifetime = TimeSpan.FromMilliseconds(1); // the user cache does not help
+            });
+            await h.App.SignInAsync(Sid);
+            var meCalls = h.App.Api.MeCalls;
+
+            Assert.True(await IsAuthenticatedAsync(h.App));
+            Assert.Equal(meCalls + 1, h.App.Api.MeCalls);
+            await Task.Delay(20);
+            Assert.True(await IsAuthenticatedAsync(h.App));
+            Assert.True(await IsAuthenticatedAsync(h.App));
+            // "Not bound" is trusted for UnboundRecheckInterval (30 s): no `me` call just for the binding.
+            Assert.Equal(meCalls + 1, h.App.Api.MeCalls);
+
+            h.Clock.Advance(TimeSpan.FromSeconds(31));
+            Assert.True(await IsAuthenticatedAsync(h.App));
+            Assert.Equal(meCalls + 2, h.App.Api.MeCalls);
+            Assert.Empty(h.Handler.Calls);
+        }
+
+        [Fact]
+        public async Task CachedUserSaysUnbound_BoundElsewhere_RecheckedAfterInterval_Enforced()
+        {
+            await using var h = await StartAsync(configureWeb: o => o.CurrentUserCacheLifetime = TimeSpan.FromMinutes(10));
+            await h.App.SignInAsync(Sid);
+            Assert.True(await IsAuthenticatedAsync(h.App)); // `me`: not bound; cached for 10 minutes
+            var meCalls = h.App.Api.MeCalls;
+
+            // Another instance registers the key: the API now reports the session as bound.
+            h.KeyApi.StoredJwk = h.Device.Jwk().ToJsonString();
+            h.KeyApi.StoredAlgorithm = h.Device.Algorithm;
+
+            // Residual window: "not bound" is still trusted within UnboundRecheckInterval.
+            Assert.True(await IsAuthenticatedAsync(h.App));
+            Assert.Equal(meCalls, h.App.Api.MeCalls);
+
+            // After it the stale cached user no longer decides the binding: `me` is asked again and the proof enforced.
+            h.Clock.Advance(TimeSpan.FromSeconds(31));
+            Assert.False(await IsAuthenticatedAsync(h.App));
+            Assert.Equal(meCalls + 1, h.App.Api.MeCalls);
+            Assert.Equal(DeviceProofFailureReason.Missing, Assert.Single(h.Handler.Calls).Reason);
+        }
+
+        [Fact]
+        public async Task CachedUserSaysUnbound_RecheckFails_CachedUserStillApplies()
+        {
+            await using var h = await StartAsync(configureWeb: o => o.CurrentUserCacheLifetime = TimeSpan.FromMinutes(10));
+            await h.App.SignInAsync(Sid);
+            Assert.True(await IsAuthenticatedAsync(h.App));
+            h.App.Api.Me = () => throw new HttpRequestException("API down", null, HttpStatusCode.BadGateway);
+            h.Clock.Advance(TimeSpan.FromSeconds(31));
+
+            var whoami = await h.App.WhoAmIAsync();
+
+            Assert.StartsWith("auth=true", whoami);
+            Assert.Contains("editor", whoami); // the cached full user, not the session-only principal
+        }
+
         [Fact]
         public async Task ThrowFailureMode_SoftPolicy_MeFailing_EnforcementRunsFirst_GuestWithoutToken()
         {

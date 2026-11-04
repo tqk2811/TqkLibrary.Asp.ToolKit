@@ -173,7 +173,10 @@ still change.
 The **API is the single source of truth for the device key**: the web never stores the key in its cookie. It learns
 whether a session is bound, and the key, from `me` (`deviceKeyJwk`, `deviceKeyAlgorithm`) and keeps that in a small
 in-memory binding cache per instance (an entry lives until the session's absolute expiry, at most 30 days, bounded to
-100 000 sessions, independent of the app's `IMemoryCache`). Once a session is known to be bound it stays bound.
+100 000 sessions, independent of the app's `IMemoryCache`). Once a session is known to be bound it stays bound. A
+fresh `me` answer "not bound" is trusted only for `UnboundRecheckInterval` (30 s); after that, or when nothing is
+known (cold instance), the binding is learned from `me` again, also on `SkipCurrentUser` paths and while a cached
+user still says "not bound".
 
 ### Flow
 
@@ -231,6 +234,7 @@ is set in the `AddTqkWebAuth` delegate or in a later `Configure<WebAuthOptions>`
 | `AllowedUserModes` | all three | Modes a user may pick. |
 | `ProofExpiryGrace` | 2 min | A genuine proof of the right session that expired less than this ago still counts. |
 | `ClearSiteDataOnSignOut` | `false` | Sends `Clear-Site-Data: "cookies"` on sign-out/drop (deletes EVERY cookie of the site). |
+| `UnboundRecheckInterval` | 30 s | How long a fresh `me` answer "not bound" is trusted for the binding decision (greater than 0, at most 10 min). Within it an unbound session needs no `me` call just for its binding; it is also the multi-instance window after a registration (see Risks). |
 
 ### Failure handling
 
@@ -295,8 +299,10 @@ makes every DBSC hiccup (TPM error, browser bug) a forced login.
 
 When `me` fails (or `SkipCurrentUser` applies) and the session is known to be bound, the proof is still enforced
 (user unknown), BEFORE `CurrentUserFailureMode.Throw` could fail the request: a request made a guest by the proof
-failure does not throw. When nothing is known about the binding (a cold instance during an API outage), the session
-is treated as not bound for that request: this is the residual gap of the design.
+failure does not throw. `SkipCurrentUser` never skips an UNKNOWN binding: such a request still calls `me` once to
+learn it (the user it returns is cached and applied; a failure there is not thrown). When nothing is known about the
+binding and `me` fails (a cold instance during an API outage), the session is treated as not bound for that request:
+this is the residual gap of the design.
 
 ### Contract with the app's API
 
@@ -319,6 +325,8 @@ is treated as not bound for that request: this is the residual gap of the design
 - `ExcludedPaths` bypass enforcement completely.
 - Cold instance + API outage: an instance that never saw the session cannot tell it is bound while `me` fails, and
   treats it as not bound until `me` answers again.
+- Several instances: right after a registration on one instance, another instance that saw the session unbound just
+  before enforces nothing for that session for at most `UnboundRecheckInterval`.
 - Replay protection is per instance; behind a load balancer a proof can be replayed to another instance within the
   challenge lifetime (it stays bound to the same session and key).
 - The draft may change header or field names.

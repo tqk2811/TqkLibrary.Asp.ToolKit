@@ -514,7 +514,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
 
         public static TheoryData<string> InvalidOptions => new()
         {
-            "lifetime", "alg", "noAlg", "rsa", "path", "samePaths", "grace", "cookieName", "excluded", "challenge",
+            "lifetime", "alg", "noAlg", "rsa", "path", "samePaths", "grace", "cookieName", "excluded", "challenge", "recheckZero", "recheckLong",
         };
 
         [Theory]
@@ -534,6 +534,8 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
                 case "cookieName": options.ProofCookieName = "a;b"; break;
                 case "excluded": options.ExcludedPaths = [new Microsoft.AspNetCore.Http.PathString()]; break;
                 case "challenge": options.RefreshChallengeLifetime = TimeSpan.Zero; break;
+                case "recheckZero": options.UnboundRecheckInterval = TimeSpan.Zero; break;
+                case "recheckLong": options.UnboundRecheckInterval = TimeSpan.FromMinutes(10) + TimeSpan.FromSeconds(1); break;
             }
 
             Assert.Throws<InvalidOperationException>(options.Validate);

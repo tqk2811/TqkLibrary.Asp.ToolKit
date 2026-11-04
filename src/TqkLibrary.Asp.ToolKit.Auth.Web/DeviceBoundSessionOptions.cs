@@ -90,6 +90,16 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         /// </summary>
         public bool ClearSiteDataOnSignOut { get; set; }
 
+        /// <summary>
+        /// How long a fresh <c>me</c> answer "this session is not bound" is trusted for the binding decision. Within it, an
+        /// unbound session needs no <c>me</c> call just to learn its binding (also on <see cref="WebAuthOptions.SkipCurrentUser"/>
+        /// paths); after it, the binding is asked again, even when the cached user (<see cref="WebAuthOptions.CurrentUserCacheLifetime"/>)
+        /// is still valid. It is also the residual window of a multi-instance setup: right after a registration on one
+        /// instance, another instance that just saw the session unbound enforces nothing for at most this long. Greater
+        /// than zero, at most 10 minutes. Default 30 seconds.
+        /// </summary>
+        public TimeSpan UnboundRecheckInterval { get; set; } = TimeSpan.FromSeconds(30);
+
         /// <summary>Throws <see cref="InvalidOperationException"/> naming the first invalid value.</summary>
         public void Validate()
         {
@@ -128,6 +138,8 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
                 return "AllowedUserModes must not be null.";
             if (ProofExpiryGrace < TimeSpan.Zero)
                 return "ProofExpiryGrace must not be negative.";
+            if (UnboundRecheckInterval <= TimeSpan.Zero || UnboundRecheckInterval > TimeSpan.FromMinutes(10))
+                return "UnboundRecheckInterval must be greater than zero and at most 10 minutes.";
             return null;
         }
 

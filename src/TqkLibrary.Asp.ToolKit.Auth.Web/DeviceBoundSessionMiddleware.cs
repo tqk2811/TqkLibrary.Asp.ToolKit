@@ -256,7 +256,10 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
             }
             services.GetRequiredService<CurrentUserCache>().Set(sessionId, user);
             if (!user.IsDeviceBound)
+            {
+                services.GetRequiredService<DeviceBindingCache>().MarkUnbound(sessionId, options.DeviceBound.UnboundRecheckInterval);
                 return (KeyLookupStatus.NotBound, null);
+            }
             var key = DeviceKey.TryParse(user.DeviceKeyJwk, user.DeviceKeyAlgorithm, DeviceKey.StoredKeyMinRsaKeySize);
             if (key is null)
             {

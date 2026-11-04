@@ -37,9 +37,10 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         public bool NeedsUser => _options.Value.DeviceBound.AllowUserChoice;
 
         /// <summary>
-        /// DBSC state of the request from what the binding cache knows: not applicable (off / excluded path), unknown
-        /// (<see cref="DeviceProofCheck.Bound"/> false: <see cref="LearnAsync"/> may complete it), or bound with the result
-        /// of the proof cookie check against the stored key.
+        /// DBSC state of the request from what the binding cache knows: not applicable (off / excluded path), known not
+        /// bound (a fresh <c>me</c> said so within <see cref="DeviceBoundSessionOptions.UnboundRecheckInterval"/>), unknown
+        /// (<see cref="DeviceProofCheck.BindingUnknown"/>: <see cref="LearnAsync"/> completes it from a fresh <c>me</c>), or
+        /// bound with the result of the proof cookie check against the stored key.
         /// </summary>
         public DeviceProofCheck Check(HttpContext context, string sessionId)
         {
@@ -47,18 +48,31 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
             if (!options.Enabled || IsExcluded(context.Request.Path, options))
                 return DeviceProofCheck.NotApplicable;
             if (_bindings.Get(sessionId) is not { } key)
-                return new DeviceProofCheck(true, false, null);
+                return new DeviceProofCheck(true, false, null, _bindings.IsKnownUnbound(sessionId));
             return new DeviceProofCheck(true, true, _proofCookie.CheckRequest(context, sessionId, key.Thumbprint));
         }
 
         /// <summary>
         /// Records the binding reported by <paramref name="user"/> (<c>me</c>) in the binding cache and, for a request whose
         /// binding was unknown, checks the proof against it. A bound user whose key cannot be read (corrupt, unsupported)
-        /// fails as <see cref="DeviceProofFailureReason.Invalid"/>.
+        /// fails as <see cref="DeviceProofFailureReason.Invalid"/>. "Not bound" is recorded only from a
+        /// <paramref name="fresh"/> <c>me</c> answer (negative entry for <see cref="DeviceBoundSessionOptions.UnboundRecheckInterval"/>);
+        /// a cached user saying "not bound" changes nothing.
         /// </summary>
-        public async Task<DeviceProofCheck> LearnAsync(HttpContext context, string sessionId, DeviceProofCheck check, CurrentUserInfo? user)
+        public async Task<DeviceProofCheck> LearnAsync(HttpContext context, string sessionId, DeviceProofCheck check, CurrentUserInfo? user,
+            bool fresh)
         {
-            if (!_options.Value.DeviceBound.Enabled || user is null || !user.IsDeviceBound || _bindings.Get(sessionId) is not null)
+            var options = _options.Value.DeviceBound;
+            if (!options.Enabled || user is null)
+                return check;
+            if (!user.IsDeviceBound)
+            {
+                if (!fresh)
+                    return check;
+                _bindings.MarkUnbound(sessionId, options.UnboundRecheckInterval);
+                return check.Applicable && !check.Bound ? check with { KnownUnbound = true } : check;
+            }
+            if (_bindings.Get(sessionId) is not null)
                 return check;
             var key = DeviceKey.TryParse(user.DeviceKeyJwk, user.DeviceKeyAlgorithm, DeviceKey.StoredKeyMinRsaKeySize);
             if (key is null)

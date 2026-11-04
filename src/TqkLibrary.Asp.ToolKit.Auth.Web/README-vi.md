@@ -169,7 +169,10 @@ duyệt khác bỏ qua. Đặc tả là bản nháp W3C (<https://w3c.github.io/
 **API là nguồn sự thật duy nhất của khoá thiết bị**: web không bao giờ lưu khoá trong cookie. Web biết phiên đã gắn
 khoá chưa, và khoá là gì, qua `me` (`deviceKeyJwk`, `deviceKeyAlgorithm`), rồi giữ trong một binding cache nhỏ trong bộ
 nhớ của từng instance (mỗi mục sống tới hạn tuyệt đối của phiên, tối đa 30 ngày, giới hạn 100 000 phiên, tách riêng
-khỏi `IMemoryCache` của app). Phiên đã biết là gắn khoá thì luôn được coi là gắn khoá.
+khỏi `IMemoryCache` của app). Phiên đã biết là gắn khoá thì luôn được coi là gắn khoá. Câu trả lời "chưa gắn khoá"
+của một lượt `me` mới chỉ được tin trong `UnboundRecheckInterval` (30 giây); quá khoảng đó, hoặc khi chưa biết gì
+(instance mới khởi động), web hỏi lại `me` để biết, kể cả trên path `SkipCurrentUser` và khi user trong cache vẫn ghi
+"chưa gắn khoá".
 
 ### Luồng chạy
 
@@ -226,6 +229,7 @@ trong delegate của `AddTqkWebAuth` hay trong một `Configure<WebAuthOptions>`
 | `AllowedUserModes` | cả ba | Các mode người dùng được chọn. |
 | `ProofExpiryGrace` | 2 phút | Proof thật, đúng phiên, hết hạn chưa quá khoảng này vẫn tính là hợp lệ. |
 | `ClearSiteDataOnSignOut` | `false` | Gửi `Clear-Site-Data: "cookies"` khi đăng xuất/drop (xoá MỌI cookie của site). |
+| `UnboundRecheckInterval` | 30 giây | Thời gian tin câu trả lời "chưa gắn khoá" của một lượt `me` mới khi quyết định việc gắn khoá (lớn hơn 0, tối đa 10 phút). Trong khoảng này phiên chưa gắn khoá không phải gọi `me` chỉ để biết việc gắn khoá; đây cũng là cửa sổ hở khi chạy nhiều instance ngay sau lượt đăng ký (xem Rủi ro). |
 
 ### Xử lý khi proof lỗi
 
@@ -288,9 +292,10 @@ DBSC (lỗi TPM, lỗi trình duyệt) thành một lần bắt đăng nhập l�
   đã gắn khoá cũng vậy (phải hỏi `me`).
 
 Khi `me` lỗi (hoặc `SkipCurrentUser` áp dụng) mà phiên đã biết là gắn khoá, proof vẫn được kiểm (không biết user),
-TRƯỚC khi `CurrentUserFailureMode.Throw` kịp làm hỏng request: request đã thành khách vì proof lỗi thì không ném. Khi
-không biết gì về việc gắn khoá (instance mới khởi động đúng lúc API sập), phiên được coi là chưa gắn khoá cho request
-đó: đây là lỗ hổng còn lại của thiết kế.
+TRƯỚC khi `CurrentUserFailureMode.Throw` kịp làm hỏng request: request đã thành khách vì proof lỗi thì không ném.
+`SkipCurrentUser` không bao giờ bỏ qua việc gắn khoá CHƯA BIẾT: request đó vẫn gọi `me` một lần để biết (user trả về
+được cache và áp dụng; lỗi ở lượt này không bị ném). Khi không biết gì về việc gắn khoá mà `me` lỗi (instance mới khởi
+động đúng lúc API sập), phiên được coi là chưa gắn khoá cho request đó: đây là lỗ hổng còn lại của thiết kế.
 
 ### Hợp đồng với API của app
 
@@ -314,6 +319,8 @@ không biết gì về việc gắn khoá (instance mới khởi động đúng 
 - `ExcludedPaths` bỏ qua hoàn toàn việc kiểm proof.
 - Instance mới + API sập: instance chưa từng thấy phiên thì không biết phiên đã gắn khoá khi `me` lỗi, và coi là chưa
   gắn khoá tới khi `me` trả lời lại.
+- Nhiều instance: ngay sau lượt đăng ký ở một instance, instance khác vừa thấy phiên chưa gắn khoá sẽ không kiểm proof
+  của phiên đó trong tối đa `UnboundRecheckInterval`.
 - Chống replay theo từng instance; sau load balancer, một proof có thể bị phát lại sang instance khác trong thời hạn
   của challenge (vẫn gắn với đúng phiên và khoá đó).
 - Bản nháp có thể đổi tên header hoặc field.
