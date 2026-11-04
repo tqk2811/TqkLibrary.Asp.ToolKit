@@ -10,13 +10,6 @@ Việc còn treo và đề xuất của thư viện. Mỗi mục: vấn đề, v
 - **Vì sao**: API auth chậm làm cả trang Web chậm theo bội số số lời gọi.
 - **Ngày ghi**: 2026-10-28.
 
-### [Thấp] Sender đọc CurrentValue hai lần mỗi lô, không kiểm lại TargetUrl lúc chạy
-
-- **Vị trí**: `src/TqkLibrary.Asp.ToolKit.Caching/Remote/HttpCacheInvalidationSender.cs:84`, `:92`.
-- **Vấn đề**: debounce và phần gửi lấy từ hai bản options khác nhau. `TargetUrl` và bật/tắt chỉ xét lúc khởi động; reload sang URL sai thì `new HttpRequestMessage` ném ở mỗi lần thử và retry vô ích.
-- **Đề xuất**: đọc `CurrentValue` một lần mỗi lô; kiểm lại URL mỗi lô (sai thì LogError, bỏ lô, không retry). Hoặc ghi rõ trong README chỉ Debounce/Timeout/RetryDelays/Key được reload.
-- **Ngày ghi**: 2026-10-28.
-
 ### [Thấp] Chặn EventsType quá cứng
 
 - **Vị trí**: `src/TqkLibrary.Asp.ToolKit.Auth.Api/Extensions/ApiAuthServiceCollectionExtensions.cs:63-72`.
