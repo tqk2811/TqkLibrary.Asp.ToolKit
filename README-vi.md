@@ -204,6 +204,7 @@ public sealed class SessionAccessSource(AppDbContext db) : ISessionAccessSource
         // ... đọc dòng phiên + user; không có -> null; khoá -> UserRejectionReason = SessionRejectionReasons.UserLocked
         return new SessionAccessRecord
         {
+            SessionId = session.Id,                  // id ĐÚNG NHƯ ĐÃ LƯU; cách viết khác trong token bị từ chối
             UserId = user.Id, SecretHash = session.SecretHash,
             CreatedAt = session.CreatedAt, LastAccessAt = session.LastAccessAt, ExpiresAt = session.ExpiresAt,
             IsPersistent = session.IsPersistent, IsRevoked = session.RevokedAt != null,

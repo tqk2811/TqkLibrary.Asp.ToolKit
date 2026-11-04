@@ -16,7 +16,9 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
     /// request:
     /// <list type="number">
     ///   <item>loads the session through <see cref="SessionAccessCache"/> → <see cref="ISessionAccessSource.GetAsync"/>
-    ///   (an unknown session is answered as <see cref="SessionRejectionReasons.InvalidToken"/> after a dummy hash check);</item>
+    ///   (an unknown session, or a record whose <see cref="SessionAccessRecord.SessionId"/> is another spelling of the id in
+    ///   the token, is answered as <see cref="SessionRejectionReasons.InvalidToken"/> after a dummy hash check and is not
+    ///   cached);</item>
     ///   <item>compares the secret hash in fixed time, and only then checks
     ///   <see cref="SessionAccessRecord.UserRejectionReason"/>, <see cref="SessionAccessRecord.IsRevoked"/>,
     ///   <see cref="SessionAccessRecord.ExpiresAt"/> and the absolute cap (<see cref="SlidingSessionPolicy"/>), so a caller
@@ -72,10 +74,10 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
 
             var source = Context.RequestServices.GetRequiredService<ISessionAccessSource>();
             var aborted = Context.RequestAborted;
-            var access = await _cache.GetAsync(sessionId, ct => source.GetAsync(sessionId, ct), aborted).ConfigureAwait(false);
+            var access = await _cache.GetAsync(sessionId, ct => LoadCanonicalAsync(source, sessionId, ct), aborted).ConfigureAwait(false);
             if (access is null)
             {
-                // Unknown session: spend the same hashing time as a wrong secret, answer the same way.
+                // Unknown session (or an alias spelling of one): spend the same hashing time as a wrong secret, answer the same way.
                 SessionTokenCodec.Verify(secret, SessionTokenCodec.DummyHash);
                 return Reject(SessionRejectionReasons.InvalidToken, "The session token is invalid.");
             }
@@ -100,6 +102,20 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api
             await TouchIfDueAsync(source, sessionId, access, lastAccessAt ?? createdAt, now, next).ConfigureAwait(false);
 
             return AuthenticateResult.Success(new AuthenticationTicket(CreatePrincipal(sessionId, access), Scheme.Name));
+        }
+
+        /// <summary>
+        /// The record of <paramref name="sessionId"/>, or null when the source found none OR found it under another spelling
+        /// (<see cref="SessionAccessRecord.SessionId"/> not ordinal-equal to the id in the token): an alias is an unknown
+        /// session, and a null result is never cached, so nothing is stored under the alias.
+        /// </summary>
+        private async Task<SessionAccessRecord?> LoadCanonicalAsync(ISessionAccessSource source, string sessionId, CancellationToken cancellationToken)
+        {
+            var record = await source.GetAsync(sessionId, cancellationToken).ConfigureAwait(false);
+            if (record is null || string.Equals(record.SessionId, sessionId, StringComparison.Ordinal))
+                return record;
+            Logger.LogDebug("A session token names a non-canonical spelling of a stored session id; rejected as unknown.");
+            return null;
         }
 
         /// <inheritdoc />

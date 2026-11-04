@@ -12,7 +12,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
         private static SessionAccessRecord Access(string version, string userId = "u-1")
             => new()
             {
-                UserId = userId, UserName = "user-" + version, Roles = ["Member"], Permissions = [version],
+                SessionId = "s-1", UserId = userId, UserName = "user-" + version, Roles = ["Member"], Permissions = [version],
                 SecretHash = "H", CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
                 ExpiresAt = new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc),
             };

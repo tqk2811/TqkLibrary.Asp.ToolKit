@@ -17,6 +17,11 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Interfaces
         /// for <see cref="ApiAuthOptions.SessionAccessCacheLifetime"/>, null is never cached (a new session is visible
         /// at once). Session ids MUST be unguessable (a random GUID or random base64url), never sequential or otherwise
         /// predictable ids: the id is half of the credential and the first thing an attacker can probe.
+        /// <para>
+        /// Set <see cref="SessionAccessRecord.SessionId"/> to the id AS STORED (canonical spelling). A lookup that matches
+        /// loosely (<c>Guid.TryParse</c>, a case-insensitive collation) is fine, but the handler rejects the token when the
+        /// stored id differs from the one in the token (ordinal), so aliases never authenticate or get cached.
+        /// </para>
         /// </summary>
         Task<SessionAccessRecord?> GetAsync(string sessionId, CancellationToken cancellationToken);
 

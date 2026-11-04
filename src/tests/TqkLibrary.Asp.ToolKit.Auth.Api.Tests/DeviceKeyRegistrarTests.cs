@@ -191,7 +191,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
             var loads = 0;
             var record = new SessionAccessRecord
             {
-                UserId = "u-1", SecretHash = "h", CreatedAt = DateTime.UtcNow, ExpiresAt = DateTime.UtcNow.AddDays(1), UserName = "n",
+                SessionId = "s-1", UserId = "u-1", SecretHash = "h", CreatedAt = DateTime.UtcNow, ExpiresAt = DateTime.UtcNow.AddDays(1), UserName = "n",
             };
             Task<SessionAccessRecord?> Load(CancellationToken _) { loads++; return Task.FromResult<SessionAccessRecord?>(record); }
             await f.Cache.GetAsync("s-1", Load);
@@ -213,7 +213,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
             var loads = 0;
             var record = new SessionAccessRecord
             {
-                UserId = "u-1", SecretHash = "h", CreatedAt = DateTime.UtcNow, ExpiresAt = DateTime.UtcNow.AddDays(1), UserName = "n",
+                SessionId = "s-1", UserId = "u-1", SecretHash = "h", CreatedAt = DateTime.UtcNow, ExpiresAt = DateTime.UtcNow.AddDays(1), UserName = "n",
             };
             Task<SessionAccessRecord?> Load(CancellationToken _) { loads++; return Task.FromResult<SessionAccessRecord?>(record); }
             await f.Cache.GetAsync("s-1", Load);

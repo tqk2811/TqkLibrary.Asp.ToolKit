@@ -72,7 +72,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
                 var issued = SessionTokenCodec.Create(sessionId);
                 Sessions[sessionId] = new SessionAccessRecord
                 {
-                    UserId = userId, SecretHash = issued.SecretHash, CreatedAt = now, ExpiresAt = expiresAt, IsPersistent = persistent,
+                    SessionId = sessionId, UserId = userId, SecretHash = issued.SecretHash, CreatedAt = now, ExpiresAt = expiresAt, IsPersistent = persistent,
                     UserName = "editor", Email = "e@x.test", Roles = ["Editor"], Permissions = ["items.edit"],
                 };
                 return issued.Token;
@@ -386,6 +386,42 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
             Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
             Assert.Equal("reason=" + SessionRejectionReasons.InvalidToken, await response.Content.ReadAsStringAsync());
             Assert.Equal(1, app.Source.Calls);
+        }
+
+        /// <summary>A store that matches ids case-insensitively (like a case-insensitive SQL collation).</summary>
+        private static void MatchCaseInsensitively(App app)
+            => app.Source.Result = sid => app.Source.Sessions.TryGetValue(sid.ToLowerInvariant(), out var record) ? record : null;
+
+        [Fact]
+        public async Task AliasSessionId_SourceMatchesLoosely_Rejected_NothingCachedUnderTheAlias()
+        {
+            await using var app = await App.StartAsync(o => o.OnChallenge = WriteReason);
+            var token = app.SignIn("s-abc");
+            MatchCaseInsensitively(app);
+            var alias = "S-ABC" + token["s-abc".Length..];
+
+            using var response = await app.GetAsync(alias);
+
+            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+            Assert.Equal("reason=" + SessionRejectionReasons.InvalidToken, await response.Content.ReadAsStringAsync());
+            // Not cached under the alias: every alias request reaches the source again.
+            using var again = await app.GetAsync(alias);
+            Assert.Equal(HttpStatusCode.Unauthorized, again.StatusCode);
+            Assert.Equal(2, app.Source.Calls);
+            Assert.Null(await app.Cache.GetAsync("S-ABC", _ => Task.FromResult<SessionAccessRecord?>(null)));
+        }
+
+        [Fact]
+        public async Task CanonicalSessionId_SourceMatchesLoosely_Passes_ClaimIsCanonical()
+        {
+            await using var app = await App.StartAsync();
+            var token = app.SignIn("s-abc");
+            MatchCaseInsensitively(app);
+
+            using var response = await app.GetAsync(token);
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Contains("sid=s-abc", await response.Content.ReadAsStringAsync());
         }
 
         [Fact]
@@ -756,7 +792,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Tests
         {
             var record = new SessionAccessRecord
             {
-                UserId = "u", SecretHash = "h", CreatedAt = Start, ExpiresAt = Start.AddDays(1), UserName = "n",
+                SessionId = "s", UserId = "u", SecretHash = "h", CreatedAt = Start, ExpiresAt = Start.AddDays(1), UserName = "n",
             };
 
             Assert.False(record.IsDeviceBound);

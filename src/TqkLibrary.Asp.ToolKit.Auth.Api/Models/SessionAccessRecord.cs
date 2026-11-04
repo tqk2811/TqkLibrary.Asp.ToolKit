@@ -12,6 +12,16 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Models
     /// </summary>
     public sealed record SessionAccessRecord
     {
+        /// <summary>
+        /// The session's id EXACTLY as stored (its canonical spelling), not the id the lookup was asked for. The handler
+        /// compares it ordinally with the id in the token and treats any other spelling as an unknown session (invalid
+        /// token, nothing cached under it). A store that matches ids loosely (<c>Guid.TryParse</c> accepting braces,
+        /// dashes or upper case; a case-insensitive SQL collation) would otherwise create aliases of one session that
+        /// escape <see cref="SessionAccessCache.InvalidateSession"/> and per-session limits keyed on the id. The
+        /// <see cref="ApiAuthOptions.SessionIdClaimType"/> claim always carries this canonical id.
+        /// </summary>
+        public required string SessionId { get; init; }
+
         /// <summary>Owner of the session (becomes <c>ClaimTypes.NameIdentifier</c> and <see cref="ApiAuthOptions.UserIdClaimType"/>).</summary>
         public required string UserId { get; init; }
 

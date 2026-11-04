@@ -24,6 +24,8 @@ issued once at login and sent as `Authorization: Bearer {sessionId}.{secret}` on
   session): user id, secret hash, `CreatedAt`, `LastAccessAt`, `ExpiresAt`, `IsPersistent`, `IsRevoked`,
   `RevokedReason`, `UserRejectionReason`, plus name/email/roles/permissions. All times are UTC. The library checks the
   secret first, then the user, revocation and expiry. New `TouchAsync` persists the sliding expiry.
+- `SessionAccessRecord.SessionId` (required): the session id AS STORED. The handler compares it ordinally with the id
+  in the token and rejects any other spelling as an unknown session (`invalid_token`, nothing cached under it).
 - Authentication scheme: `AddAuthentication(SessionTokenDefaults.AuthenticationScheme).AddTqkSessionToken(...)`; the
   custom 401 body moves to `SessionTokenAuthenticationOptions.OnChallenge`, and `GetSessionRejection` /
   `IsSessionRejected` are `HttpContext` extensions.
@@ -53,6 +55,7 @@ public sealed class SessionAccessSource(AppDbContext db) : ISessionAccessSource
         // Return the row even when revoked/expired/locked: the library checks the secret first, then the rest.
         return new SessionAccessRecord
         {
+            SessionId = row.Session.Id,                                                    // the id AS STORED (canonical)
             UserId = row.User.Id, SecretHash = row.Session.SecretHash,
             CreatedAt = row.Session.CreatedAt, LastAccessAt = row.Session.LastAccessAt, ExpiresAt = row.Session.ExpiresAt,
             IsPersistent = row.Session.IsPersistent, IsRevoked = row.Session.RevokedAt != null,
@@ -107,7 +110,11 @@ On every request with `Authorization: Bearer {sessionId}.{secret}` the handler:
 
 1. parses the token (malformed → 401 `invalid_token`, the source is not called);
 2. loads the session through `SessionAccessCache` (default 30 s) → `ISessionAccessSource.GetAsync`; no such session →
-   `invalid_token` (after a dummy hash check, so it takes as long as a wrong secret);
+   `invalid_token` (after a dummy hash check, so it takes as long as a wrong secret). A record whose `SessionId` is not
+   ordinal-equal to the id in the token (a store that matches loosely: `Guid.TryParse` accepting upper case or other
+   formats, a case-insensitive SQL collation) counts as no such session and is not cached, so an alias spelling can
+   neither authenticate nor escape `InvalidateSession` or per-session limits keyed on the id. The `sid` claim is always
+   the canonical id;
 3. compares the secret hash in fixed time (`invalid_token`), then checks `UserRejectionReason` (its value), `IsRevoked`
    (`RevokedReason`, or `revoked` when null), `ExpiresAt` and the absolute cap `CreatedAt + MaxSessionLifetime` (`expired`);
 4. when the last write is older than `SessionTouchInterval`, calls `TouchAsync(sessionId, now, newExpiry)` with

@@ -24,6 +24,8 @@ dotnet add package TqkLibrary.Asp.ToolKit.Auth.Api
   phiên): user id, hash secret, `CreatedAt`, `LastAccessAt`, `ExpiresAt`, `IsPersistent`, `IsRevoked`,
   `RevokedReason`, `UserRejectionReason`, cùng tên/email/role/permission. Mọi thời điểm là UTC. Thư viện kiểm secret
   trước, rồi mới kiểm user, thu hồi và hạn. Thêm `TouchAsync` để lưu hạn trượt.
+- `SessionAccessRecord.SessionId` (bắt buộc): session id ĐÚNG NHƯ ĐÃ LƯU. Handler so sánh ordinal với id trong token
+  và coi mọi cách viết khác là phiên không tồn tại (`invalid_token`, không cache gì dưới id đó).
 - Scheme xác thực: `AddAuthentication(SessionTokenDefaults.AuthenticationScheme).AddTqkSessionToken(...)`; body 401
   riêng chuyển sang `SessionTokenAuthenticationOptions.OnChallenge`, còn `GetSessionRejection` / `IsSessionRejected`
   thành extension của `HttpContext`.
@@ -53,6 +55,7 @@ public sealed class SessionAccessSource(AppDbContext db) : ISessionAccessSource
         // Trả cả phiên đã thu hồi/hết hạn/user bị khoá: thư viện kiểm secret trước, rồi mới kiểm phần còn lại.
         return new SessionAccessRecord
         {
+            SessionId = row.Session.Id,                                                    // id ĐÚNG NHƯ ĐÃ LƯU (dạng chuẩn)
             UserId = row.User.Id, SecretHash = row.Session.SecretHash,
             CreatedAt = row.Session.CreatedAt, LastAccessAt = row.Session.LastAccessAt, ExpiresAt = row.Session.ExpiresAt,
             IsPersistent = row.Session.IsPersistent, IsRevoked = row.Session.RevokedAt != null,
@@ -106,7 +109,10 @@ builder.Services.AddAuthentication(SessionTokenDefaults.AuthenticationScheme).Ad
 
 1. tách token (sai dạng → 401 `invalid_token`, không gọi source);
 2. lấy phiên qua `SessionAccessCache` (mặc định 30 giây) → `ISessionAccessSource.GetAsync`; không có phiên →
-   `invalid_token` (sau một lần kiểm hash giả, để tốn thời gian ngang với secret sai);
+   `invalid_token` (sau một lần kiểm hash giả, để tốn thời gian ngang với secret sai). Bản ghi có `SessionId` không
+   bằng (ordinal) id trong token (store so khớp lỏng: `Guid.TryParse` nhận chữ hoa hay dạng khác, collation SQL không
+   phân biệt hoa thường) bị coi là không có phiên và không được cache, nên một cách viết bí danh không xác thực được,
+   cũng không lọt khỏi `InvalidateSession` hay giới hạn theo từng phiên khoá theo id. Claim `sid` luôn là id chuẩn;
 3. so hash secret trong thời gian cố định (`invalid_token`), rồi kiểm `UserRejectionReason` (trả đúng giá trị đó),
    `IsRevoked` (`RevokedReason`, null thì `revoked`), `ExpiresAt` và trần tuyệt đối `CreatedAt + MaxSessionLifetime`
    (`expired`);
