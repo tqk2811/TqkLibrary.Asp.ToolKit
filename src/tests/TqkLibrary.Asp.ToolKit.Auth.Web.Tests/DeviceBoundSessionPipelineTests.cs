@@ -390,6 +390,27 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
         }
 
         [Fact]
+        public async Task MeWithoutAlgorithm_AlgorithmDerivedFromJwk_RefreshAndEnforcementWork()
+        {
+            await using var h = await StartAsync();
+            h.KeyApi.ThrowAfterStore = true; // the web learns the key from `me` only
+            using var signIn = await h.App.SignInAsync(Sid);
+            using var start = await PostAsync(h.App, "/dbsc/start", h.Device.RegistrationJwt(ChallengeFrom(RegistrationHeader(signIn)!)));
+            h.KeyApi.StoredAlgorithm = null; // the app's `me` does not return deviceKeyAlgorithm
+            var identifier = DeviceBoundSessionMiddleware.SessionIdentifier(Sid);
+
+            using var first = await PostAsync(h.App, "/dbsc/refresh", sessionId: identifier);
+            Assert.Equal(HttpStatusCode.Forbidden, first.StatusCode);
+            using var second = await PostAsync(h.App, "/dbsc/refresh", h.Device.RefreshJwt(RefreshChallenge(first)), identifier);
+
+            Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+            Assert.True(await IsAuthenticatedAsync(h.App));
+            h.App.RemoveCookie(ProofCookie);
+            Assert.False(await IsAuthenticatedAsync(h.App));
+            Assert.Equal(DeviceProofFailureReason.Missing, Assert.Single(h.Handler.Calls).Reason);
+        }
+
+        [Fact]
         public async Task LostRegistrationResponse_RequestWithoutProof_IsAProofFailure_NotALockout()
         {
             await using var h = await StartAsync();

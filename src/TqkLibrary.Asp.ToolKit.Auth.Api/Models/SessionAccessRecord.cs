@@ -74,7 +74,9 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Models
 
         /// <summary>
         /// Algorithm of <see cref="DevicePublicKeyJwk"/> (<c>ES256</c> or <c>RS256</c>, column <c>DeviceKeyAlgorithm</c>).
-        /// Adds the claim <see cref="ApiAuthOptions.DeviceKeyAlgorithmClaimType"/> when the session is bound.
+        /// Adds the claim <see cref="ApiAuthOptions.DeviceKeyAlgorithmClaimType"/> when the session is bound. Store and
+        /// return it: the web front end derives a missing algorithm from the JWK key type (EC → ES256, RSA → RS256) only as
+        /// a fallback.
         /// </summary>
         public string? DeviceKeyAlgorithm { get; init; }
 

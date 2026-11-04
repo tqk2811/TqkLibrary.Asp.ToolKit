@@ -305,7 +305,8 @@ TRƯỚC khi `CurrentUserFailureMode.Throw` kịp làm hỏng request: request �
 - `me` (`CurrentUserInfo`) phải trả `deviceKeyJwk` và `deviceKeyAlgorithm` (khoá đã lưu, null khi chưa gắn) và có thể
   trả `deviceBindingMode` (lựa chọn của người dùng, `ReportOnly`/`Reject`/`SignOut`, không phân biệt hoa thường; web tự
   lọc theo danh sách cho phép). `IsDeviceBound` suy ra từ `deviceKeyJwk`. Auth.Api có sẵn `GetDeviceBinding` cho việc
-  này.
+  này. Thiếu `deviceKeyAlgorithm` thì web suy ra từ loại khoá của JWK (`EC` → `ES256`, `RSA` → `RS256`) như một đường
+  lùi; vẫn nên trả về.
 - `IDeviceKeyApiClient.RegisterDeviceKeyAsync(jwk, algorithm, ct)` lưu public key (JWK public dạng chuẩn, ES256 hoặc
   RS256) vào phiên trên API, qua client có `AddTqkSessionBearer`. Trả `false` cho HTTP 409 (đã gắn khoá, đã thu hồi/hết
   hạn, hoặc đã quá cửa sổ gắn khoá ngay sau đăng nhập của API) và 400, KHÔNG ném exception cho các mã này: trình duyệt

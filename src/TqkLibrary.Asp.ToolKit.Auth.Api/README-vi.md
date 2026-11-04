@@ -189,7 +189,7 @@ project. Web front end chỉ theo lựa chọn này khi developer bật chính s
 
 ```csharp
 DevicePublicKeyJwk = row.Session.DevicePublicKey,      // null = chưa gắn (IsDeviceBound suy ra từ đây)
-DeviceKeyAlgorithm = row.Session.DeviceKeyAlgorithm,
+DeviceKeyAlgorithm = row.Session.DeviceKeyAlgorithm,  // nên lưu và trả về (web chỉ suy ra từ kty của JWK khi thiếu)
 DeviceBindingMode = row.User.DeviceBindingMode,         // null = mặc định của project
 ```
 

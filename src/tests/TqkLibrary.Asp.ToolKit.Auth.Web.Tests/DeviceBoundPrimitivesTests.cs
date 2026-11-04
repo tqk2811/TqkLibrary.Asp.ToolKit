@@ -322,6 +322,33 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             Assert.Null(DeviceKey.TryParse("not json", "ES256", 2048));
         }
 
+        [Theory]
+        [InlineData("ES256", null)]
+        [InlineData("ES256", "")]
+        [InlineData("RS256", null)]
+        public void DeviceKey_StoredWithoutAlgorithm_AlgorithmDerivedFromKeyType(string algorithm, string? stored)
+        {
+            using var device = algorithm == "ES256" ? DbscTestDevice.Es256() : DbscTestDevice.Rs256();
+
+            var key = DeviceKey.TryParseStored(device.Jwk().ToJsonString(), stored);
+
+            Assert.NotNull(key);
+            Assert.Equal(algorithm, key!.Algorithm);
+            Assert.True(Verifier().VerifyRefresh(device.RefreshJwt("c"), key).IsValid);
+        }
+
+        [Fact]
+        public void DeviceKey_StoredWithWrongOrUnknownAlgorithm_Refused()
+        {
+            using var device = DbscTestDevice.Es256();
+            var jwk = device.Jwk().ToJsonString();
+
+            Assert.Null(DeviceKey.TryParseStored(jwk, "RS256"));
+            Assert.Null(DeviceKey.TryParseStored("{\"kty\":\"oct\",\"k\":\"AAAA\"}", null));
+            Assert.Null(DeviceKey.TryParseStored("not json", null));
+            Assert.Null(DeviceKey.TryParseStored(null, null));
+        }
+
         // ---------- challenges ----------
 
         private static (DeviceChallengeService Service, FakeTimeProvider Clock) Challenges(IDataProtectionProvider? keys = null)

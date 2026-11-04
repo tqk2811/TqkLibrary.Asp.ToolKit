@@ -65,6 +65,40 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         }
 
         /// <summary>
+        /// A key STORED on the API, as <c>me</c> returns it: read with <see cref="StoredKeyMinRsaKeySize"/>. When the API
+        /// returned no algorithm (an app that stores or returns only the JWK), it is derived from the key type: <c>EC</c>
+        /// (P-256) → <c>ES256</c>, <c>RSA</c> → <c>RS256</c>, so such a bound session is not locked out for good.
+        /// </summary>
+        public static DeviceKey? TryParseStored(string? jwkJson, string? algorithm)
+        {
+            if (string.IsNullOrEmpty(algorithm))
+                algorithm = AlgorithmFromKeyType(jwkJson);
+            return TryParse(jwkJson, algorithm, StoredKeyMinRsaKeySize);
+        }
+
+        private static string? AlgorithmFromKeyType(string? jwkJson)
+        {
+            if (string.IsNullOrEmpty(jwkJson) || jwkJson.Length > 4096)
+                return null;
+            try
+            {
+                using var document = JsonDocument.Parse(jwkJson, new JsonDocumentOptions { MaxDepth = 4 });
+                if (document.RootElement.ValueKind != JsonValueKind.Object)
+                    return null;
+                return GetString(document.RootElement, "kty") switch
+                {
+                    "EC" => "ES256",
+                    "RSA" => "RS256",
+                    _ => null,
+                };
+            }
+            catch (JsonException)
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
         /// Validates a JWK element for <paramref name="algorithm"/>: right key type for the algorithm, EC P-256 with
         /// 32-byte coordinates on the curve, or RSA with e = 65537 and a modulus between <paramref name="minRsaKeySize"/>
         /// and <see cref="MaxRsaKeySize"/> bits; no private member. Null when invalid.

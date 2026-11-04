@@ -260,7 +260,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
                 services.GetRequiredService<DeviceBindingCache>().MarkUnbound(sessionId, options.DeviceBound.UnboundRecheckInterval);
                 return (KeyLookupStatus.NotBound, null);
             }
-            var key = DeviceKey.TryParse(user.DeviceKeyJwk, user.DeviceKeyAlgorithm, DeviceKey.StoredKeyMinRsaKeySize);
+            var key = DeviceKey.TryParseStored(user.DeviceKeyJwk, user.DeviceKeyAlgorithm);
             if (key is null)
             {
                 _logger.LogError("DBSC: the API reports session {SessionId} as bound but its device key cannot be used.", sessionId);

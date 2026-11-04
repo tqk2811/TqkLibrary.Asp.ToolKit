@@ -191,7 +191,7 @@ Fill the record in `GetAsync`:
 
 ```csharp
 DevicePublicKeyJwk = row.Session.DevicePublicKey,      // null = not bound (IsDeviceBound is derived from it)
-DeviceKeyAlgorithm = row.Session.DeviceKeyAlgorithm,
+DeviceKeyAlgorithm = row.Session.DeviceKeyAlgorithm,  // store and return it (the web only derives a missing one from the JWK kty)
 DeviceBindingMode = row.User.DeviceBindingMode,         // null = project default
 ```
 

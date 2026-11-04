@@ -34,7 +34,10 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Models
         /// </summary>
         public string? DeviceKeyJwk { get; init; }
 
-        /// <summary>DBSC: algorithm of <see cref="DeviceKeyJwk"/> (<c>ES256</c> or <c>RS256</c>, <c>me</c> field <c>deviceKeyAlgorithm</c>).</summary>
+        /// <summary>
+        /// DBSC: algorithm of <see cref="DeviceKeyJwk"/> (<c>ES256</c> or <c>RS256</c>, <c>me</c> field <c>deviceKeyAlgorithm</c>).
+        /// Null or empty = derived from the JWK key type (<c>EC</c> → <c>ES256</c>, <c>RSA</c> → <c>RS256</c>) as a fallback.
+        /// </summary>
         public string? DeviceKeyAlgorithm { get; init; }
 
         /// <summary>

@@ -7,7 +7,11 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Api.Models
     /// <c>deviceBindingMode</c>.
     /// </summary>
     /// <param name="Jwk">The stored device public key (canonical public JWK).</param>
-    /// <param name="Algorithm">Its algorithm (<c>ES256</c> or <c>RS256</c>); null when the app did not store it.</param>
+    /// <param name="Algorithm">
+    /// Its algorithm (<c>ES256</c> or <c>RS256</c>); null when the app did not store it. Apps should store and return it;
+    /// the web front end derives a missing one from the JWK key type (<c>EC</c> → <c>ES256</c>, <c>RSA</c> → <c>RS256</c>)
+    /// only as a fallback.
+    /// </param>
     /// <param name="Mode">The end user's own proof-failure mode (<see cref="SessionAccessRecord.DeviceBindingMode"/>); null = project default.</param>
     public sealed record DeviceBindingInfo(string Jwk, string? Algorithm, string? Mode);
 }

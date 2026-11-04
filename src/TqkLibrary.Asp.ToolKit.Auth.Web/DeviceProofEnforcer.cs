@@ -74,7 +74,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
             }
             if (_bindings.Get(sessionId) is not null)
                 return check;
-            var key = DeviceKey.TryParse(user.DeviceKeyJwk, user.DeviceKeyAlgorithm, DeviceKey.StoredKeyMinRsaKeySize);
+            var key = DeviceKey.TryParseStored(user.DeviceKeyJwk, user.DeviceKeyAlgorithm);
             if (key is null)
             {
                 _logger.LogError("DBSC: the API reports session {SessionId} as bound but its device key ({Algorithm}) cannot be used.",

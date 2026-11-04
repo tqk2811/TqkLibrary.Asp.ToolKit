@@ -312,7 +312,9 @@ this is the residual gap of the design.
 
 - `me` (`CurrentUserInfo`) must return `deviceKeyJwk` and `deviceKeyAlgorithm` (the stored key, null when not bound)
   and may return `deviceBindingMode` (the user's choice, `ReportOnly`/`Reject`/`SignOut`, case-insensitive; the web
-  whitelists it). `IsDeviceBound` is derived from `deviceKeyJwk`. Auth.Api provides `GetDeviceBinding` for this.
+  whitelists it). `IsDeviceBound` is derived from `deviceKeyJwk`. Auth.Api provides `GetDeviceBinding` for this. A
+  missing `deviceKeyAlgorithm` is derived from the JWK key type (`EC` → `ES256`, `RSA` → `RS256`) as a fallback;
+  return it anyway.
 - `IDeviceKeyApiClient.RegisterDeviceKeyAsync(jwk, algorithm, ct)` stores the public key (canonical public JWK, ES256
   or RS256) on the API session, through the client with `AddTqkSessionBearer`. Return `false` for HTTP 409 (already
   bound, revoked/expired, or outside the API's registration window right after login) and 400 — never throw for
