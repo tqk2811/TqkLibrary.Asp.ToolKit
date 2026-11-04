@@ -240,8 +240,11 @@ của phiên khác (`WrongSession`), hoặc proof không hợp lệ hay làm cho
 - `Continue` (= `ReportOnly`): request chạy bình thường; tăng counter và ghi log mức Debug.
 - `Reject` (mặc định): request chạy như khách, KHÔNG có session token, cho tới hết request: endpoint có
   `AuthenticationSchemes` tường minh xác thực lại cookie, hay trang lỗi do `UseExceptionHandler` chạy lại, vẫn không gửi
-  token và một 401 ở đó không xoá cookie. Phiên KHÔNG bị đăng xuất, cookie chính vẫn giữ, nên khi trình duyệt làm mới
-  proof xong thì request sau lại chạy bình thường.
+  token và một 401 ở đó không xoá cookie. Xác thực lại scheme cookie cho tới hết request đều trả "không có kết quả",
+  nên endpoint nội bộ có policy ghi tên scheme cookie (`[Authorize(AuthenticationSchemes = ...)]`,
+  `AddAuthenticationSchemes`) bị challenge chứ không chạy (`AddTqkWebAuth` bọc `IAuthenticationService` đã đăng ký để
+  làm việc này; thay service đó sau `AddTqkWebAuth` thì mất lớp bọc). Phiên KHÔNG bị đăng xuất, cookie chính vẫn giữ,
+  nên khi trình duyệt làm mới proof xong thì request sau lại chạy bình thường.
 - `SignOut`: thu hồi phiên trên API (`IAuthApiClient.LogoutAsync`, cố gắng), xoá cookie chính và cookie proof, request
   chạy như khách.
 - `Handled` (chỉ handler tự viết): handler đã tự ghi response; pipeline dừng ngay tại đó, không gửi token, không cache

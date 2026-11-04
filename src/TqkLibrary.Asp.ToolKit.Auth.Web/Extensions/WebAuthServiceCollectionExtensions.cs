@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 using TqkLibrary.Asp.ToolKit.Auth.Web.Interfaces;
 
 namespace TqkLibrary.Asp.ToolKit.Auth.Web.Extensions
@@ -87,7 +88,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Extensions
                     ? CookieSecurePolicy.SameAsRequest
                     : CookieSecurePolicy.Always);
 
-            return services
+            var builder = services
                 .AddAuthentication(snapshot.Scheme)
                 .AddCookie(snapshot.Scheme, options =>
                 {
@@ -97,7 +98,46 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Extensions
                     configureCookie(options);
                     ChainTokenCheck(options);
                 });
+            DecorateAuthenticationService(services);
+            return builder;
         }
+
+        /// <summary>
+        /// Wraps the registered <see cref="IAuthenticationService"/> in <see cref="RejectAwareAuthenticationService"/> (once),
+        /// keeping its lifetime and implementation. An app that replaces <see cref="IAuthenticationService"/> after
+        /// <c>AddTqkWebAuth</c> loses the wrapper.
+        /// </summary>
+        private static void DecorateAuthenticationService(IServiceCollection services)
+        {
+            var index = -1;
+            for (var i = services.Count - 1; i >= 0; i--)
+            {
+                if (services[i].ServiceType == typeof(IAuthenticationService) && !services[i].IsKeyedService)
+                {
+                    index = i;
+                    break;
+                }
+            }
+            if (index < 0 || services.Any(d => d.ServiceType == typeof(RejectAwareAuthenticationMarker)))
+                return;
+            var inner = services[index];
+            services[index] = ServiceDescriptor.Describe(typeof(IAuthenticationService),
+                sp => new RejectAwareAuthenticationService(CreateInner(sp, inner), sp.GetRequiredService<IOptions<WebAuthOptions>>()),
+                inner.Lifetime);
+            services.AddSingleton<RejectAwareAuthenticationMarker>();
+        }
+
+        private static IAuthenticationService CreateInner(IServiceProvider services, ServiceDescriptor descriptor)
+        {
+            if (descriptor.ImplementationInstance is IAuthenticationService instance)
+                return instance;
+            if (descriptor.ImplementationFactory is { } factory)
+                return (IAuthenticationService)factory(services);
+            return (IAuthenticationService)ActivatorUtilities.CreateInstance(services, descriptor.ImplementationType!);
+        }
+
+        /// <summary>Marks that <see cref="DecorateAuthenticationService"/> already ran (<c>AddTqkWebAuth</c> called twice).</summary>
+        private sealed class RejectAwareAuthenticationMarker;
 
         /// <summary>
         /// Rejects (and signs out) a ticket without the API session token, e.g. a cookie issued by 1.x, right when the

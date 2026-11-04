@@ -571,6 +571,41 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             Assert.True(h.App.Cookies.ContainsKey(MainCookie));
         }
 
+        private static void MapLocalExplicitScheme(Microsoft.AspNetCore.Routing.IEndpointRouteBuilder endpoints)
+            => endpoints.MapGet("/local-explicit", () => Results.Text("local"))
+                .RequireAuthorization(new Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder(
+                    Microsoft.AspNetCore.Authentication.Cookies.CookieAuthenticationDefaults.AuthenticationScheme)
+                    .RequireAuthenticatedUser().Build());
+
+        [Fact]
+        public async Task Reject_LocalEndpointWithExplicitCookieScheme_IsChallenged_NotRun()
+        {
+            await using var h = await StartAsync(mapEndpoints: MapLocalExplicitScheme);
+            await SignInAndBindAsync(h);
+            using (var proven = await h.App.SendAsync(HttpMethod.Get, "/local-explicit"))
+                Assert.Equal("local", await proven.Content.ReadAsStringAsync());
+            h.App.RemoveCookie(ProofCookie);
+
+            using var response = await h.App.SendAsync(HttpMethod.Get, "/local-explicit");
+
+            // The policy re-authenticates the cookie scheme: under Reject that must not restore the principal.
+            Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+            Assert.StartsWith(WebAuthTestApp.LoginPath, response.Headers.Location!.AbsolutePath);
+            Assert.True(h.App.Cookies.ContainsKey(MainCookie));
+        }
+
+        [Fact]
+        public async Task ReportOnly_LocalEndpointWithExplicitCookieScheme_Runs()
+        {
+            await using var h = await StartAsync(o => o.FailureMode = DeviceProofFailureMode.ReportOnly, mapEndpoints: MapLocalExplicitScheme);
+            await SignInAndBindAsync(h);
+            h.App.RemoveCookie(ProofCookie);
+
+            using var response = await h.App.SendAsync(HttpMethod.Get, "/local-explicit");
+
+            Assert.Equal("local", await response.Content.ReadAsStringAsync());
+        }
+
         [Fact]
         public async Task Reject_ReExecutedByExceptionHandler_NoToken()
         {

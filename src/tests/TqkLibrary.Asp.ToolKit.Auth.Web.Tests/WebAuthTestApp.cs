@@ -64,6 +64,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
                         }, configure);
                         services.Replace(ServiceDescriptor.Singleton<IAuthApiClient>(api));
                         services.AddRouting();
+                        services.AddAuthorization();
                         configureServices?.Invoke(services);
                     })
                     .Configure(app =>
@@ -73,6 +74,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
                         app.UseAuthentication();
                         beforeWebSession?.Invoke(app);
                         app.UseTqkWebSession();
+                        app.UseAuthorization();
                         app.UseEndpoints(endpoints =>
                         {
                             endpoints.MapGet("/sign-in", async (HttpContext context, WebSessionManager sessions, string sid,

@@ -245,8 +245,12 @@ session (`WrongSession`), or an invalid one or one made for another key (`Invali
 - `Continue` (= `ReportOnly`): the request runs as usual; the failure is counted and logged at Debug level.
 - `Reject` (default): the request runs as a guest WITHOUT the session token, for the rest of the request: an endpoint
   with explicit `AuthenticationSchemes` that re-authenticates the cookie, or an error page re-executed by
-  `UseExceptionHandler`, still sends no token and a 401 there does not drop the cookie. The session is NOT signed out
-  and the main cookie is kept, so the next request works again once the browser refreshed the proof.
+  `UseExceptionHandler`, still sends no token and a 401 there does not drop the cookie. Authenticating the cookie
+  scheme again answers "no result" for the rest of the request, so a local endpoint whose policy names the cookie
+  scheme (`[Authorize(AuthenticationSchemes = ...)]`, `AddAuthenticationSchemes`) is challenged instead of running
+  (`AddTqkWebAuth` wraps the registered `IAuthenticationService` for this; replacing it afterwards removes the
+  wrapper). The session is NOT signed out and the main cookie is kept, so the next request works again once the
+  browser refreshed the proof.
 - `SignOut`: the session is revoked on the API (`IAuthApiClient.LogoutAsync`, best effort), the main and proof cookies
   are deleted, the request runs as a guest.
 - `Handled` (custom handlers only): the handler wrote the response itself; the pipeline stops right there, no token is
