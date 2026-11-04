@@ -98,6 +98,11 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Middleware
                     Retryable = mapping.Retryable,
                 });
 
+            // Drop whatever the failed action already set (Content-Disposition, caching, ETag...), they belong to the
+            // success response; keep the request id header RequestIdMiddleware added so the client can still quote it.
+            context.Response.Clear();
+            if (context.Items.ContainsKey(HttpContextRequestIdExtensions.RequestIdItemKey))
+                context.Response.Headers[_options.Value.RequestIdHeader] = requestId;
             context.Response.StatusCode = mapping.StatusCode;
             context.Response.ContentType = "application/json; charset=utf-8";
             if (mapping.Headers is not null)

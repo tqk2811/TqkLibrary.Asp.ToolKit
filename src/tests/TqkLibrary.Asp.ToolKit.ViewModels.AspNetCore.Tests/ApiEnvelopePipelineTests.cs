@@ -108,6 +108,22 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Tests
         }
 
         [Fact]
+        public async Task ExceptionWrapper_DropsHeadersSetBeforeThrow_KeepsRequestId()
+        {
+            await using TestApp app = await TestApp.StartAsync();
+            using HttpRequestMessage request = new(HttpMethod.Get, "/t/download-fail");
+            request.Headers.Add("X-Request-Id", "req-clear-1");
+            using HttpResponseMessage response = await app.Client.SendAsync(request);
+
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+            Assert.Null(response.Content.Headers.ContentDisposition);
+            Assert.False(response.Headers.Contains("ETag"));
+            Assert.Equal("req-clear-1", response.Headers.GetValues("X-Request-Id").Single());
+            JsonElement json = await TestApp.ReadJsonAsync(response);
+            Assert.Equal("req-clear-1", json.GetProperty("requestId").GetString());
+        }
+
+        [Fact]
         public async Task ExceptionWrapper_UsesRegisteredMapper()
         {
             await using TestApp app = await TestApp.StartAsync(services => services.AddSingleton<IApiExceptionMapper, KeyNotFoundMapper>());

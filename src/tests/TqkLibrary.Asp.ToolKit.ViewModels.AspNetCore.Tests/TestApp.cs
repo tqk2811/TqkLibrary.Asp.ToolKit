@@ -147,6 +147,14 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Tests
         [HttpGet("reset")]
         public ProductDto Reset() => throw new Microsoft.AspNetCore.Connections.ConnectionResetException("peer reset");
 
+        [HttpGet("download-fail")]
+        public ProductDto DownloadFail()
+        {
+            Response.Headers["Content-Disposition"] = "attachment; filename=report.csv";
+            Response.Headers["ETag"] = "\"v1\"";
+            throw ApiErrorException.NotFound("REPORT_NOT_FOUND", "Report not found.");
+        }
+
         [HttpGet("crash")]
         public ProductDto Crash() => throw new InvalidOperationException("secret internal detail");
 
