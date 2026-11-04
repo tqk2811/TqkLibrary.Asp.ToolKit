@@ -80,5 +80,8 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
 
         /// <summary>Message returned to AJAX callers / carried by <see cref="SessionExpiredException"/>.</summary>
         public string SessionExpiredMessage { get; set; } = "Your session has expired. Please sign in again.";
+
+        /// <summary>Device Bound Session Credentials (DBSC). Off by default.</summary>
+        public DeviceBoundSessionOptions DeviceBound { get; set; } = new();
     }
 }

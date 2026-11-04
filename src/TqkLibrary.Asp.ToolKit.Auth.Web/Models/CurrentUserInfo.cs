@@ -25,5 +25,20 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Models
         /// ignored (they would break the session binding).
         /// </summary>
         public IReadOnlyList<CurrentUserClaim> ExtraClaims { get; init; } = Array.Empty<CurrentUserClaim>();
+
+        /// <summary>
+        /// DBSC: the API session has a device key (<see cref="Interfaces.IDeviceKeyApiClient.RegisterDeviceKeyAsync"/>
+        /// succeeded). When true but the request's cookie ticket has no key (a copy of the cookie taken before binding),
+        /// the request runs as a guest. Ignored when <see cref="DeviceBoundSessionOptions.Enabled"/> is off.
+        /// </summary>
+        public bool IsDeviceBound { get; init; }
+
+        /// <summary>
+        /// DBSC: the user's own choice of <see cref="DeviceProofFailureMode"/> (name, case-insensitive:
+        /// <c>ReportOnly</c>, <c>Reject</c>, <c>SignOut</c>), stored by the app (account settings). Used only when
+        /// <see cref="DeviceBoundSessionOptions.AllowUserChoice"/> is on and the value is in
+        /// <see cref="DeviceBoundSessionOptions.AllowedUserModes"/>; null = the project default.
+        /// </summary>
+        public string? DeviceBindingMode { get; init; }
     }
 }
