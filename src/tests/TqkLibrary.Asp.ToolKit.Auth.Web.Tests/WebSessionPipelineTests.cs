@@ -195,8 +195,8 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
         [Fact]
         public async Task Me_CustomRejectedPredicate_ClearsCookie()
         {
-            await using var app = await WebAuthTestApp.StartAsync(o => o.IsSessionRejectedException = ex => ex is TimeoutException);
-            app.Api.Me = () => throw new TimeoutException("app-specific 401");
+            await using var app = await WebAuthTestApp.StartAsync(o => o.IsSessionRejectedException = ex => ex is AppUnauthorizedException);
+            app.Api.Me = () => throw new AppUnauthorizedException();
             await app.SignInAsync(Sid);
 
             using var response = await app.SendAsync(HttpMethod.Get, "/whoami");
@@ -216,15 +216,94 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             Assert.NotEmpty(app.Cookies);
         }
 
-        [Fact]
-        public void DefaultIsSessionRejectedException_OnlyHttp401InChain()
+        private sealed class AppUnauthorizedException : Exception
         {
-            Assert.True(CurrentUserMiddleware.DefaultIsSessionRejectedException(new HttpRequestException("x", null, HttpStatusCode.Unauthorized)));
-            Assert.True(CurrentUserMiddleware.DefaultIsSessionRejectedException(
+        }
+
+        [Fact]
+        public void IsSessionRejectedException_OnlyHttp401InChain()
+        {
+            Assert.True(SessionChallenge.IsSessionRejectedException(new HttpRequestException("x", null, HttpStatusCode.Unauthorized)));
+            Assert.True(SessionChallenge.IsSessionRejectedException(
                 new Exception("a", new Exception("b", new HttpRequestException("x", null, HttpStatusCode.Unauthorized)))));
-            Assert.False(CurrentUserMiddleware.DefaultIsSessionRejectedException(new HttpRequestException("x", null, HttpStatusCode.Forbidden)));
-            Assert.False(CurrentUserMiddleware.DefaultIsSessionRejectedException(new HttpRequestException("x")));
-            Assert.False(CurrentUserMiddleware.DefaultIsSessionRejectedException(new InvalidOperationException("x")));
+            Assert.False(SessionChallenge.IsSessionRejectedException(new HttpRequestException("x", null, HttpStatusCode.Forbidden)));
+            Assert.False(SessionChallenge.IsSessionRejectedException(new HttpRequestException("x")));
+            Assert.False(SessionChallenge.IsSessionRejectedException(new InvalidOperationException("x")));
+        }
+
+        /// <summary>Regression: only InnerException was followed, so a 401 in the second entry of an AggregateException was missed.</summary>
+        [Fact]
+        public void IsSessionRejectedException_FollowsEveryAggregateInnerException()
+        {
+            var unauthorized = new HttpRequestException("x", null, HttpStatusCode.Unauthorized);
+            Assert.True(SessionChallenge.IsSessionRejectedException(new AggregateException(new InvalidOperationException("a"), unauthorized)));
+            Assert.True(SessionChallenge.IsSessionRejectedException(
+                new AggregateException(new InvalidOperationException("a"), new Exception("b", unauthorized))));
+            Assert.False(SessionChallenge.IsSessionRejectedException(
+                new AggregateException(new InvalidOperationException("a"), new HttpRequestException("x", null, HttpStatusCode.Forbidden))));
+        }
+
+        [Fact]
+        public async Task Me_AggregateWith401InSecondEntry_ClearsCookie()
+        {
+            await using var app = await WebAuthTestApp.StartAsync();
+            app.Api.Me = () => throw new AggregateException(new InvalidOperationException("a"),
+                new HttpRequestException("rejected", null, HttpStatusCode.Unauthorized));
+            await app.SignInAsync(Sid);
+
+            using var response = await app.SendAsync(HttpMethod.Get, "/whoami");
+
+            Assert.StartsWith("auth=false", await response.Content.ReadAsStringAsync());
+            AssertCookieDeleted(response, app);
+        }
+
+        [Fact]
+        public void IsSessionRejectedException_DeepChain_IsBoundedAndFalse()
+        {
+            Exception chain = new HttpRequestException("x", null, HttpStatusCode.Unauthorized);
+            for (var i = 0; i < 100; i++)
+                chain = new Exception("wrap " + i, chain);
+            // The 401 sits beyond the 16-node budget: not found, and the call returns instead of walking the whole chain.
+            Assert.False(SessionChallenge.IsSessionRejectedException(chain));
+
+            Exception shallow = new HttpRequestException("x", null, HttpStatusCode.Unauthorized);
+            for (var i = 0; i < 10; i++)
+                shallow = new Exception("wrap " + i, shallow);
+            Assert.True(SessionChallenge.IsSessionRejectedException(shallow));
+        }
+
+        [Fact]
+        public void IsSessionRejectedException_WideAggregate_IsBounded()
+        {
+            var inners = Enumerable.Range(0, 50).Select(_ => (Exception)new InvalidOperationException("x")).ToList();
+            inners.Add(new HttpRequestException("x", null, HttpStatusCode.Unauthorized));
+            Assert.False(SessionChallenge.IsSessionRejectedException(new AggregateException(inners)));
+        }
+
+        /// <summary>Regression: a timeout or cancellation is always transient; the predicate must not even be asked.</summary>
+        [Theory]
+        [InlineData("timeout")]
+        [InlineData("canceled")]
+        [InlineData("taskCanceled")]
+        public async Task Me_TimeoutOrCancellation_PredicateNotCalled_SessionKept(string kind)
+        {
+            var calls = 0;
+            await using var app = await WebAuthTestApp.StartAsync(o => o.IsSessionRejectedException = _ =>
+            {
+                Interlocked.Increment(ref calls);
+                return true;
+            });
+            app.Api.Me = () => throw kind switch
+            {
+                "timeout" => new TimeoutException("slow"),
+                "canceled" => new OperationCanceledException("slow"),
+                _ => new TaskCanceledException("slow"),
+            };
+            await app.SignInAsync(Sid);
+
+            Assert.StartsWith("auth=true", await app.WhoAmIAsync());
+            Assert.NotEmpty(app.Cookies);
+            Assert.Equal(0, Volatile.Read(ref calls));
         }
 
         [Theory]

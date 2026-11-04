@@ -37,5 +37,44 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
                 ? response.StatusCode == HttpStatusCode.Unauthorized
                 : IsSessionChallenge(response);
         }
+
+        /// <summary>
+        /// <see cref="EndsSession(HttpResponseMessage, bool)"/> with the rule of <paramref name="options"/>
+        /// (<see cref="WebAuthOptions.TreatAnyUnauthorizedAsSessionExpired"/>), the same one <see cref="SessionBearerHandler"/> applies.
+        /// </summary>
+        public static bool EndsSession(HttpResponseMessage response, WebAuthOptions options)
+        {
+            ArgumentNullException.ThrowIfNull(options);
+            return EndsSession(response, options.TreatAnyUnauthorizedAsSessionExpired);
+        }
+
+        /// <summary>
+        /// Default of <see cref="WebAuthOptions.IsSessionRejectedException"/>: true when <paramref name="exception"/> or one of
+        /// its inner exceptions (every entry of an <see cref="AggregateException"/>'s <see cref="AggregateException.InnerExceptions"/>
+        /// too, not only the first) is an <see cref="HttpRequestException"/> with status 401. A 403 or any other status is false.
+        /// At most 16 exceptions are examined in total (breadth first), so a cyclic or very deep chain cannot hang a request.
+        /// A timeout or cancellation is never a rejected session: the middleware does not call the predicate for an
+        /// <see cref="OperationCanceledException"/> or <see cref="TimeoutException"/> at the top of the failure.
+        /// </summary>
+        public static bool IsSessionRejectedException(Exception exception)
+        {
+            ArgumentNullException.ThrowIfNull(exception);
+            var pending = new Queue<Exception>();
+            pending.Enqueue(exception);
+            for (var examined = 0; examined < 16 && pending.Count > 0; examined++)
+            {
+                var current = pending.Dequeue();
+                if (current is HttpRequestException { StatusCode: HttpStatusCode.Unauthorized })
+                    return true;
+                if (current is AggregateException aggregate)
+                {
+                    foreach (var inner in aggregate.InnerExceptions)
+                        pending.Enqueue(inner);
+                }
+                else if (current.InnerException is { } next)
+                    pending.Enqueue(next);
+            }
+            return false;
+        }
     }
 }

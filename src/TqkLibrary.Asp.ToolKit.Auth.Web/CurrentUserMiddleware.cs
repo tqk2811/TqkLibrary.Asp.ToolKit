@@ -210,7 +210,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
             }
             catch (Exception ex) when (!context.RequestAborted.IsCancellationRequested && IsSessionRejected(options, ex, _logger))
             {
-                _logger.LogDebug(ex, "The API rejected the session (401) through a non-SessionExpiredException; dropping the web session.");
+                _logger.LogInformation(ex, "The API rejected the session (401) through a non-SessionExpiredException; dropping the web session.");
                 await sessions.DropAsync(context).ConfigureAwait(false);
                 return (null, true, null);
             }
@@ -256,31 +256,18 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
         }
 
         /// <summary>
-        /// Default of <see cref="WebAuthOptions.IsSessionRejectedException"/>: true when <paramref name="exception"/> or one of
-        /// its inner exceptions is an <see cref="HttpRequestException"/> with status 401. A 403 or any other status is false.
-        /// </summary>
-        public static bool DefaultIsSessionRejectedException(Exception exception)
-        {
-            ArgumentNullException.ThrowIfNull(exception);
-            // Bounded walk: a pathological (cyclic or very deep) chain must not hang the request.
-            var current = exception;
-            for (var depth = 0; current is not null && depth < 16; depth++, current = current.InnerException)
-            {
-                if (current is HttpRequestException { StatusCode: System.Net.HttpStatusCode.Unauthorized })
-                    return true;
-            }
-            return false;
-        }
-
-        /// <summary>
-        /// <see cref="WebAuthOptions.IsSessionRejectedException"/> (or the default) for a failed <c>me</c>; a predicate that
+        /// <see cref="WebAuthOptions.IsSessionRejectedException"/> (or <see cref="SessionChallenge.IsSessionRejectedException"/>)
+        /// for a failed <c>me</c>. A timeout or cancellation (<see cref="OperationCanceledException"/>,
+        /// <see cref="TimeoutException"/>) is always transient: the predicate is not even called. A predicate that
         /// throws is logged and counts as "not rejected" (the failure stays transient, the user is not signed out).
         /// </summary>
         internal static bool IsSessionRejected(WebAuthOptions options, Exception exception, ILogger logger)
         {
+            if (exception is OperationCanceledException or TimeoutException)
+                return false;
             try
             {
-                return (options.IsSessionRejectedException ?? DefaultIsSessionRejectedException)(exception);
+                return (options.IsSessionRejectedException ?? SessionChallenge.IsSessionRejectedException)(exception);
             }
             catch (Exception ex)
             {

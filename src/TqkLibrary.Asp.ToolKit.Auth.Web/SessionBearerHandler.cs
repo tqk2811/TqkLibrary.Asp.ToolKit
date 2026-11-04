@@ -60,7 +60,7 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web
                     ?? throw new SessionExpiredException(options.SessionExpiredMessage);
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                 var response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
-                if (!SessionChallenge.EndsSession(response, options.TreatAnyUnauthorizedAsSessionExpired))
+                if (!SessionChallenge.EndsSession(response, options))
                     return response;
                 // The API is the authority: its Bearer challenge means the session is revoked, expired or unknown.
                 response.Dispose();

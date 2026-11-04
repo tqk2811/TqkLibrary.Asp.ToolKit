@@ -35,6 +35,26 @@ namespace TqkLibrary.Asp.ToolKit.Auth.Web.Tests
             Assert.Equal(expected, SessionChallenge.EndsSession(response, anyUnauthorized));
         }
 
+        [Theory]
+        [InlineData(HttpStatusCode.Unauthorized, null, false, false)]
+        [InlineData(HttpStatusCode.Unauthorized, null, true, true)]
+        [InlineData(HttpStatusCode.Unauthorized, "Bearer", false, true)]
+        [InlineData(HttpStatusCode.Forbidden, null, true, false)]
+        public void EndsSession_Options_UsesTreatAnyUnauthorizedAsSessionExpired(HttpStatusCode status, string? challenge, bool anyUnauthorized, bool expected)
+        {
+            using var response = Response(status, challenge);
+            var options = new WebAuthOptions { TreatAnyUnauthorizedAsSessionExpired = anyUnauthorized };
+            Assert.Equal(expected, SessionChallenge.EndsSession(response, options));
+        }
+
+        [Fact]
+        public void EndsSession_Options_NullArguments_Throw()
+        {
+            using var response = Response(HttpStatusCode.Unauthorized);
+            Assert.Throws<ArgumentNullException>(() => SessionChallenge.EndsSession(response, (WebAuthOptions)null!));
+            Assert.Throws<ArgumentNullException>(() => SessionChallenge.EndsSession(null!, new WebAuthOptions()));
+        }
+
         [Fact]
         public void EndsSession_DefaultsToBearerChallengeOnly()
         {
