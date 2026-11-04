@@ -24,13 +24,6 @@ Việc còn treo và đề xuất của thư viện. Mỗi mục: vấn đề, v
 - **Đề xuất**: option opt-out (vd `AllowCustomEventsType`), hoặc kiểm lúc chạy: validator đánh dấu vào `HttpContext.Items`, thiếu dấu thì từ chối.
 - **Ngày ghi**: 2026-10-28.
 
-### [Thấp] README chưa cảnh báo ForwardingHeaders = [] tắt bước chặn request qua proxy
-
-- **Vị trí**: `src/TqkLibrary.Asp.ToolKit.Caching/Remote/CacheInvalidationEndpointOptions.cs:30`, `README-vi.md:360`.
-- **Vấn đề**: đặt `ForwardingHeaders = []` bằng code thì endpoint chỉ còn kiểm loopback, mà sau reverse proxy cùng máy thì loopback luôn đúng → ai gọi qua proxy cũng xoá được cache.
-- **Đề xuất**: thêm cảnh báo vào README (cả `README.md`), hoặc log warning lúc khởi động khi mảng rỗng.
-- **Ngày ghi**: 2026-10-28.
-
 ### [Thấp] Lỗi ghi cookie sau refresh chủ động bị nuốt
 
 - **Vị trí**: `src/TqkLibrary.Asp.ToolKit.Auth.Web/SessionBearerHandler.cs:69-71`.

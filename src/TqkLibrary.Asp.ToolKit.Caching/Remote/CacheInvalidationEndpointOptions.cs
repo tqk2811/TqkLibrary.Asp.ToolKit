@@ -26,6 +26,11 @@ namespace TqkLibrary.Asp.ToolKit.Caching.Remote
         /// <see langword="null"/> (the default) means <see cref="DefaultForwardingHeaders"/>; the default lives outside
         /// the property because the configuration binder APPENDS to any non-null collection, so a configured list would
         /// otherwise only extend the defaults. A configured list replaces them.
+        /// <para>
+        /// An empty array disables the proxy check: behind a reverse proxy on the same machine every request then looks
+        /// like a direct loopback call, so only <see cref="Key"/> protects the endpoint. In that setup, also block
+        /// <see cref="Path"/> at the proxy.
+        /// </para>
         /// </summary>
         public string[]? ForwardingHeaders { get; set; }
 
