@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Http;
 using TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Models;
 
 namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Interfaces
@@ -9,6 +10,6 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Interfaces
     public interface IApiExceptionMapper
     {
         /// <returns>The mapping, or null when this mapper does not handle <paramref name="exception"/>.</returns>
-        ApiErrorMapping? Map(Exception exception);
+        ApiErrorMapping? Map(HttpContext context, Exception exception);
     }
 }

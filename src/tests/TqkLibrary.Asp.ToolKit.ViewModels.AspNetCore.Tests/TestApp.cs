@@ -3,10 +3,12 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Primitives;
 using TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Extensions;
 using TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Interfaces;
 using TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Models;
@@ -106,19 +108,19 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Tests
 
     public sealed class KeyNotFoundMapper : IApiExceptionMapper
     {
-        public ApiErrorMapping? Map(Exception exception)
+        public ApiErrorMapping? Map(HttpContext context, Exception exception)
             => exception is KeyNotFoundException ? new ApiErrorMapping(404, "KEY_NOT_FOUND", exception.Message) : null;
     }
 
     public sealed class RichMapper : IApiExceptionMapper
     {
-        public ApiErrorMapping? Map(Exception exception)
+        public ApiErrorMapping? Map(HttpContext context, Exception exception)
             => exception is KeyNotFoundException
                 ? new ApiErrorMapping(429, "SLOW_DOWN", exception.Message)
                 {
                     Fields = new List<FieldError> { new FieldError { Field = "name", Code = ApiErrorCodes.FieldTooLong } },
                     Retryable = true,
-                    Headers = new Dictionary<string, string> { ["Retry-After"] = "7" },
+                    Headers = new Dictionary<string, StringValues> { ["Retry-After"] = "7" },
                     LogLevel = Microsoft.Extensions.Logging.LogLevel.Information,
                 }
                 : null;
@@ -126,7 +128,21 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Tests
 
     public sealed class ThrowingMapper : IApiExceptionMapper
     {
-        public ApiErrorMapping? Map(Exception exception) => throw new InvalidOperationException("mapper bug");
+        public ApiErrorMapping? Map(HttpContext context, Exception exception) => throw new InvalidOperationException("mapper bug");
+    }
+
+    /// <summary>Echoes the request path into the message: proves the mapper gets the current HttpContext.</summary>
+    public sealed class PathAwareMapper : IApiExceptionMapper
+    {
+        public ApiErrorMapping? Map(HttpContext context, Exception exception)
+            => exception is KeyNotFoundException ? new ApiErrorMapping(404, "KEY_NOT_FOUND", "at " + context.Request.Path) : null;
+    }
+
+    public sealed class DelegateTransformer : IApiErrorTransformer
+    {
+        readonly Func<HttpContext, Exception, ApiErrorMapping, ApiErrorMapping?> _transform;
+        public DelegateTransformer(Func<HttpContext, Exception, ApiErrorMapping, ApiErrorMapping?> transform) => _transform = transform;
+        public ApiErrorMapping? Transform(HttpContext context, Exception exception, ApiErrorMapping mapping) => _transform(context, exception, mapping);
     }
 
     [ApiController]

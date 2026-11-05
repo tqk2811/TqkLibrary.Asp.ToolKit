@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Primitives;
 using TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Extensions;
 using TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Interfaces;
 using TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Models;
@@ -18,6 +19,7 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Middleware
     ///   <item>otherwise each <see cref="IApiExceptionMapper"/> from DI, in registration order;</item>
     ///   <item>fallback: 500 <see cref="ApiErrorCodes.InternalError"/> (exception details are not sent).</item>
     /// </list>
+    /// The mapping is then passed through each <see cref="IApiErrorTransformer"/> from DI, in registration order.
     /// </summary>
     public sealed class ApiExceptionWrapperMiddleware
     {
@@ -105,7 +107,7 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Middleware
             context.Response.StatusCode = mapping.StatusCode;
             if (mapping.Headers is not null)
             {
-                foreach (KeyValuePair<string, string> header in mapping.Headers)
+                foreach (KeyValuePair<string, StringValues> header in mapping.Headers)
                     context.Response.Headers[header.Key] = header.Value;
             }
             // Set last so a mapping cannot break the JSON body by overriding it.
@@ -122,19 +124,20 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Middleware
 
         ApiErrorMapping Transform(HttpContext context, Exception exception, ApiErrorMapping mapping)
         {
-            var transform = _options.Value.TransformError;
-            if (transform is null) return mapping;
-            try
+            foreach (IApiErrorTransformer transformer in context.RequestServices.GetServices<IApiErrorTransformer>())
             {
-                return transform(context, exception, mapping) ?? mapping; // null: keep the original mapping
+                try
+                {
+                    mapping = transformer.Transform(context, exception, mapping) ?? mapping; // null: keep it unchanged
+                }
+                catch (Exception transformException)
+                {
+                    // Same rule as a broken mapper: never hide the original error. Skip this transformer only.
+                    _logger.LogError(transformException, "Error transformer {Transformer} threw while handling {ExceptionType}. RequestId: {RequestId}",
+                        transformer.GetType().FullName, exception.GetType().FullName, context.GetRequestId());
+                }
             }
-            catch (Exception transformException)
-            {
-                // Same rule as a broken mapper: never hide the original error.
-                _logger.LogError(transformException, "TransformError threw while handling {ExceptionType}. RequestId: {RequestId}",
-                    exception.GetType().FullName, context.GetRequestId());
-                return mapping;
-            }
+            return mapping;
         }
 
         ApiErrorMapping Map(HttpContext context, Exception exception)
@@ -146,7 +149,7 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Middleware
             {
                 try
                 {
-                    ApiErrorMapping? mapping = mapper.Map(exception);
+                    ApiErrorMapping? mapping = mapper.Map(context, exception);
                     if (mapping is not null) return mapping;
                 }
                 catch (Exception mapperException)

@@ -28,6 +28,7 @@ builder.Services.AddControllers()
         // options.SerializeError = x => JsonConvert.SerializeObject(x, mySettings); // when the app uses Newtonsoft
     });
 builder.Services.AddSingleton<IApiExceptionMapper, MyDomainExceptionMapper>(); // optional
+builder.Services.AddSingleton<IApiErrorTransformer, MyErrorTransformer>(); // optional
 
 app.UseTqkRequestId();
 app.UseTqkApiExceptionWrapper();
@@ -62,10 +63,10 @@ public sealed class ProductsController(IProductService service) : ControllerBase
   on the response. Read it with `HttpContext.GetRequestId()` (falls back to `TraceIdentifier`).
 - `UseTqkApiExceptionWrapper()`: client abort (cancellation or `IOException` once `RequestAborted` is set, or `ConnectionResetException`) -> 499 without body; response already started -> connection aborted;
   `ApiErrorException` -> its status and code; then every registered `IApiExceptionMapper` in order
-  (`ApiErrorMapping? Map(Exception)`); otherwise 500 `INTERNAL_ERROR` without exception details. Logs Error for 5xx,
+  (`ApiErrorMapping? Map(HttpContext, Exception)`); otherwise 500 `INTERNAL_ERROR` without exception details. Logs Error for 5xx,
   Warning otherwise (override per mapping with `LogLevel`; the exception is attached at Error and above). A mapping
-  can also carry `Fields`, `Retryable` (written to the error body) and response `Headers` (e.g. `Retry-After`).
-  `TransformError` (option) post-processes every mapping, whatever its source, before it is written. The body is written with `SerializeError` (default System.Text.Json, camelCase, nulls ignored).
+  can also carry `Fields`, `Retryable` (written to the error body) and response `Headers` (`IReadOnlyDictionary<string, StringValues>`, multi-value allowed, e.g. `Retry-After`).
+  Every registered `IApiErrorTransformer` then post-processes the mapping, whatever its source, in registration order (null keeps it; one that throws is logged and skipped). The body is written with `SerializeError` (default System.Text.Json, camelCase, nulls ignored).
   Apps whose MVC output uses Newtonsoft must set `SerializeError` to their own serializer so these bodies match the
   MVC responses (`o.SerializeError = v => JsonConvert.SerializeObject(v, settings)`); null properties (`meta`,
   `fields`, `details`...) are omitted only if that serializer ignores nulls.

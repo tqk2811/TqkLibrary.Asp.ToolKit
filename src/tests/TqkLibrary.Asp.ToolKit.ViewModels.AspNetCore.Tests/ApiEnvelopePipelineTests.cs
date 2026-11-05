@@ -9,6 +9,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Primitives;
 using TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Interfaces;
 using TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Middleware;
 using Xunit;
@@ -155,30 +156,61 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Tests
         }
 
         [Fact]
-        public async Task ExceptionWrapper_TransformError_AppliesToApiErrorException()
+        public async Task ExceptionWrapper_Transformer_AppliesToApiErrorException()
         {
-            await using TestApp app = await TestApp.StartAsync(configure: o => o.TransformError = (_, _, m) => m.Code == "PRODUCT_NOT_FOUND"
-                ? m with { Retryable = false, Headers = new Dictionary<string, string> { ["X-Hint"] = "reload" } }
-                : m);
+            await using TestApp app = await TestApp.StartAsync(services => services.AddSingleton<IApiErrorTransformer>(
+                new DelegateTransformer((_, _, m) => m.Code == "PRODUCT_NOT_FOUND"
+                    ? m with { Retryable = false, Headers = new Dictionary<string, StringValues> { ["X-Hint"] = new[] { "reload", "retry" } } }
+                    : m)));
             using HttpResponseMessage response = await app.Client.GetAsync("/t/api-error");
 
             Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
-            Assert.Equal("reload", Assert.Single(response.Headers.GetValues("X-Hint")));
+            Assert.Equal(new[] { "reload", "retry" }, response.Headers.GetValues("X-Hint"));
             JsonElement error = (await TestApp.ReadJsonAsync(response)).GetProperty("error");
             Assert.Equal("PRODUCT_NOT_FOUND", error.GetProperty("code").GetString());
             Assert.False(error.GetProperty("retryable").GetBoolean());
         }
 
         [Fact]
-        public async Task ExceptionWrapper_ThrowingTransform_WritesOriginalMapping()
+        public async Task ExceptionWrapper_Transformers_RunInOrder_NullKeepsMapping_ThrowingIsSkipped()
         {
-            await using TestApp app = await TestApp.StartAsync(configure: o => o.TransformError = (_, _, _) => throw new InvalidOperationException("transform bug"));
+            await using TestApp app = await TestApp.StartAsync(services => services
+                .AddSingleton<IApiErrorTransformer>(new DelegateTransformer((_, _, m) => m with { Message = m.Message + " [1]" }))
+                .AddSingleton<IApiErrorTransformer>(new DelegateTransformer((_, _, _) => throw new InvalidOperationException("transform bug")))
+                .AddSingleton<IApiErrorTransformer>(new DelegateTransformer((_, _, _) => null))
+                .AddSingleton<IApiErrorTransformer>(new DelegateTransformer((_, _, m) => m with { Message = m.Message + " [2]" })));
             using HttpResponseMessage response = await app.Client.GetAsync("/t/api-error");
 
             Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
             string text = await response.Content.ReadAsStringAsync();
             Assert.DoesNotContain("transform bug", text);
-            Assert.Equal("PRODUCT_NOT_FOUND", JsonDocument.Parse(text).RootElement.GetProperty("error").GetProperty("code").GetString());
+            JsonElement error = JsonDocument.Parse(text).RootElement.GetProperty("error");
+            Assert.Equal("PRODUCT_NOT_FOUND", error.GetProperty("code").GetString());
+            Assert.EndsWith(" [1] [2]", error.GetProperty("message").GetString());
+        }
+
+        [Fact]
+        public void WithHeader_ReplacesWhateverCase_KeepsOthers()
+        {
+            Models.ApiErrorMapping mapping = new Models.ApiErrorMapping(401, "X", "x")
+                .WithHeader("www-authenticate", "old")
+                .WithHeader("X-Other", new StringValues(new[] { "a", "b" }))
+                .WithHeader("WWW-Authenticate", "new");
+
+            Assert.Equal(2, mapping.Headers!.Count);
+            Assert.Equal("new", mapping.Headers["WWW-AUTHENTICATE"].ToString());
+            Assert.Equal(new[] { "a", "b" }, mapping.Headers["x-other"].ToArray());
+        }
+
+        [Fact]
+        public async Task ExceptionWrapper_Mapper_ReceivesHttpContext()
+        {
+            await using TestApp app = await TestApp.StartAsync(services => services.AddSingleton<IApiExceptionMapper, PathAwareMapper>());
+            using HttpResponseMessage response = await app.Client.GetAsync("/t/mapped");
+
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+            JsonElement error = (await TestApp.ReadJsonAsync(response)).GetProperty("error");
+            Assert.Equal("at /t/mapped", error.GetProperty("message").GetString());
         }
 
         [Fact]
@@ -308,14 +340,14 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Tests
             {
                 DefaultHttpContext context = new() { RequestServices = new ServiceCollection().BuildServiceProvider() };
                 context.Response.Body = new MemoryStream();
+                context.RequestServices = new ServiceCollection()
+                    .AddSingleton<IApiErrorTransformer>(new DelegateTransformer((_, _, m) => m with { LogLevel = level }))
+                    .BuildServiceProvider();
                 CapturingLogger logger = new();
                 ApiExceptionWrapperMiddleware middleware = new(
                     _ => throw new InvalidOperationException("boom"),
                     logger,
-                    Options.Create(new TqkApiEnvelopeOptions
-                    {
-                        TransformError = (_, _, m) => m with { LogLevel = level },
-                    }));
+                    Options.Create(new TqkApiEnvelopeOptions()));
                 await middleware.InvokeAsync(context);
                 return Assert.Single(logger.Entries);
             }

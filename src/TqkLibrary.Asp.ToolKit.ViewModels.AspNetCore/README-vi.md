@@ -28,6 +28,7 @@ builder.Services.AddControllers()
         // options.SerializeError = x => JsonConvert.SerializeObject(x, mySettings); // khi app dùng Newtonsoft
     });
 builder.Services.AddSingleton<IApiExceptionMapper, MyDomainExceptionMapper>(); // tuỳ chọn
+builder.Services.AddSingleton<IApiErrorTransformer, MyErrorTransformer>(); // tuỳ chọn
 
 app.UseTqkRequestId();
 app.UseTqkApiExceptionWrapper();
@@ -62,10 +63,10 @@ public sealed class ProductsController(IProductService service) : ControllerBase
 - `UseTqkApiExceptionWrapper()`: client ngắt kết nối (huỷ hoặc `IOException` khi `RequestAborted` đã bật, hoặc
   `ConnectionResetException`) -> 499 không thân; phản hồi đã ghi dở -> cắt kết nối;
   `ApiErrorException` -> đúng status và code của nó; sau đó thử lần lượt các `IApiExceptionMapper` đã đăng ký
-  (`ApiErrorMapping? Map(Exception)`); còn lại 500 `INTERNAL_ERROR`, không lộ chi tiết exception. Log Error cho 5xx,
+  (`ApiErrorMapping? Map(HttpContext, Exception)`); còn lại 500 `INTERNAL_ERROR`, không lộ chi tiết exception. Log Error cho 5xx,
   Warning cho các mã khác (mỗi mapping đổi được bằng `LogLevel`; từ mức Error trở lên log kèm exception). Mapping còn
-  mang được `Fields`, `Retryable` (ghi vào thân lỗi) và `Headers` của phản hồi (vd `Retry-After`). Tuỳ chọn
-  `TransformError` xử lý lại mọi mapping, bất kể nguồn, trước khi ghi. Thân phản hồi ghi bằng `SerializeError` (mặc định System.Text.Json, camelCase, bỏ null).
+  mang được `Fields`, `Retryable` (ghi vào thân lỗi) và `Headers` của phản hồi (`IReadOnlyDictionary<string, StringValues>`, được nhiều giá trị, vd `Retry-After`). Sau đó
+  từng `IApiErrorTransformer` đã đăng ký xử lý lại mapping, bất kể nguồn, theo thứ tự đăng ký (trả null là giữ nguyên; cái nào ném lỗi thì ghi log và bỏ qua). Thân phản hồi ghi bằng `SerializeError` (mặc định System.Text.Json, camelCase, bỏ null).
   App có MVC output dùng Newtonsoft phải đặt `SerializeError` bằng serializer của app để thân lỗi khớp phản hồi MVC
   (`o.SerializeError = v => JsonConvert.SerializeObject(v, settings)`); các thuộc tính null (`meta`, `fields`,
   `details`...) chỉ bị bỏ khi serializer đó bỏ qua null.
