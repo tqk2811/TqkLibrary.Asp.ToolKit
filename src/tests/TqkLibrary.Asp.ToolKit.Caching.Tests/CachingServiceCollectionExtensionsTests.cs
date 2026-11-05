@@ -111,4 +111,61 @@ public sealed class CachingServiceCollectionExtensionsTests
 
         Assert.Equal("key-2", monitor.CurrentValue.Key);
     }
+
+    // ---------- list options: a configured list REPLACES the defaults ----------
+    // The binder appends to a non-null collection, so a pre-filled default would only grow. Keys of the form
+    // "Section:List:0" are exactly what the JSON provider produces for an array.
+
+    private static TOptions BindOptions<TOptions>(Dictionary<string, string?> values, Action<IServiceCollection, IConfigurationSection> register)
+        where TOptions : class
+    {
+        var configuration = NewConfiguration(values);
+        var services = new ServiceCollection();
+        services.AddLogging();
+        register(services, configuration.GetSection("Caching"));
+        using var provider = services.BuildServiceProvider();
+        return provider.GetRequiredService<IOptionsMonitor<TOptions>>().CurrentValue;
+    }
+
+    [Fact]
+    public void Sender_FromSection_RetryDelaysListReplacesDefaults()
+    {
+        var options = BindOptions<CacheInvalidationSenderOptions>(
+            new() { ["Caching:RetryDelays:0"] = "00:00:03" },
+            (s, section) => s.AddTqkCacheInvalidationSender<TestGroup>(section));
+
+        Assert.Equal([TimeSpan.FromSeconds(3)], options.EffectiveRetryDelays);
+    }
+
+    [Fact]
+    public void Sender_FromSection_RetryDelaysNotConfigured_UsesDefaults()
+    {
+        var options = BindOptions<CacheInvalidationSenderOptions>(
+            new() { ["Caching:Key"] = "k" },
+            (s, section) => s.AddTqkCacheInvalidationSender<TestGroup>(section));
+
+        Assert.Null(options.RetryDelays);
+        Assert.Equal(CacheInvalidationSenderOptions.DefaultRetryDelays, options.EffectiveRetryDelays);
+    }
+
+    [Fact]
+    public void Endpoint_FromSection_ForwardingHeadersListReplacesDefaults()
+    {
+        var options = BindOptions<CacheInvalidationEndpointOptions>(
+            new() { ["Caching:ForwardingHeaders:0"] = "X-Custom-Proxy" },
+            (s, section) => s.AddTqkCacheInvalidationEndpoint<TestGroup>(section));
+
+        Assert.Equal(["X-Custom-Proxy"], options.EffectiveForwardingHeaders);
+    }
+
+    [Fact]
+    public void Endpoint_FromSection_ForwardingHeadersNotConfigured_UsesDefaults()
+    {
+        var options = BindOptions<CacheInvalidationEndpointOptions>(
+            new() { ["Caching:Key"] = "k" },
+            (s, section) => s.AddTqkCacheInvalidationEndpoint<TestGroup>(section));
+
+        Assert.Null(options.ForwardingHeaders);
+        Assert.Equal(CacheInvalidationEndpointOptions.DefaultForwardingHeaders, options.EffectiveForwardingHeaders);
+    }
 }
