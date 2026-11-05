@@ -116,15 +116,35 @@ public sealed class DispatchQueue<TItem> : IAsyncDisposable
             }
         }
 
-        await _dispatcher.ConfigureAwait(false);
-        CancelInbox();
+        try
+        {
+            await _dispatcher.ConfigureAwait(false);
+        }
+        finally
+        {
+            // Runs even if the dispatch loop faulted: no ticket may be left hanging. The loop has ended here, so touching
+            // its buckets from this thread is safe.
+            CancelInbox();
+            CancelAllPending();
+            _wake.Dispose();
+            _shutdown.Dispose();
+        }
     }
 
     private void Signal()
     {
         // The flag keeps the semaphore count at most 1: many wake-ups collapse into a single scan.
         if (Interlocked.Exchange(ref _signaled, 1) == 0)
-            _wake.Release();
+        {
+            try
+            {
+                _wake.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Wake() or a caller's cancellation callback after DisposeAsync: nothing is left to wake.
+            }
+        }
     }
 
     private void CancelInbox()

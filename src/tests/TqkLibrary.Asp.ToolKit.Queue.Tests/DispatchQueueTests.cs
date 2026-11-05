@@ -286,6 +286,27 @@ public sealed class DispatchQueueTests
     }
 
     [Fact]
+    public async Task Dispose_releases_sync_objects_and_later_signals_are_ignored()
+    {
+        var queue = NewQueue(GlobalCap(1));
+        using var cts = new CancellationTokenSource();
+
+        await queue.DisposeAsync().AsTask().WaitAsync(Timeout);
+
+        var shutdown = (CancellationTokenSource)typeof(DispatchQueue<Job>)
+            .GetField("_shutdown", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+            .GetValue(queue)!;
+        Assert.Throws<ObjectDisposedException>(() => shutdown.Token);
+
+        // Signals arriving after dispose must not throw on the disposed semaphore.
+        queue.Wake();
+        var late = queue.Submit(new Job("a"), (_, _) => Task.FromResult(1), cancellationToken: cts.Token);
+        cts.Cancel();
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => late.Completion);
+        await queue.DisposeAsync();
+    }
+
+    [Fact]
     public async Task Counter_back_to_zero_removes_key()
     {
         var policy = new ConcurrencyCapPolicy<Job>(job => [new CapRule(("customer", job.Customer), 2)]);
