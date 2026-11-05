@@ -82,16 +82,9 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Middleware
             ApiErrorMapping mapping = Transform(context, exception, Map(context, exception));
 
             LogLevel level = mapping.LogLevel ?? (mapping.StatusCode >= 500 ? LogLevel.Error : LogLevel.Warning);
-            if (mapping.StatusCode >= 500 && mapping.LogLevel is null)
-            {
-                _logger.LogError(exception, "Unhandled exception. RequestId: {RequestId}", requestId);
-            }
-            else
-            {
-                _logger.Log(level, level >= LogLevel.Error ? exception : null,
-                    "Request failed. RequestId: {RequestId}, Error: {ErrorCode}, Message: {Message}",
-                    requestId, mapping.Code, mapping.Message);
-            }
+            _logger.Log(level, level >= LogLevel.Error ? exception : null,
+                "Request failed. RequestId: {RequestId}, Error: {ErrorCode}, Message: {Message}",
+                requestId, mapping.Code, mapping.Message);
 
             ApiErrorResponse response = ApiErrorResponse.Create(
                 requestId,
@@ -133,7 +126,7 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Middleware
             if (transform is null) return mapping;
             try
             {
-                return transform(context, exception, mapping) ?? mapping;
+                return transform(context, exception, mapping) ?? mapping; // null: keep the original mapping
             }
             catch (Exception transformException)
             {

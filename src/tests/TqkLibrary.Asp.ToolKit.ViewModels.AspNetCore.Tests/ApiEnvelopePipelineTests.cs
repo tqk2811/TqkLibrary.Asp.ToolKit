@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Interfaces;
@@ -280,6 +281,67 @@ namespace TqkLibrary.Asp.ToolKit.ViewModels.AspNetCore.Tests
             await middleware.InvokeAsync(context);
 
             Assert.Equal(500, context.Response.StatusCode);
+        }
+
+        [Fact]
+        public async Task ExceptionWrapper_IOExceptionWithoutAbort_Is500AndLoggedAsError()
+        {
+            DefaultHttpContext context = new() { RequestServices = new ServiceCollection().BuildServiceProvider() };
+            context.Response.Body = new MemoryStream();
+            CapturingLogger logger = new();
+            ApiExceptionWrapperMiddleware middleware = new(
+                _ => throw new IOException("disk full"),
+                logger,
+                Options.Create(new TqkApiEnvelopeOptions()));
+
+            await middleware.InvokeAsync(context);
+
+            Assert.Equal(500, context.Response.StatusCode);
+            Assert.True(context.Response.Body.Length > 0);
+            Assert.Contains(logger.Entries, e => e.Level == LogLevel.Error && e.Exception is IOException);
+        }
+
+        [Fact]
+        public async Task ExceptionWrapper_5xxLog_SameTemplateWithOrWithoutLogLevel()
+        {
+            async Task<CapturingLogger.Entry> RunAsync(LogLevel? level)
+            {
+                DefaultHttpContext context = new() { RequestServices = new ServiceCollection().BuildServiceProvider() };
+                context.Response.Body = new MemoryStream();
+                CapturingLogger logger = new();
+                ApiExceptionWrapperMiddleware middleware = new(
+                    _ => throw new InvalidOperationException("boom"),
+                    logger,
+                    Options.Create(new TqkApiEnvelopeOptions
+                    {
+                        TransformError = (_, _, m) => m with { LogLevel = level },
+                    }));
+                await middleware.InvokeAsync(context);
+                return Assert.Single(logger.Entries);
+            }
+
+            CapturingLogger.Entry implicitLevel = await RunAsync(null);
+            CapturingLogger.Entry explicitLevel = await RunAsync(LogLevel.Critical);
+
+            Assert.Equal(LogLevel.Error, implicitLevel.Level);
+            Assert.Equal(LogLevel.Critical, explicitLevel.Level);
+            Assert.Equal(implicitLevel.Template, explicitLevel.Template);
+            Assert.Contains("{ErrorCode}", implicitLevel.Template);
+            Assert.IsType<InvalidOperationException>(implicitLevel.Exception);
+        }
+
+        sealed class CapturingLogger : ILogger<ApiExceptionWrapperMiddleware>
+        {
+            public sealed record Entry(LogLevel Level, Exception? Exception, string? Template);
+            public List<Entry> Entries { get; } = new();
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+            public bool IsEnabled(LogLevel logLevel) => true;
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            {
+                string? template = (state as IEnumerable<KeyValuePair<string, object?>>)?
+                    .FirstOrDefault(p => p.Key == "{OriginalFormat}").Value as string;
+                Entries.Add(new Entry(logLevel, exception, template));
+            }
         }
 
         [Fact]
